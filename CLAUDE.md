@@ -46,6 +46,12 @@ Only when the user asks for it.
 - `npm run build` — check the topic files and rebuild `site/`.
 - `npm run preview` — serve `site/` at http://localhost:4173.
 
+## Git
+
+- Repository: https://github.com/hritambh/UnderTheHood (public), branch `main`, remote `origin`.
+- This repo uses the user's personal git email, set in the repo's own git config. Don't change it, and don't commit with any other email.
+- The repo is public, so everything committed is visible to anyone. The "Public site" rule above applies to every file, not only topics.
+
 ## Hosting
 
 - Live at https://system-design-hub-rho.vercel.app (Vercel project `system-design-hub`, public).
