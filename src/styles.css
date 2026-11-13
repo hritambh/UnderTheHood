@@ -155,7 +155,12 @@ details.sec[open] .sec-toggle{transform:rotate(90deg)}
 .sec-body{padding:0 4px 22px 4px;font-family:var(--serif);font-size:1.05rem;line-height:1.7}
 @media (min-width:600px){.sec-body{padding-left:calc(1.6em + 16px)}}
 .sec-body p{margin:0 0 .9em}
-.sec-body h4{font-family:var(--sans);font-size:1rem;margin:1.3em 0 .4em}
+/* sub-headings inside a section: coloured, larger, with a marker and more space above,
+   so they stand apart from the text around them */
+.sec-body h4{position:relative;font-family:var(--sans);font-size:1.14rem;font-weight:600;line-height:1.35;letter-spacing:-.005em;color:var(--accent);margin:2em 0 .55em;padding-left:14px}
+.sec-body h4::before{content:"";position:absolute;left:0;top:.2em;bottom:.2em;width:4px;border-radius:2px;background:var(--accent)}
+.sec-body > h4:first-child{margin-top:.3em}
+.sec-body h4 code{color:var(--ink)}
 .sec-body ul,.sec-body ol{padding-left:1.3em;margin:0 0 1em}
 .sec-body li{margin:.25em 0}
 .sec-body code{font-family:var(--mono);font-size:.86em;background:var(--code-bg);padding:1px 5px;border-radius:4px}
