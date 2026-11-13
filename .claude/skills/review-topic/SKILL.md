@@ -9,12 +9,13 @@ Checks one or more files under `content/topics/` against:
 
 - `TOPIC_STYLE.md`: the rules shared by every track.
 - `formats/<track>.md`: the 12 sections and the "Must have" list of the topic's track. The track is the folder the file sits in.
+- `.claude/skills/add-topic/tracks/<track>.md`: the track's playbook. Its "Checks before you finish" list is part of this review.
 
-These two files are the source of truth.
+These three files are the source of truth.
 
 ## Steps
 
-1. **Read `TOPIC_STYLE.md`** from start to end, then **`formats/<track>.md`** for each track you are reviewing.
+1. **Read `TOPIC_STYLE.md`** from start to end. Then, for each track you are reviewing, read **`formats/<track>.md`** and **`.claude/skills/add-topic/tracks/<track>.md`**.
 
 2. **Work out which topics to review.** Use the ones the user named. If they named none, review the files that were added or changed in this session. If that is unclear, ask.
 
@@ -29,6 +30,7 @@ These two files are the source of truth.
    - All 12 sections of that track are there, in order.
    - Each section holds what its row in the format table asks for. It is not a section from another track's format under a different name.
    - Every item in the format file's "Must have" list is there.
+   - Every item under "Checks before you finish" in the track's playbook passes. Do each check for real. For `dsa`, that means running the code.
    - The extra rules in the format file are followed (for example: version named in `internals`, source named and no private details in `incidents`, runnable SQL in `databases`, hand-traced code in `dsa`, defence only in `security`, fair to both sides in `decisions`).
    - The first section ends with a one-line version in a note box.
    - `revision` is only a summary list of 6 to 10 points. It has no questions, key terms or scenario, and nothing that the topic did not teach earlier.

@@ -14,7 +14,8 @@ A plain static website of engineering topics, grouped into tracks. It started as
 - `site/` — the generated website. Don't edit by hand; it is rewritten on every build.
 - Global search — the search box in the top bar of every page suggests topics and section matches as you type. It reads `site/assets/search-index.js`, which the build generates. The home page loads that file up front; other pages load it the first time the search is used.
 - Reading mode — the book button in the top bar puts a warm tint over every page, with a slider for its strength. Saved in the reader's browser (`sd-hub-reading`, `sd-hub-reading-intensity`).
-- `.claude/skills/add-topic` — the steps for writing a new topic in any track. Use it for every new topic.
+- `.claude/skills/add-topic` — the skill for every new topic. It decides the track by itself (the user does not have to name one), then applies that track's playbook and format file.
+- `.claude/skills/add-topic/tracks/<track>.md` — one playbook per track: how to scope a topic, the order to work in, the traps, and the checks before finishing.
 - `.claude/skills/review-topic` — the checks for a new or edited topic.
 
 Topic pages are served at `/topics/<id>.html` whatever the track, so an id must be unique across all tracks.
@@ -23,7 +24,8 @@ Topic pages are served at `/topics/<id>.html` whatever the track, so an id must 
 
 These apply every time a topic is added or edited, with or without the skills:
 
-- **Same format every time.** A topic uses exactly the 12 sections of its track, as listed in `formats/<track>.md`, with every "Must have" item. Read `TOPIC_STYLE.md` and the track's format file before writing.
+- **The skill picks the track.** When the user asks for a topic, don't ask them which track. Decide with the nine questions under "Picking the track" in `TOPIC_STYLE.md`, say the choice and the reason in one line, and carry on. If the user did name a track, use theirs.
+- **Same format every time.** A topic uses exactly the 12 sections of its track, as listed in `formats/<track>.md`, with every "Must have" item, written by following the track's playbook. Read `TOPIC_STYLE.md`, the track's format file and its playbook before writing.
 - **Tone.** Topics are written the way one developer explains something to another: plain everyday words, short sentences, no formal or academic English. The full rule and the word list are under "Writing style" in `TOPIC_STYLE.md`.
 - **Placement.** Before adding a topic or any content, look through the existing topics in every track. Flag it to the user if the content is already covered, belongs inside another topic or another track, or if existing content sits in the wrong place. Flag only; don't move existing content without the user saying so.
 - **Public site.** No real employer or customer names, internal host names, keys, or real customer data in any topic.
@@ -33,7 +35,7 @@ These apply every time a topic is added or edited, with or without the skills:
 
 Only when the user asks for it.
 
-- **Add a track:** add it to `tracks` in `content/hub.json` (id, title, description, 12 `[key, title]` sections ending with `revision`), create `formats/<id>.md` in the same shape as the others, add it to the tables in `TOPIC_STYLE.md` parts 1 and 5, and to the skill description in `.claude/skills/add-topic/SKILL.md`.
+- **Add a track:** add it to `tracks` in `content/hub.json` (id, title, description, 12 `[key, title]` sections ending with `revision`), create `formats/<id>.md` and `.claude/skills/add-topic/tracks/<id>.md` in the same shape as the others, add it to the tables in `TOPIC_STYLE.md` parts 1 and 5, and to the skill description in `.claude/skills/add-topic/SKILL.md`.
 - **Change a track's sections:** change `content/hub.json` and `formats/<track>.md` together, then update every existing topic in that track. The build prints a note if the two files disagree, and stops if a topic uses a key its track does not have.
 - **Move a topic to another track:** move the file to the other folder and rewrite its sections for that track's format.
 

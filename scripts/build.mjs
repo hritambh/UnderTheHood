@@ -164,6 +164,9 @@ export function build() {
     const ok = Array.isArray(tr.sections) && tr.sections.length &&
       tr.sections.every(s => Array.isArray(s) && typeof s[0] === 'string' && typeof s[1] === 'string');
     if (!ok) { problems.push(`hub.json: track "${tr.id}" needs a "sections" list of [key, title] pairs`); tr.sections = []; }
+    if (!fs.existsSync(path.join(ROOT, '.claude', 'skills', 'add-topic', 'tracks', tr.id + '.md'))) {
+      notes.push(`.claude/skills/add-topic/tracks/${tr.id}.md is missing. Every track needs a playbook for the add-topic skill`);
+    }
     const doc = path.join(ROOT, 'formats', tr.id + '.md');
     if (!fs.existsSync(doc)) notes.push(`formats/${tr.id}.md is missing. Every track needs a format file that explains its sections`);
     else {
