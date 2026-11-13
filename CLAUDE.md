@@ -6,6 +6,7 @@ A plain static website of engineering topics, grouped into tracks. It started as
 
 ## How it fits together
 
+- **Home page** — it shows only the nine track tiles, with a count and a progress bar on each. Topics are not listed there. Clicking a tile (address `index.html#t-<track>`) swaps the tiles for that track's topics, with the status filters, the filter box and the grid/list switch. The user asked for the home page to stay this clean, so don't add topic lists or other panels to it.
 - **Tracks** — the nine groups on the home page: Core Concepts, System Design, Internals & Deep Dives, Incidents & Production Learnings, Engineering Patterns & Practices, Database Engineering, Problem Solving & DSA, Security Engineering, Engineering Decisions & Trade-offs. They are defined, in order, in `content/hub.json`.
 - `content/topics/<track>/<id>.html` — one file per topic. The folder is the track. **This is what the site is built from.**
 - `TOPIC_STYLE.md` — the rules shared by every topic: how to pick a track, file layout, building blocks, tone, what is not allowed.

@@ -58,7 +58,7 @@ function page({ root, title, description, bodyAttrs, body, scripts, v }) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(description)}">
-<script>(function(){try{var t=localStorage.getItem("sd-hub-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);var v=localStorage.getItem("sd-hub-view");if(v==="list")document.documentElement.setAttribute("data-view","list");if(localStorage.getItem("sd-hub-reading")==="1"){document.documentElement.setAttribute("data-reading","");var i=parseInt(localStorage.getItem("sd-hub-reading-intensity"),10);if(i>=10&&i<=100)document.documentElement.style.setProperty("--read-intensity",i/100)}}catch(e){}})()</script>
+<script>(function(){document.documentElement.className+=" js";if(/^#t-/.test(location.hash))document.documentElement.setAttribute("data-home","list");try{var t=localStorage.getItem("sd-hub-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);var v=localStorage.getItem("sd-hub-view");if(v==="list")document.documentElement.setAttribute("data-view","list");if(localStorage.getItem("sd-hub-reading")==="1"){document.documentElement.setAttribute("data-reading","");var i=parseInt(localStorage.getItem("sd-hub-reading-intensity"),10);if(i>=10&&i<=100)document.documentElement.style.setProperty("--read-intensity",i/100)}}catch(e){}})()</script>
 <link rel="icon" href="${ICON}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -82,7 +82,7 @@ function topbar(root, hubTitle) {
       <input id="gsearch" type="search" placeholder="Search all topics" autocomplete="off" spellcheck="false" role="combobox" aria-label="Search all topics" aria-expanded="false" aria-controls="gsearchList" aria-autocomplete="list"></span>
       <ul class="gsearch-list" id="gsearchList" role="listbox" aria-label="Suggestions" hidden></ul>
     </div>
-    <a class="top-link top-home" href="${root}index.html">All topics</a>
+    <a class="top-link top-home" href="${root}index.html">Home</a>
     <div class="reading">
       <button class="theme-btn" id="readBtn" type="button" aria-label="Reading mode" title="Reading mode" aria-expanded="false" aria-controls="readPanel">${BOOK_ICON}</button>
       <div class="read-panel" id="readPanel" hidden>
@@ -308,11 +308,26 @@ export function build() {
       </div>
     </article>`;
 
-  const trackNav = `<nav class="track-nav" aria-label="Tracks">${tracks.map(tr =>
+  const trackNav = `<nav class="track-nav" aria-label="Tracks"><a href="#" class="all" id="allTracks">‹ All tracks</a>${tracks.map(tr =>
     `<a href="#t-${esc(tr.id)}"${tr.topics.length ? '' : ' class="none"'}>${esc(tr.title)}<span>${tr.topics.length}</span></a>`).join('')}</nav>`;
 
+  /* what the home page shows first: one tile per track, and nothing else */
+  const trackTiles = `<div class="track-tiles" id="trackTiles">${tracks.map((tr, n) => tr.topics.length ? `
+    <a class="track-tile" href="#t-${esc(tr.id)}" data-track="${esc(tr.id)}">
+      <span class="tile-top"><span class="track-num">${String(n + 1).padStart(2, '0')}</span><span class="tile-count">${count(tr.topics.length, 'topic')}</span></span>
+      <strong class="tile-title">${esc(tr.title)}</strong>
+      <span class="tile-desc">${esc(tr.description || '')}</span>
+      <span class="tile-progress"><span class="tile-bar" aria-hidden="true"><span></span></span><span class="tile-done"></span></span>
+    </a>` : `
+    <div class="track-tile is-empty">
+      <span class="tile-top"><span class="track-num">${String(n + 1).padStart(2, '0')}</span><span class="tile-count">No topics yet</span></span>
+      <strong class="tile-title">${esc(tr.title)}</strong>
+      <span class="tile-desc">${esc(tr.description || '')}</span>
+    </div>`).join('')}
+  </div>`;
+
   const trackSections = tracks.map((tr, n) => `
-  <section class="track${tr.topics.length ? '' : ' is-empty'}" id="t-${esc(tr.id)}" aria-labelledby="th-${esc(tr.id)}">
+  <section class="track${tr.topics.length ? '' : ' is-empty'}" id="track-${esc(tr.id)}" aria-labelledby="th-${esc(tr.id)}">
     <header class="track-head">
       <span class="track-num">${String(n + 1).padStart(2, '0')}</span>
       <div class="track-title"><h2 id="th-${esc(tr.id)}">${esc(tr.title)}</h2>${tr.description ? `<p>${esc(tr.description)}</p>` : ''}</div>
@@ -332,17 +347,21 @@ export function build() {
     <details class="how">
       <summary>How to use this hub</summary>
       <ul>
-        <li>Topics are grouped into tracks, like Core Concepts and System Design. Every topic in a track follows the same fixed steps.</li>
+        <li>This page shows the tracks, like Core Concepts and System Design. Click a track to see its topics. Every topic in a track follows the same fixed steps.</li>
         <li>Open a topic and read one section at a time. Sections are folded, so you can stop and come back.</li>
         <li>Mark each topic as Not started, In progress, or Completed. Your progress is saved in this browser.</li>
-        <li>Switch between grid and list view with the two buttons next to the filters. Your choice is remembered.</li>
+        <li>Inside a track, switch between grid and list view with the two buttons next to the filters. Your choice is remembered.</li>
         <li>The book button at the top turns on reading mode: a warm tint that is easier on the eyes. Use its slider to make the tint lighter or stronger.</li>
         <li>The search box at the top works on every page. It suggests topics as you type, and it looks inside the topics too. Press <kbd>/</kbd> to jump to it, then use the arrow keys and Enter.</li>
-        <li>The filter box on this page narrows the list below, and shows which sections mention your word.</li>
+        <li>Inside a track, the filter box narrows the list, and shows which sections mention your word.</li>
         <li>Every topic ends with a quick revision: a short summary of what you learnt.</li>
       </ul>
     </details>
   </header>
+
+  ${trackTiles}
+
+  ${trackNav}
 ${topics.length ? `
   <div class="progress-row">
     <div class="progress-bar" aria-hidden="true"><span class="b-done" id="barDone"></span><span class="b-prog" id="barProg"></span></div>
@@ -364,7 +383,6 @@ ${topics.length ? `
   </div>
   <p class="no-match" id="noMatch" hidden></p>` : ''}
 
-  ${trackNav}
 ${trackSections}
   ${footer}
 </main>`;
@@ -401,7 +419,7 @@ ${topbar('../', hubTitle)}
     <ol class="side-secs" id="sideSecs">${sideSecs}</ol>
   </nav>
   <article id="article">
-    <a class="back" href="../index.html#t-${esc(t.track.id)}">‹ All topics</a>
+    <a class="back" href="../index.html#t-${esc(t.track.id)}">‹ ${esc(t.track.title)}</a>
     <p class="eyebrow">${esc(t.track.title)}${t.category ? ' · ' + esc(t.category) : ''} · ${t.minutes} min read</p>
     <h1>${esc(t.title)}</h1>
     <p class="topic-intro">${esc(t.summary)}</p>

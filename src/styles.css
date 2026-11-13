@@ -283,3 +283,30 @@ details.sec[open] .sec-toggle{transform:rotate(90deg)}
   .gsearch{position:static;flex:1 1 auto}
   .gsearch-list{left:16px;right:16px;width:auto}
 }
+
+/* ---------- Home: track tiles first, topics only after a track is picked ---------- */
+.track-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-top:28px}
+.track-tile{display:flex;flex-direction:column;gap:6px;min-height:150px;padding:18px 18px 16px;background:var(--surface);border:1px solid var(--line);border-radius:14px;color:var(--ink);text-decoration:none;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}
+a.track-tile:hover,a.track-tile:focus-visible{transform:translateY(-3px);border-color:var(--accent);box-shadow:var(--shadow)}
+.tile-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.tile-count{font-size:.82rem;color:var(--muted)}
+.tile-title{font-family:var(--serif);font-size:1.3rem;font-weight:600;line-height:1.25}
+.tile-desc{flex:1;color:var(--muted);font-size:.95rem}
+.tile-progress{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:.82rem;color:var(--muted);white-space:nowrap}
+.tile-bar{flex:1;height:6px;background:var(--line);border-radius:99px;overflow:hidden}
+.tile-bar span{display:block;height:100%;width:0;background:var(--done);transition:width .35s ease}
+.track-tile.is-empty{background:transparent;border-style:dashed}
+.track-tile.is-empty .tile-title{color:var(--muted)}
+.track-nav{margin-top:26px}
+.track-nav a.all{background:transparent;color:var(--accent);font-weight:500}
+.track-nav a[aria-current]{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.track-nav a[aria-current] span{color:inherit;opacity:.75}
+/* with scripts on, only one of the two views shows */
+.js #home .track,.js #home .controls,.js #home .progress-row,.js #home .track-nav{display:none}
+:root[data-home="list"] #home .track-tiles{display:none}
+:root[data-home="list"] #home .controls,:root[data-home="list"] #home .progress-row,:root[data-home="list"] #home .track-nav{display:flex}
+:root[data-home="list"] #home .track.is-selected{display:block;margin-top:22px}
+/* once a track is picked, the big heading steps aside so the topics start near the top */
+:root[data-home="list"] #home .home-head{display:none}
+:root[data-home="list"] #home .track-nav{margin-top:0}
+@media (max-width:640px){.track-tile{min-height:0}}

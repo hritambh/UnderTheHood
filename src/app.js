@@ -260,12 +260,16 @@
 
   /* =================== HOME =================== */
   if (page === 'home') {
+    var docRoot = document.documentElement;
     var cards = all('.topic-card');
+    var tracks = all('.track');
     var search = $('search');
     var filter = 'all';
+    var selected = null;   // the track whose topics are showing, or null for the tiles
     var index = {};
     prepIndex();
     (window.HUB_INDEX || []).forEach(function (t) { index[t.id] = t; });
+    function isDone(c) { return statusOf(c.getAttribute('data-id')) === 'done'; }
 
     var last = load(LS_LAST, null);
     var cont = $('continue');
@@ -275,14 +279,65 @@
       cont.hidden = false;
     }
 
+    /* The home page shows only the track tiles. Picking a track (#t-<id>) shows its topics. */
+    function route() {
+      var m = /^#t-(.+)$/.exec(location.hash || '');
+      var target = m ? document.getElementById('track-' + m[1]) : null;
+      selected = target && target.classList.contains('track') ? target : null;
+      if (selected) docRoot.setAttribute('data-home', 'list'); else docRoot.removeAttribute('data-home');
+      tracks.forEach(function (tr) { tr.classList.toggle('is-selected', tr === selected); });
+      all('.track-nav a').forEach(function (a) {
+        if (selected && a.getAttribute('href') === '#t-' + selected.id.replace(/^track-/, '')) a.setAttribute('aria-current', 'true');
+        else a.removeAttribute('aria-current');
+      });
+      if (search) search.value = '';
+      paint();
+      // start at the top of the list, not wherever the browser jumped to
+      if (selected) window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+    var allLink = $('allTracks');
+    if (allLink) allLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      try { history.pushState(null, '', location.pathname + location.search); } catch (err) { location.hash = ''; }
+      route();
+      window.scrollTo(0, 0);
+    });
+    window.addEventListener('hashchange', route);
+    window.addEventListener('popstate', route);
+
+    /* tiles and track headers: how much of each track is done */
     painters.push(function () {
-      var total = cards.length;
-      if (!total) return;
+      cards.forEach(function (c) { c.querySelector('select').value = statusOf(c.getAttribute('data-id')); });
+      all('.track-tile[data-track]').forEach(function (tile) {
+        var sec = document.getElementById('track-' + tile.getAttribute('data-track'));
+        var inside = sec ? all('.topic-card', sec) : [];
+        if (!inside.length) return;
+        var d = inside.filter(isDone).length;
+        tile.querySelector('.tile-bar span').style.width = (d / inside.length * 100) + '%';
+        tile.querySelector('.tile-done').textContent = d + ' of ' + inside.length + ' completed';
+      });
+      tracks.forEach(function (tr) {
+        var inside = all('.topic-card', tr);
+        var cnt = tr.querySelector('.track-count');
+        if (!cnt || !inside.length) return;
+        var d = inside.filter(isDone).length;
+        cnt.textContent = inside.length + (inside.length === 1 ? ' topic' : ' topics') + (d ? ' · ' + d + ' completed' : '');
+      });
+    });
+
+    /* the topics of the picked track: progress, status filter, text filter */
+    painters.push(function () {
+      var nm = $('noMatch');
+      if (!search) return;
+      var inside = selected ? all('.topic-card', selected) : [];
+      var total = inside.length;
+      all('.controls, .progress-row').forEach(function (x) { x.hidden = !total; });
+      if (!total) { nm.hidden = true; return; }
+
       var done = 0, prog = 0;
-      cards.forEach(function (c) {
+      inside.forEach(function (c) {
         var s = statusOf(c.getAttribute('data-id'));
         if (s === 'done') done++; else if (s === 'progress') prog++;
-        c.querySelector('select').value = s;
       });
       $('barDone').style.width = (done / total * 100) + '%';
       $('barProg').style.width = (prog / total * 100) + '%';
@@ -290,7 +345,7 @@
 
       var q = search.value.trim().toLowerCase();
       var shown = 0;
-      cards.forEach(function (c) {
+      inside.forEach(function (c) {
         var id = c.getAttribute('data-id');
         var hitsEl = c.querySelector('.hits');
         hitsEl.hidden = true; hitsEl.textContent = '';
@@ -313,31 +368,17 @@
         c.hidden = !ok;
         if (ok) shown++;
       });
-      var narrowed = !!q || filter !== 'all';
-      all('.track').forEach(function (tr) {
-        var inside = all('.topic-card', tr);
-        var visible = inside.filter(function (c) { return !c.hidden; }).length;
-        tr.hidden = narrowed && !visible;
-        var cnt = tr.querySelector('.track-count');
-        if (cnt && inside.length) {
-          var d = inside.filter(function (c) { return statusOf(c.getAttribute('data-id')) === 'done'; }).length;
-          cnt.textContent = inside.length + (inside.length === 1 ? ' topic' : ' topics') + (d ? ' · ' + d + ' completed' : '');
-        }
-      });
-      var trackNav = document.querySelector('.track-nav');
-      if (trackNav) trackNav.hidden = narrowed;
-      var nm = $('noMatch');
       nm.hidden = shown > 0;
       if (!shown) nm.textContent = q
-        ? 'No topics match “' + search.value.trim() + '”. Try another word or clear the filter.'
-        : 'No topics with this status yet.';
+        ? 'No topics here match “' + search.value.trim() + '”. Try another word, or use the search box at the top to look in every track.'
+        : 'No topics with this status in this track yet.';
     });
 
     /* grid / list view */
     var viewBtns = all('.view-btn');
     function setView(v) {
-      if (v === 'list') document.documentElement.setAttribute('data-view', 'list');
-      else document.documentElement.removeAttribute('data-view');
+      if (v === 'list') docRoot.setAttribute('data-view', 'list');
+      else docRoot.removeAttribute('data-view');
       viewBtns.forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-view') === v)); });
     }
     viewBtns.forEach(function (b) {
@@ -347,7 +388,7 @@
         try { localStorage.setItem(LS_VIEW, v); } catch (e) {}
       });
     });
-    setView(document.documentElement.getAttribute('data-view') === 'list' ? 'list' : 'grid');
+    setView(docRoot.getAttribute('data-view') === 'list' ? 'list' : 'grid');
 
     if (search) {
       search.addEventListener('input', paint);
@@ -366,6 +407,7 @@
         if (e.key === 'Escape' && e.target === search) { search.value = ''; paint(); }
       });
     }
+    route();
   }
 
   /* =================== TOPIC =================== */
