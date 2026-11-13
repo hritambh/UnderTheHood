@@ -1,0 +1,5 @@
+# Not needed on Vercel, and should stay on this machine only
+CLAUDE.md
+content/source
+# Built fresh on Vercel from content/
+site

@@ -1,0 +1,308 @@
+<!--
+title: Pagination in Backend Systems
+summary: How an API returns a big list in small pieces: offset, page-number, keyset (seek), cursor, time-based, and hybrid pagination, and why some get slow or show duplicates.
+category: APIs and Databases
+order: 5
+related: database-sharding
+-->
+
+<!-- section: what -->
+<p><strong>Pagination</strong> means returning a large list in small pieces, called <strong>pages</strong>, instead of all at once.</p>
+<p>When you open Instagram, the app doesn’t download every post ever made. It loads 20, and when you scroll near the bottom, it asks for the next 20. Each request says, in some way, “give me the next part of the list, starting from <em>here</em>.”</p>
+<p>The different pagination types are really different ways of describing that “here”:</p>
+<ul>
+<li><strong>Offset / page number</strong>: “skip the first 40 items” or “give me page 3”. A position by <em>counting</em>.</li>
+<li><strong>Keyset / seek</strong>: “give me items after the one with id 9812”. A position by <em>value</em>.</li>
+<li><strong>Cursor</strong>: “continue from this bookmark token”. The server hides the position inside a token.</li>
+<li><strong>Time-based</strong>: “give me items created before 10:42 today”. A position by <em>time</em>.</li>
+<li><strong>Hybrid</strong>: mixing these, for example page numbers for the first few pages and keyset after that.</li>
+</ul>
+<p class="note"><strong>Important:</strong> these seven names are not seven different techniques. There are really two core methods underneath: <strong>counting rows (offset)</strong> and <strong>seeking to a value (keyset)</strong>. Page-number is a friendly form of offset. Seek is another name for keyset. Cursor is usually keyset wrapped in a token. Time-based is keyset where the value is a time. This topic explains each name, but keep those two core methods in mind.</p>
+
+<!-- section: why -->
+<p>Without pagination, an endpoint like <code>GET /orders</code> returns every row. With 5 million orders, that means:</p>
+<ul>
+<li>The database reads and sends millions of rows.</li>
+<li>Your Node.js server builds one giant JSON response in memory. It can run out of memory or block the event loop while doing it.</li>
+<li>The network transfers hundreds of megabytes.</li>
+<li>The phone or browser tries to render all of it, and freezes.</li>
+<li>The user only wanted to see the top 20.</li>
+</ul>
+<p>So we need pagination. But the <em>method</em> matters too. A naive method works fine on page 1 and becomes very slow on page 50,000. It can also show the same item twice, or skip items, when new data is added while someone is scrolling. Those two problems (<strong>deep-page slowness</strong> and <strong>shifting data</strong>) are what separate the methods.</p>
+
+<!-- section: realWorld -->
+<p>Imagine a long queue of people at a bank, and you want to talk to them in groups of 10.</p>
+<p><strong>Offset style:</strong> you say, “Skip the first 40 people, and send me the next 10.” To do that, the guard must walk down the queue <em>counting</em> 40 people every time. For group 1,000, he counts 9,990 people first. That gets slow.</p>
+<p>Worse: if 3 people join at the front while you are talking to a group, “skip 40” now lands 3 people earlier. The next group includes 3 people you already met. If 3 people leave instead, you skip 3 people without ever meeting them.</p>
+<p><strong>Keyset style:</strong> everyone holds a numbered token. You say, “Send me the 10 people after token #540.” The guard doesn’t count anyone. He goes straight to #540 (because tokens are in order) and takes the next 10. It’s just as fast for the 1,000th group as for the first. And people joining at the front don’t matter; #540 is still #540.</p>
+<p>The catch: with keyset, you can’t easily say “jump to group 700”, because you don’t know which token group 700 starts at without counting.</p>
+
+<!-- section: software -->
+<p>Say you have a <code>posts</code> table in PostgreSQL and an endpoint that returns the newest posts first.</p>
+
+<h4>Offset version</h4>
+<pre><code>-- GET /posts?limit=20&amp;offset=40
+SELECT id, title, created_at
+FROM posts
+ORDER BY created_at DESC, id DESC
+LIMIT 20 OFFSET 40;</code></pre>
+<p>Simple, and easy to jump to any page. But PostgreSQL must still find and throw away the first 40 rows before returning 20. With <code>OFFSET 1000000</code>, it walks past a million rows.</p>
+
+<h4>Keyset (cursor) version</h4>
+<pre><code>-- first page
+SELECT id, title, created_at
+FROM posts
+ORDER BY created_at DESC, id DESC
+LIMIT 21;                       -- ask for one extra to know if there is a next page
+
+-- next page: start after the last row we returned
+SELECT id, title, created_at
+FROM posts
+WHERE (created_at, id) &lt; ($1, $2)   -- last row's created_at and id
+ORDER BY created_at DESC, id DESC
+LIMIT 21;
+
+-- index that makes this fast
+CREATE INDEX posts_created_id_idx ON posts (created_at DESC, id DESC);</code></pre>
+<p>Why <code>id</code> as well as <code>created_at</code>? Two posts can have the same timestamp. Without a unique <strong>tiebreaker</strong>, rows with equal times could be skipped or repeated at page edges.</p>
+
+<h4>Cursor API in NestJS</h4>
+<p>Clients shouldn’t need to know about <code>created_at</code> and <code>id</code>. So we pack them into an opaque token, the <strong>cursor</strong>:</p>
+<pre><code>// posts.service.ts  (simplified)
+type Cursor = { createdAt: string; id: string };
+
+const encode = (c: Cursor) =&gt;
+  Buffer.from(JSON.stringify(c)).toString('base64url');
+const decode = (s: string): Cursor =&gt;
+  JSON.parse(Buffer.from(s, 'base64url').toString('utf8'));
+
+async list(limit = 20, after?: string) {
+  limit = Math.min(Math.max(limit, 1), 100);         // never trust client limits
+  const params: unknown[] = [limit + 1];
+  let where = '';
+  if (after) {
+    const c = decode(after);                          // validate in real code
+    params.push(c.createdAt, c.id);
+    where = 'WHERE (created_at, id) &lt; ($2, $3)';
+  }
+  const { rows } = await this.db.query(
+    'SELECT id, title, created_at FROM posts ' + where +
+    ' ORDER BY created_at DESC, id DESC LIMIT $1', params);
+
+  const hasMore = rows.length &gt; limit;
+  const items = rows.slice(0, limit);
+  const last = items[items.length - 1];
+  return {
+    items,
+    nextCursor: hasMore
+      ? encode({ createdAt: last.created_at.toISOString(), id: last.id })
+      : null,
+  };
+}</code></pre>
+<p>The response looks like <code>{ items: [...], nextCursor: "eyJjcmVhdGVkQXQiOi..." }</code>. The client sends <code>?after=eyJj...</code> for the next page, and stops when <code>nextCursor</code> is <code>null</code>.</p>
+<p class="note">Base64 is <em>not</em> encryption. Anyone can decode this cursor. That’s fine if it only holds sort values, but always validate it on the server, and sign or encrypt it if it contains anything you don’t want users to read or change.</p>
+
+<!-- section: internals -->
+<h4>Offset flow</h4>
+<ol>
+<li>Client sends <code>GET /posts?offset=40&amp;limit=20</code>.</li>
+<li>Server runs <code>ORDER BY ... LIMIT 20 OFFSET 40</code>.</li>
+<li>The database walks the index (or sorts the table) from the start, reads rows 1–40, throws them away, then reads rows 41–60.</li>
+<li>Server returns those 20 rows, often with a total count so the UI can show page numbers.</li>
+</ol>
+<p>Step 3 is the problem: work grows with the offset. There is no shortcut to “the 40th row”, because the database doesn’t store row positions; it must count.</p>
+
+<h4>Keyset flow</h4>
+<ol>
+<li>Client sends <code>GET /posts?after=&lt;cursor&gt;</code>.</li>
+<li>Server decodes the cursor into the last seen <code>(created_at, id)</code>.</li>
+<li>The database uses the index (a B-tree, which keeps values sorted) to jump directly to that position, like opening a dictionary at the right letter.</li>
+<li>It reads the next 21 entries and stops.</li>
+<li>Server returns 20 rows and a new cursor built from the last one.</li>
+</ol>
+<p>Work stays the same no matter how deep you are: one index jump plus about 20 rows.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 280" role="img" aria-label="Offset reads and discards rows; keyset jumps to the right spot through the index">
+<defs><marker id="ah-pg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+<marker id="ah-pg2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead-warn"/></marker></defs>
+<text x="150" y="20" text-anchor="middle" class="lbl">OFFSET 40 LIMIT 20</text>
+<rect x="90" y="35" width="120" height="130" rx="6" class="box faintbox"/><text x="150" y="95" text-anchor="middle" class="sub">rows 1–40</text><text x="150" y="113" text-anchor="middle" class="sub">read, then thrown away</text>
+<rect x="90" y="170" width="120" height="60" rx="6" class="box hi"/><text x="150" y="205" text-anchor="middle" class="lbl">rows 41–60</text>
+<line x1="60" y1="40" x2="60" y2="225" class="arr warnline" marker-end="url(#ah-pg2)"/>
+<text x="30" y="255" class="sub">Work grows with the offset</text>
+
+<text x="470" y="20" text-anchor="middle" class="lbl">WHERE (created_at, id) &lt; cursor</text>
+<rect x="410" y="35" width="120" height="130" rx="6" class="box faintbox"/><text x="470" y="95" text-anchor="middle" class="sub">earlier rows</text><text x="470" y="113" text-anchor="middle" class="sub">never touched</text>
+<rect x="410" y="170" width="120" height="60" rx="6" class="box hi"/><text x="470" y="205" text-anchor="middle" class="lbl">next 20 rows</text>
+<rect x="560" y="110" width="70" height="40" rx="6" class="box"/><text x="595" y="135" text-anchor="middle" class="sub">index</text>
+<line x1="578" y1="150" x2="532" y2="185" class="arr" marker-end="url(#ah-pg)"/>
+<text x="350" y="255" class="sub">Index jumps straight to the cursor position</text>
+</svg>
+</div>
+
+<h4>Why offset shows duplicates or skips</h4>
+<ol>
+<li>User loads page 1: posts 1–20 (newest first).</li>
+<li>3 new posts are published. They go to the top of the list.</li>
+<li>User loads page 2 with <code>OFFSET 20</code>. Everything has shifted down by 3, so rows 21–40 now start with the last 3 posts the user already saw on page 1. <strong>Duplicates.</strong></li>
+<li>If 3 posts had been <em>deleted</em> instead, everything shifts up and 3 posts are never shown. <strong>Skips.</strong></li>
+</ol>
+<p>Keyset doesn’t have this problem in the same way: “posts older than this exact post” means the same thing no matter what was added at the top. (It can still miss a row whose sort value changes while you page, for example if you sort by <code>updated_at</code> and a row gets updated. More on that under time-based.)</p>
+
+<!-- section: types -->
+<h4>1. Offset-based pagination</h4>
+<p><strong>What:</strong> the client sends how many items to skip and how many to return: <code>?offset=40&amp;limit=20</code>. The database uses <code>LIMIT</code> and <code>OFFSET</code>.</p>
+<p><strong>When to use:</strong> small or medium tables, admin screens, internal tools, any list where users rarely go deep.</p>
+<p><strong>Good:</strong> very simple; can jump to any position; works with any sort order and filter.</p>
+<p><strong>Bad:</strong> slow at large offsets; duplicates and skips when data changes between requests.</p>
+
+<h4>2. Page-number pagination</h4>
+<p><strong>What:</strong> the client sends a page number and page size: <code>?page=3&amp;pageSize=20</code>. The server converts it: <code>offset = (page - 1) × pageSize</code>. <em>It is offset pagination with a friendlier interface.</em></p>
+<p><strong>When to use:</strong> UIs with numbered pages (“‹ 1 2 3 … 50 ›”), search results, e-commerce category pages.</p>
+<p><strong>Good:</strong> people understand it; easy to share a link to page 7.</p>
+<p><strong>Bad:</strong> same problems as offset. Showing “page 3 of 2,481” also needs a total count, and <code>COUNT(*)</code> on a large PostgreSQL table can be slow, because PostgreSQL has to scan to count. Many apps show an estimate (“about 49,000 results”) or just “Next”.</p>
+
+<h4>3. Keyset pagination</h4>
+<p><strong>What:</strong> use the sort values of the last row you returned to fetch the next rows: <code>WHERE (created_at, id) &lt; (last_created_at, last_id)</code>.</p>
+<p><strong>When to use:</strong> big tables, infinite scroll, “load more”, exports, batch jobs that walk through a whole table.</p>
+<p><strong>Good:</strong> fast at any depth with the right index; stable when new rows are inserted.</p>
+<p><strong>Bad:</strong> can’t jump to page N; needs a unique tiebreaker column; needs an index that matches the sort; changing the sort order or filters means building a new query shape; going <em>backward</em> needs a reversed query.</p>
+
+<h4>4. Seek pagination</h4>
+<p><strong>What:</strong> another name for keyset pagination. The query “seeks” (jumps) to a position in the index instead of counting rows. The name comes from the “seek method”, popularized by Markus Winand’s <em>Use The Index, Luke</em>.</p>
+<p>If an interviewer says “seek pagination”, everything in point 3 applies. It’s worth saying out loud that they are the same, since some articles list them as different types.</p>
+
+<h4>5. Cursor-based pagination</h4>
+<p><strong>What:</strong> the server gives the client an <strong>opaque token</strong> (the cursor) with each page. The client sends it back to get the next page. The client doesn’t know or care what is inside.</p>
+<p>Inside, the cursor is <em>usually</em> keyset values, sometimes with the sort order and filters too. Some systems store a server-side position instead (database cursors, or search engines like Elasticsearch’s scroll and point-in-time features). Real APIs: Stripe uses <code>starting_after</code> with an object ID; Slack returns <code>next_cursor</code>; GraphQL’s Relay “connections” standard uses cursors on each item.</p>
+<p><strong>When to use:</strong> public APIs, mobile apps, infinite feeds.</p>
+<p><strong>Good:</strong> the server can change how pagination works internally without breaking clients; clients can’t make malformed positions as easily; same speed as keyset.</p>
+<p><strong>Bad:</strong> no page numbers or jumping; cursors can become invalid (for example if the row they point to is deleted, depending on design); harder to debug by eye.</p>
+
+<h4>6. Time-based pagination</h4>
+<p><strong>What:</strong> the position is a time: <code>?before=2026-11-04T10:42:00Z</code> or <code>?since=...&amp;until=...</code>. Facebook’s Graph API, for example, offers <code>since</code> and <code>until</code> parameters.</p>
+<p><strong>When to use:</strong> feeds, logs, events, messages, and “give me everything that changed since my last sync”.</p>
+<p><strong>Good:</strong> natural for time-ordered data; easy to read; works well with time-partitioned tables.</p>
+<p><strong>Bad:</strong></p>
+<ul>
+<li><strong>Same-time rows.</strong> Many rows can share a timestamp. Using time alone can skip or repeat them at page edges. Add a tiebreaker (<code>id</code>), which turns it into keyset pagination.</li>
+<li><strong>Late commits in sync jobs.</strong> A transaction can set <code>updated_at = 10:00:00</code> but commit at 10:00:05. If your sync already read “everything up to 10:00:03”, that row is missed forever. Fixes: re-read a small overlap window, only read up to a little before “now”, or use an ever-increasing sequence or a change log instead of wall-clock time.</li>
+<li><strong>Clock differences</strong> between servers can put times slightly out of order.</li>
+</ul>
+
+<h4>7. Hybrid pagination</h4>
+<p><strong>What:</strong> combining methods to get the best parts of each. Common patterns:</p>
+<ul>
+<li><strong>Offset for shallow, keyset for deep.</strong> Show page numbers 1–10 using offset (cheap at small offsets). Beyond that, switch to “Next” using keyset. Search engines do something similar: Elasticsearch limits normal <code>from + size</code> paging to 10,000 results by default and recommends <code>search_after</code> (keyset-style) for going deeper.</li>
+<li><strong>Keyset + cap.</strong> Allow infinite scroll but cap how deep users can go, as many search UIs do.</li>
+<li><strong>Keyset + page numbers.</strong> Walk the table once with keyset in the background and store the starting key of every 100th page, so users can jump close to the page they want.</li>
+<li><strong>Cursor with an offset inside.</strong> Use opaque cursors in the API, but encode an offset internally for small lists. Later you can switch the inside to keyset without changing clients.</li>
+</ul>
+<p><strong>Good:</strong> matches what users actually do. <strong>Bad:</strong> more code paths to test and keep consistent.</p>
+
+<h4>Comparison</h4>
+<div class="table-wrap"><table>
+<tr><th></th><th>Offset / Page number</th><th>Keyset / Seek</th><th>Cursor</th><th>Time-based</th></tr>
+<tr><td>Position described by</td><td>Count of rows to skip</td><td>Last row’s sort values</td><td>Opaque token (usually keyset inside)</td><td>A timestamp</td></tr>
+<tr><td>Speed at deep pages</td><td>Gets slower</td><td>Stays fast (with index)</td><td>Stays fast (if keyset inside)</td><td>Stays fast (with index)</td></tr>
+<tr><td>Jump to page N</td><td>Yes</td><td>No</td><td>No</td><td>Jump to a time, not a page</td></tr>
+<tr><td>New rows during paging</td><td>Duplicates or skips</td><td>Stable</td><td>Stable</td><td>Stable if tiebreaker used</td></tr>
+<tr><td>Total count</td><td>Often shown (can be slow)</td><td>Usually not</td><td>Usually not</td><td>Usually not</td></tr>
+<tr><td>Best for</td><td>Admin tables, small lists, numbered UIs</td><td>Large tables, exports, batch jobs</td><td>Public APIs, feeds, mobile</td><td>Logs, events, syncing changes</td></tr>
+</table></div>
+
+<!-- section: numbers -->
+<p><strong>Assumptions</strong> (illustrative): a <code>posts</code> table with 10 million rows, 20 rows per page, with an index on <code>(created_at DESC, id DESC)</code>.</p>
+
+<h4>Rows the database touches</h4>
+<div class="table-wrap"><table>
+<tr><th>Page</th><th>Offset method</th><th>Keyset method</th></tr>
+<tr><td>1</td><td>20</td><td>about 20</td></tr>
+<tr><td>100 (offset 1,980)</td><td>2,000</td><td>about 20</td></tr>
+<tr><td>10,000 (offset 199,980)</td><td>200,000</td><td>about 20</td></tr>
+<tr><td>500,000 (offset 9,999,980)</td><td>10,000,000</td><td>about 20</td></tr>
+</table></div>
+<p>The row counts are exact; the time per row depends on your hardware, whether data is in memory, and how wide the rows are. Measure with <code>EXPLAIN (ANALYZE, BUFFERS)</code> rather than trusting a number from an article. The shape is the point: offset cost grows with depth, keyset cost stays flat.</p>
+
+<h4>Does this matter if users never reach page 10,000?</h4>
+<p>Humans rarely do. But other things do:</p>
+<ul>
+<li><strong>Scrapers and bots</strong> walking every page.</li>
+<li><strong>Your own export or migration job</strong> processing all 10 million rows in batches of 1,000. With offset, that is 10,000 queries where the last ones each scan almost 10 million rows: roughly 50 billion rows touched in total (the sum 1,000 + 2,000 + … + 10,000,000). With keyset, it’s about 10 million rows in total.</li>
+</ul>
+
+<h4>Page size</h4>
+<p>Bigger pages mean fewer requests but bigger, slower responses. If each post in JSON is about 1 KB (assumption), then 20 per page ≈ 20 KB, and 1,000 per page ≈ 1 MB. Most APIs pick a default of 20–50 and enforce a maximum (often 100) so one client can’t ask for 100,000 rows at once.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Flexibility vs speed.</strong> Offset lets users jump anywhere and works with any sort or filter. Keyset is fast and stable but only goes forward (or backward) from where you are.</li>
+<li><strong>Total counts vs cost.</strong> “Page 3 of 2,481” is friendly, but counting a huge filtered result can cost more than fetching the page itself. Estimates or “Next”-only UIs avoid that.</li>
+<li><strong>Opaque cursors vs transparency.</strong> Cursors let you change internals freely and stop clients from inventing positions. But they are harder to debug, and clients can’t build links like “page 7”.</li>
+<li><strong>Consistency.</strong> No method gives a perfect frozen snapshot across many requests by default. Offset can duplicate or skip; keyset can miss rows whose sort values change. If you truly need a snapshot (for example an export that must match an exact moment), you need something more: a database snapshot, a point-in-time feature in a search engine, or copying results into a temporary table.</li>
+<li><strong>Indexes.</strong> Keyset is only fast with an index matching the sort order and filters. Each new sort option may need its own index, which costs disk space and slows writes.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Quick guide</h4>
+<ul>
+<li><strong>Small list (a few thousand rows), admin or internal UI:</strong> offset or page numbers. Simple and good enough.</li>
+<li><strong>User-facing numbered pages on a large dataset:</strong> page numbers for the first pages, and limit or switch to keyset for deep pages (hybrid).</li>
+<li><strong>Infinite scroll, mobile feeds, public APIs:</strong> cursor-based, with keyset inside.</li>
+<li><strong>Exports, backfills, batch jobs over a whole table:</strong> keyset on the primary key (<code>WHERE id &gt; $last ORDER BY id LIMIT 1000</code>). Never offset.</li>
+<li><strong>Logs, events, “what changed since my last sync”:</strong> time-based, with a tiebreaker and an overlap window, or a sequence number.</li>
+</ul>
+<h4>When you probably don’t need anything fancy</h4>
+<p>If a list can never grow beyond a few hundred items (a user’s saved addresses, the list of countries), return it all or use simple offset. Building cursor pagination for 12 rows adds code with no benefit.</p>
+<h4>A practical tip</h4>
+<p>Even if you start with offset, design the API with an opaque cursor field (<code>nextCursor</code>) instead of exposing <code>offset</code> directly. Then you can switch the inside to keyset later without breaking clients.</p>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>No stable sort.</strong> <code>ORDER BY created_at</code> alone isn’t unique. Rows with equal values can come back in different orders between requests, causing duplicates and skips even with offset. Always add a unique tiebreaker like <code>id</code>.</li>
+<li><strong>No <code>ORDER BY</code> at all.</strong> Without it, SQL doesn’t guarantee any order. Pages can overlap randomly.</li>
+<li><strong>Keyset without a matching index.</strong> The query still works but scans and sorts, losing the whole benefit.</li>
+<li><strong>Writing keyset conditions by hand wrong.</strong> <code>WHERE created_at &lt; $1 AND id &lt; $2</code> is <em>not</em> the same as <code>(created_at, id) &lt; ($1, $2)</code>, and silently skips rows. Use the row comparison, or write it out fully: <code>created_at &lt; $1 OR (created_at = $1 AND id &lt; $2)</code>.</li>
+<li><strong>Mixed sort directions with row comparison.</strong> <code>(a, b) &lt; (x, y)</code> only works when both columns sort the same direction. For <code>ORDER BY a DESC, b ASC</code> you must write the long form.</li>
+<li><strong>Running <code>COUNT(*)</code> on every page request</strong> for a large table. Cache it, estimate it, or drop it.</li>
+<li><strong>No maximum page size.</strong> <code>?limit=1000000</code> becomes an easy way to overload your server.</li>
+<li><strong>Trusting the cursor.</strong> Clients can send anything. Validate it, and sign it if changing it could expose data (for example if a filter like <code>tenantId</code> were stored inside it).</li>
+<li><strong>Using offset for batch jobs.</strong> The job gets slower and slower as it runs, and misses or repeats rows if data changes meanwhile.</li>
+<li><strong>Pagination across shards.</strong> With data split across shards (see Database Sharding), “page 3 sorted by date” needs the top rows from <em>every</em> shard merged together. Offset becomes very costly here (each shard must return offset + limit rows). Keyset works better: each shard returns rows after the cursor, and the server merges them.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<p><strong>“How would you paginate a news feed?”</strong><br>
+Cursor-based with keyset inside: sort by <code>(created_at, id)</code> descending, return a <code>nextCursor</code> made from the last item, and use a matching index. Explain that offset gets slower with depth and shows duplicates when new posts arrive.</p>
+<p><strong>“What’s the difference between offset and cursor pagination?”</strong><br>
+Offset counts rows to skip, so the database does more work the deeper you go, and inserts or deletes shift results. Cursor remembers <em>where you were</em> by value, so it jumps straight there and stays stable. The trade-off: cursor can’t jump to any page you pick.</p>
+<p><strong>“How do you show ‘page 5 of 300’ on a huge table?”</strong><br>
+Offset works for shallow pages; the total count is the expensive part. Options: cache the count, use an estimate, cap depth, or switch to “Next” beyond some page.</p>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>Why add <code>id</code> to the sort? (Unique tiebreaker for equal timestamps.)</li>
+<li>What index do you need? (One matching the <code>ORDER BY</code> columns and directions, plus any equality filters first, like <code>(user_id, created_at DESC, id DESC)</code>.)</li>
+<li>How do you support “previous page” with cursors? (Reverse the comparison and sort, then reverse the results; or return a <code>prevCursor</code>.)</li>
+<li>What if an item is deleted or edited while the user is scrolling?</li>
+<li>How would you paginate across shards or search results?</li>
+<li>Is seek pagination different from keyset? (No, same thing.)</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>Almost every system design question with a list (feeds, chat history, order history, search results, notifications) has a pagination decision inside it. A strong answer names the method, the sort key with tiebreaker, the index, and the API shape (<code>items</code>, <code>nextCursor</code>, <code>limit</code> with a max).</p>
+
+<!-- section: revision -->
+<ul>
+<li>Pagination returns large lists in small pages to protect the database, server, network, and client.</li>
+<li>Two core methods: offset (count rows to skip) and keyset (seek to a value).</li>
+<li>Page-number is offset with page math. Seek is another name for keyset.</li>
+<li>Cursor is usually keyset hidden inside an opaque token.</li>
+<li>Time-based is keyset on a timestamp; add a tiebreaker and watch for late commits.</li>
+<li>Offset gets slower with depth and shows duplicates or skips when data changes.</li>
+<li>Keyset stays fast with a matching index, but can’t jump to page N.</li>
+<li>Always use a stable, unique sort, a maximum page size, and validated cursors.</li>
+<li>Hybrid designs mix numbered shallow pages with keyset for depth.</li>
+</ul>

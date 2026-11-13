@@ -1,0 +1,401 @@
+<!--
+title: Saga Pattern and Two-Phase Commit (2PC)
+summary: Two ways to complete one business action that changes data in several databases or services: 2PC makes it all-or-nothing, a saga runs steps one by one and undoes them if something fails.
+category: Distributed transactions
+order: 30
+related: database-sharding
+-->
+
+<!-- section: what -->
+<p>Sometimes one user action must change data in <strong>more than one database</strong>. Example: placing an order must create the order, take payment, and reserve stock, and each of those lives in a different service with its own database.</p>
+<p>We want this to behave like one unit: either everything happens, or nothing does. This is called a <strong>distributed transaction</strong>. There are two main ways to handle it:</p>
+<ul>
+<li><strong>Two-Phase Commit (2PC)</strong>: a coordinator first asks every database “Can you commit?” Only if <em>all</em> say yes does it tell them “Commit now.” If anyone says no, everyone cancels. The result is truly all-or-nothing.</li>
+<li><strong>Saga</strong>: do the steps one after another, each as its own small transaction that commits immediately. If a later step fails, run <strong>compensating actions</strong> to undo the earlier steps (for example, refund a payment).</li>
+</ul>
+<p class="note">One-line version: 2PC = “everyone agrees first, then everyone commits together.” Saga = “commit step by step, and clean up if something goes wrong.”</p>
+
+<div class="note"><strong>Quick background</strong>:
+<ul style="margin:6px 0 0">
+<li>A <strong>transaction</strong> inside one database is all-or-nothing. Its guarantees are called <strong>ACID</strong>: Atomic (all or nothing), Consistent (rules are kept), Isolated (others don’t see half-done work), Durable (once saved, it stays saved).</li>
+<li>A <strong>local transaction</strong> is a normal transaction inside one database.</li>
+<li>In microservices, each service usually owns its database (<strong>database-per-service</strong>). The Order service can’t simply open a transaction that also covers the Payment database.</li>
+<li>The same problem appears after sharding: one transaction can’t easily cover rows on two different shards. See the Database Sharding topic.</li>
+</ul></div>
+
+<!-- section: why -->
+<p>Without any plan, you call the services one by one and hope nothing fails. Here is what goes wrong:</p>
+<ol>
+<li>Order service creates the order. ✔</li>
+<li>Payment service charges ₹2,000. ✔</li>
+<li>Inventory service says “out of stock”. ✘</li>
+</ol>
+<p>Now the customer has paid for something you can’t ship. The databases disagree with each other. Someone has to notice and fix it by hand.</p>
+<p>Both 2PC and sagas exist to prevent this. They make different promises:</p>
+<ul>
+<li><strong>2PC</strong> promises nobody ever sees the half-done state. The cost: databases must hold locks while waiting for everyone to agree, and if the coordinator fails at the wrong moment, those locks can stay stuck.</li>
+<li><strong>A saga</strong> promises the system will <em>end up</em> correct (either fully done or fully undone). The cost: for a short time, the half-done state is real and visible, and you must write the undo logic yourself.</li>
+</ul>
+<p>So the question is: <em>do you need strict all-or-nothing at every moment, or is “correct in the end” good enough?</em> For most business workflows across services, “correct in the end” is acceptable, which is why sagas are common in microservices.</p>
+
+<!-- section: realWorld -->
+<h4>2PC: a wedding ceremony</h4>
+<p>The officiant is the <strong>coordinator</strong>. The two people getting married are the <strong>participants</strong>.</p>
+<ol>
+<li><strong>Phase 1 (prepare):</strong> the officiant asks each person, “Do you take…?” Each one must answer. Once someone says “I do,” they can’t change their mind or walk away. They are now waiting.</li>
+<li><strong>Phase 2 (commit):</strong> only if <em>both</em> said “I do,” the officiant says, “I now pronounce you married.” If either said no, the wedding is off for both.</li>
+</ol>
+<p>Now imagine the officiant faints right after both said “I do” but before the final words. The two people are stuck. They can’t leave (they promised), and they can’t declare themselves married (only the officiant can decide). They wait until the officiant wakes up. This is exactly 2PC’s famous weakness: <strong>blocking</strong>.</p>
+
+<h4>Saga: booking a trip</h4>
+<p>You book a flight, a hotel, and a rental car from three different companies. No one can book all three as a single unit, so you go step by step:</p>
+<ol>
+<li>Book the flight. ✔</li>
+<li>Book the hotel. ✔</li>
+<li>Book the car. ✘ None available.</li>
+</ol>
+<p>So you cancel the hotel, then cancel the flight. Notice:</p>
+<ul>
+<li>For a while, you really held a flight seat and a hotel room. Other people couldn’t book them. That visible in-between state is normal in a saga.</li>
+<li>Cancelling isn’t the same as “it never happened.” The airline may charge a fee. Undo can be imperfect.</li>
+<li>If the airline’s line is busy when you try to cancel, you must keep trying. Undo steps must be retried until they succeed.</li>
+</ul>
+
+<!-- section: software -->
+<h4>2PC between two PostgreSQL databases</h4>
+<p>Say you move ₹500 from an account in database A to an account in database B. PostgreSQL supports 2PC with <code>PREPARE TRANSACTION</code>. Here your Node.js app acts as the coordinator.</p>
+<pre><code>// transfer-2pc.ts  (simplified, to show the idea)
+import { Client } from 'pg';
+
+export async function transfer(a: Client, b: Client, txId: string) {
+  const idA = txId + '-a', idB = txId + '-b';
+  try {
+    // PHASE 1: do the work, then "prepare" (vote yes) on each database
+    await a.query('BEGIN');
+    await a.query('UPDATE accounts SET balance = balance - 500 WHERE id = $1 AND balance &gt;= 500', [1]);
+    await a.query("PREPARE TRANSACTION '" + idA + "'");
+
+    await b.query('BEGIN');
+    await b.query('UPDATE accounts SET balance = balance + 500 WHERE id = $1', [2]);
+    await b.query("PREPARE TRANSACTION '" + idB + "'");
+
+    // Both voted yes. Save the decision durably BEFORE telling anyone.
+    await decisionLog.save(txId, 'COMMIT');
+
+    // PHASE 2: commit everywhere
+    await a.query("COMMIT PREPARED '" + idA + "'");
+    await b.query("COMMIT PREPARED '" + idB + "'");
+  } catch (err) {
+    await decisionLog.save(txId, 'ABORT');
+    // roll back whatever was prepared (ignore "does not exist" errors)
+    await a.query("ROLLBACK PREPARED '" + idA + "'").catch(() =&gt; {});
+    await b.query("ROLLBACK PREPARED '" + idB + "'").catch(() =&gt; {});
+    throw err;
+  }
+}</code></pre>
+<p>Things this code shows:</p>
+<ul>
+<li>After <code>PREPARE TRANSACTION</code>, the changes are saved to disk but not visible, and the rows stay <strong>locked</strong> until <code>COMMIT PREPARED</code> or <code>ROLLBACK PREPARED</code>.</li>
+<li>If the app crashes between prepare and commit, those prepared transactions stay in PostgreSQL holding locks. You must have a recovery job that reads the decision log and finishes them. You can see stuck ones in the <code>pg_prepared_xacts</code> view.</li>
+<li>Prepared transactions are disabled by default (<code>max_prepared_transactions = 0</code>). PostgreSQL’s docs suggest most applications shouldn’t use this directly; it is mainly for transaction managers.</li>
+</ul>
+<p class="note">In practice, few teams hand-write 2PC like this. You meet 2PC inside tools: Java XA transaction managers, distributed databases (they use it internally between their own nodes), and Kafka’s transactions, which use a 2PC-style protocol internally.</p>
+
+<h4>Saga for placing an order</h4>
+<p>Same order example, with NestJS services talking over RabbitMQ or Kafka. This is an <strong>orchestrated</strong> saga: one place runs the steps and knows how to undo them.</p>
+<pre><code>// place-order.saga.ts  (simplified, to show the idea)
+type Step = {
+  name: string;
+  run: (ctx: OrderCtx) =&gt; Promise&lt;void&gt;;
+  compensate: (ctx: OrderCtx) =&gt; Promise&lt;void&gt;;
+};
+
+const steps: Step[] = [
+  { name: 'createOrder',
+    run: ctx =&gt; orders.create(ctx.orderId, 'PENDING'),
+    compensate: ctx =&gt; orders.setStatus(ctx.orderId, 'CANCELLED') },
+  { name: 'reserveStock',
+    run: ctx =&gt; inventory.reserve(ctx.orderId, ctx.items),
+    compensate: ctx =&gt; inventory.release(ctx.orderId) },
+  { name: 'chargePayment',
+    run: ctx =&gt; payments.charge(ctx.orderId, ctx.amount),
+    compensate: ctx =&gt; payments.refund(ctx.orderId) },
+  { name: 'confirmOrder',
+    run: ctx =&gt; orders.setStatus(ctx.orderId, 'CONFIRMED'),
+    compensate: async () =&gt; {} },
+];
+
+export async function placeOrder(ctx: OrderCtx) {
+  const done: Step[] = [];
+  for (const step of steps) {
+    try {
+      await step.run(ctx);
+      done.push(step);
+      await sagaLog.save(ctx.orderId, step.name, 'DONE'); // remember progress
+    } catch (err) {
+      for (const s of done.reverse()) {
+        await retryUntilSuccess(() =&gt; s.compensate(ctx));
+      }
+      return { status: 'FAILED', reason: String(err) };
+    }
+  }
+  return { status: 'CONFIRMED' };
+}</code></pre>
+<p>Why this order? Reserving stock is easy to undo. Charging money is harder to undo (refunds cost money and annoy customers). So the hard-to-undo step goes <em>later</em>, after the cheap checks pass.</p>
+<p class="note">This sketch keeps progress inside a running function. If the server crashes mid-saga, that is lost. Real systems store saga state in a database and resume after restart, or use a workflow engine such as <strong>Temporal</strong>, <strong>Camunda</strong>, or <strong>AWS Step Functions</strong>.</p>
+
+<!-- section: internals -->
+<h4>How 2PC works, step by step</h4>
+<p>Roles: one <strong>coordinator</strong> (decides) and several <strong>participants</strong> (the databases doing the work).</p>
+<p><strong>Phase 1: prepare (voting)</strong></p>
+<ol>
+<li>The coordinator sends “prepare” to every participant.</li>
+<li>Each participant does the work, writes everything needed to disk, and locks the affected rows.</li>
+<li>Each participant votes: <strong>YES</strong> (“I can commit and I promise I will, even if I crash and restart”) or <strong>NO</strong>.</li>
+</ol>
+<p><strong>Phase 2: commit or abort (decision)</strong></p>
+<ol start="4">
+<li>If every vote is YES, the coordinator writes “COMMIT” to its own log on disk. This moment is the real decision point.</li>
+<li>The coordinator sends “commit” to every participant. Each one commits and releases its locks.</li>
+<li>If any vote is NO (or a participant doesn’t answer in time), the coordinator decides “ABORT” and tells everyone to roll back.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 270" role="img" aria-label="Two-phase commit: prepare and vote, then commit">
+<defs><marker id="ah-2pc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="20" y="105" width="140" height="56" rx="8" class="box hi"/><text x="90" y="129" text-anchor="middle" class="lbl">Coordinator</text><text x="90" y="147" text-anchor="middle" class="sub">decides</text>
+<rect x="460" y="30" width="160" height="56" rx="8" class="box"/><text x="540" y="54" text-anchor="middle" class="lbl">Database A</text><text x="540" y="72" text-anchor="middle" class="sub">participant</text>
+<rect x="460" y="180" width="160" height="56" rx="8" class="box"/><text x="540" y="204" text-anchor="middle" class="lbl">Database B</text><text x="540" y="222" text-anchor="middle" class="sub">participant</text>
+<line x1="160" y1="115" x2="458" y2="50" class="arr" marker-end="url(#ah-2pc)"/>
+<line x1="458" y1="66" x2="160" y2="125" class="arr dim" marker-end="url(#ah-2pc)"/>
+<line x1="160" y1="150" x2="458" y2="200" class="arr" marker-end="url(#ah-2pc)"/>
+<line x1="458" y1="216" x2="160" y2="160" class="arr dim" marker-end="url(#ah-2pc)"/>
+<text x="250" y="66" class="sub">1. prepare?</text>
+<text x="300" y="112" class="sub">2. vote YES</text>
+<text x="250" y="198" class="sub">1. prepare?</text>
+<text x="300" y="170" class="sub">2. vote YES</text>
+<text x="20" y="200" class="lbl">3. log COMMIT</text>
+<text x="20" y="218" class="sub">4. send commit to all</text>
+<text x="320" y="262" text-anchor="middle" class="sub">Between voting YES and hearing the decision, each database keeps its rows locked.</text>
+</svg>
+</div>
+
+<h4>What happens when things fail</h4>
+<div class="table-wrap"><table>
+<tr><th>Failure</th><th>What happens</th></tr>
+<tr><td>A participant votes NO</td><td>Coordinator aborts. Everyone rolls back. Safe.</td></tr>
+<tr><td>A participant crashes before voting</td><td>Coordinator times out and aborts. Safe.</td></tr>
+<tr><td>A participant crashes after voting YES</td><td>When it restarts, it finds the prepared transaction on disk and asks the coordinator what was decided. It must not decide alone.</td></tr>
+<tr><td>Coordinator crashes after logging COMMIT</td><td>When it restarts, it reads its log and sends “commit” again. Participants wait until then.</td></tr>
+<tr><td>Coordinator crashes after votes, before deciding</td><td><strong>The bad case.</strong> Participants voted YES, so they can’t abort on their own (maybe the coordinator decided commit). They can’t commit either (maybe it decided abort). They stay <strong>blocked</strong>, holding locks, until the coordinator comes back.</td></tr>
+</table></div>
+<p>That last row is why people say <strong>2PC is a blocking protocol</strong>. It is safe (it never commits on one side and aborts on the other), but it can stop making progress.</p>
+
+<h4>How a saga works, step by step</h4>
+<ol>
+<li>User sends <code>POST /orders</code>.</li>
+<li>Order service saves the order as <code>PENDING</code>, starts the saga, and replies right away: “Order received.”</li>
+<li>Orchestrator tells Inventory to reserve stock. Inventory commits its local transaction and replies “reserved”.</li>
+<li>Orchestrator tells Payment to charge. Payment commits and replies “charged”.</li>
+<li>Orchestrator marks the order <code>CONFIRMED</code>. The user sees the final status by refresh or a push update.</li>
+</ol>
+<p>If payment fails at step 4: the orchestrator tells Inventory to release the stock, then marks the order <code>CANCELLED</code> with a reason.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 260" role="img" aria-label="Saga steps forward and compensation backward">
+<defs>
+<marker id="ah-sg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+<marker id="ah-sg2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead-warn"/></marker>
+</defs>
+<text x="20" y="30" class="sub">Forward steps (each one is a local transaction that commits immediately)</text>
+<rect x="20" y="45" width="130" height="54" rx="8" class="box"/><text x="85" y="68" text-anchor="middle" class="lbl">Create order</text><text x="85" y="86" text-anchor="middle" class="sub">PENDING</text>
+<rect x="180" y="45" width="130" height="54" rx="8" class="box"/><text x="245" y="68" text-anchor="middle" class="lbl">Reserve stock</text><text x="245" y="86" text-anchor="middle" class="sub">Inventory</text>
+<rect x="340" y="45" width="130" height="54" rx="8" class="box warn"/><text x="405" y="68" text-anchor="middle" class="lbl">Charge payment</text><text x="405" y="86" text-anchor="middle" class="sub">✘ declined</text>
+<rect x="500" y="45" width="120" height="54" rx="8" class="box faintbox"/><text x="560" y="76" text-anchor="middle" class="sub">Confirm order</text>
+<line x1="150" y1="72" x2="178" y2="72" class="arr" marker-end="url(#ah-sg)"/>
+<line x1="310" y1="72" x2="338" y2="72" class="arr" marker-end="url(#ah-sg)"/>
+<line x1="470" y1="72" x2="498" y2="72" class="arr faint" marker-end="url(#ah-sg)"/>
+<text x="20" y="160" class="sub">Compensations (run in reverse for steps that finished)</text>
+<rect x="20" y="175" width="130" height="54" rx="8" class="box"/><text x="85" y="198" text-anchor="middle" class="lbl">Cancel order</text><text x="85" y="216" text-anchor="middle" class="sub">CANCELLED</text>
+<rect x="180" y="175" width="130" height="54" rx="8" class="box"/><text x="245" y="198" text-anchor="middle" class="lbl">Release stock</text><text x="245" y="216" text-anchor="middle" class="sub">Inventory</text>
+<line x1="405" y1="99" x2="312" y2="190" class="arr warnline" marker-end="url(#ah-sg2)"/>
+<line x1="180" y1="202" x2="152" y2="202" class="arr warnline" marker-end="url(#ah-sg2)"/>
+</svg>
+</div>
+
+<h4>The outbox problem (important for sagas)</h4>
+<p>Each saga step usually does two things: update its database <em>and</em> send a message (“stock reserved”). If the database commit succeeds but the app crashes before sending, the saga gets stuck. If the message is sent but the commit fails, others act on something that didn’t happen.</p>
+<p>The common fix is the <strong>transactional outbox</strong>: write the message into an <code>outbox</code> table in the <em>same</em> local transaction as the business change. A separate relay process reads the outbox and publishes to RabbitMQ or Kafka.</p>
+<pre><code>BEGIN;
+  UPDATE stock SET reserved = reserved + 2 WHERE sku = 'SKU-1';
+  INSERT INTO outbox (id, topic, payload)
+  VALUES (gen_random_uuid(), 'stock.reserved', '{"orderId":"o-42"}');
+COMMIT;
+-- a relay process later publishes outbox rows and marks them sent</code></pre>
+<p>The relay may publish a message twice (for example, it crashes after publishing but before marking it sent). So every consumer must be <strong>idempotent</strong>: handling the same message twice has the same effect as once. A simple way is to store processed message IDs and skip duplicates.</p>
+
+<!-- section: types -->
+<h4>2PC vs Saga: the main comparison</h4>
+<div class="table-wrap"><table>
+<tr><th></th><th>2PC</th><th>Saga</th></tr>
+<tr><td>Main idea</td><td>Everyone votes, then everyone commits together</td><td>Commit step by step, undo if a later step fails</td></tr>
+<tr><td>Consistency</td><td>Strong: all-or-nothing at every moment</td><td>Eventual: correct once all steps or undos finish</td></tr>
+<tr><td>Isolation</td><td>Yes. Others don’t see half-done work</td><td>No. Half-done work is real and visible</td></tr>
+<tr><td>Locks across systems</td><td>Held from prepare until decision</td><td>None across services</td></tr>
+<tr><td>Needs all participants up at once</td><td>Yes</td><td>No; steps can wait in a queue</td></tr>
+<tr><td>Coordinator failure</td><td>Can block participants</td><td>Saga resumes from stored state</td></tr>
+<tr><td>Works with external APIs (payment gateways, email)</td><td>No; they don’t support “prepare”</td><td>Yes</td></tr>
+<tr><td>Undo logic</td><td>Built in (rollback)</td><td>You write compensations</td></tr>
+<tr><td>Typical use</td><td>Inside one distributed database; a few databases under one team’s control</td><td>Business workflows across microservices</td></tr>
+</table></div>
+
+<h4>Two styles of saga</h4>
+<p><strong>1. Choreography.</strong> No central controller. Each service listens for events and decides what to do next. Order publishes <code>OrderCreated</code> → Inventory reserves and publishes <code>StockReserved</code> → Payment charges and publishes <code>PaymentCompleted</code> → Order confirms. On failure, Payment publishes <code>PaymentFailed</code>, and Inventory listens for it to release stock.</p>
+<ul>
+<li><strong>Good:</strong> services stay loosely connected; no extra component; easy for 2–3 steps.</li>
+<li><strong>Bad:</strong> the overall flow isn’t written down anywhere; it is spread across services. Hard to answer “where is order 42 stuck?” Gets messy beyond a few steps.</li>
+</ul>
+<p><strong>2. Orchestration.</strong> One orchestrator (a service or workflow engine) sends commands to each participant, waits for replies, and tracks state. This is the style in the code example.</p>
+<ul>
+<li><strong>Good:</strong> the whole flow lives in one place; easier to add timeouts, retries, and to debug.</li>
+<li><strong>Bad:</strong> another component to build and run; it must store its state durably; risk of stuffing too much business logic into it.</li>
+</ul>
+<div class="table-wrap"><table>
+<tr><th></th><th>Choreography</th><th>Orchestration</th></tr>
+<tr><td>Who decides the next step</td><td>Each service, by reacting to events</td><td>The orchestrator</td></tr>
+<tr><td>Where the flow is visible</td><td>Spread across services</td><td>In one place</td></tr>
+<tr><td>Debugging</td><td>Harder; needs good tracing</td><td>Easier; one state record per saga</td></tr>
+<tr><td>Good fit</td><td>Short, simple flows</td><td>Longer flows, timeouts, many failure paths</td></tr>
+</table></div>
+
+<h4>Related ideas around 2PC</h4>
+<ul>
+<li><strong>Three-phase commit (3PC)</strong> adds an extra round to reduce blocking. It relies on assumptions about network timing that real networks don’t always meet, so it is rarely used in practice.</li>
+<li><strong>2PC with a highly available coordinator.</strong> Distributed databases like Google Spanner run 2PC where each participant and the coordinator is a replicated group (using a consensus algorithm like Paxos). If one machine dies, another copy continues, so the blocking problem mostly goes away. This is how modern distributed SQL databases give you real transactions across shards. You get this “for free” when you use such a database; it is hard to build yourself.</li>
+</ul>
+
+<!-- section: numbers -->
+<h4>2PC: how long locks are held</h4>
+<p><strong>Assumptions</strong> (illustrative, inside one data center): a network round trip takes about 2 ms, and each disk flush (making data safe on disk) takes about 3 ms.</p>
+<ul>
+<li>Prepare round: send + participant flushes + vote ≈ 2 + 3 = 5 ms.</li>
+<li>Coordinator logs the decision ≈ 3 ms.</li>
+<li>Commit round ≈ 2 ms to send the decision.</li>
+<li>So each row stays locked for roughly <strong>10 ms</strong> or more, compared with maybe 1–3 ms in a single-database transaction.</li>
+</ul>
+<p>If many transactions update the <em>same</em> row (a popular account balance, a stock counter for a hot product), they must wait for each other. At ~10 ms per lock, that row can handle at most about <strong>100 transactions per second</strong>. Across regions, where a round trip can be 100+ ms, that drops to single digits.</p>
+<p>And in the bad case: if the coordinator crashes and takes 2 minutes to come back, those rows stay locked for <strong>2 minutes</strong>. Every request touching them waits or times out.</p>
+
+<h4>2PC: availability</h4>
+<p>2PC needs every participant up at the same moment. If each of 3 services is up 99.9% of the time (independently), all three are up about 0.999 × 0.999 × 0.999 ≈ <strong>99.7%</strong> of the time. That’s about 26 hours a year when the action can’t run at all, versus about 9 hours for one service.</p>
+<p>A saga built on queues can still accept the order while Payment is briefly down; the payment step simply waits in the queue and runs when it’s back.</p>
+
+<h4>Saga: how often compensations run</h4>
+<p><strong>Assumptions</strong> (illustrative): an order saga has 4 steps, each succeeds 99.9% of the time, and you get 1,000 orders per minute.</p>
+<ul>
+<li>Chance all 4 succeed = 0.999<sup>4</sup> ≈ <strong>0.996</strong>, so about <strong>0.4%</strong> hit at least one failure.</li>
+<li>At 1,000 orders/min, that’s about <strong>4 sagas per minute</strong> needing a retry or compensation (roughly 5,700 per day).</li>
+</ul>
+<p>Failure handling isn’t an edge case at scale. Compensations run constantly and must be reliable, logged, and monitored. Many failures are temporary (timeouts), so retry a step a few times before compensating, and set an overall saga timeout so orders don’t stay <code>PENDING</code> forever.</p>
+
+<!-- section: tradeoffs -->
+<h4>2PC</h4>
+<p><strong>You gain:</strong> true all-or-nothing. No one ever sees half-done work. No undo code to write.</p>
+<p><strong>You give up:</strong></p>
+<ul>
+<li><strong>Speed under contention:</strong> locks are held across network round trips.</li>
+<li><strong>Availability:</strong> every participant must be reachable at the same time.</li>
+<li><strong>Progress during failures:</strong> a coordinator crash can block participants with locks held.</li>
+<li><strong>Reach:</strong> only works with systems that support a “prepare” step. Most message brokers, SaaS APIs, and payment gateways don’t.</li>
+<li><strong>Independence:</strong> services become tightly tied to one shared transaction manager.</li>
+</ul>
+
+<h4>Saga</h4>
+<p><strong>You gain:</strong> no cross-service locks, independent services, works with external APIs, keeps working when one service is briefly down.</p>
+<p><strong>You give up:</strong></p>
+<ul>
+<li><strong>Isolation:</strong> other requests can see half-done work (stock reserved for an order that will be cancelled). Teams handle this with <strong>semantic locks</strong>: status fields like <code>PENDING</code> that other code respects.</li>
+<li><strong>Simplicity:</strong> every step needs a compensation, and both need retries and idempotency.</li>
+<li><strong>Perfect undo:</strong> some things can’t be undone (an email sent). You can only send a correction, so put such steps last.</li>
+<li><strong>Easy debugging:</strong> you need correlation IDs, stored saga state, and tracing across services.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Decision guide</h4>
+<ol>
+<li><strong>Is all the data in one database?</strong> Use a normal transaction. It is simpler and stronger than both. Stop here.</li>
+<li><strong>Do you need cross-shard transactions inside one database system?</strong> Prefer a database that does it for you (distributed SQL like CockroachDB, YugabyteDB, Spanner, or Citus for PostgreSQL). They use 2PC internally with the hard parts solved.</li>
+<li><strong>A few databases you control, fast network, must be strictly atomic, low volume?</strong> 2PC (for example XA or PostgreSQL prepared transactions with a proper transaction manager) can work. Plan for recovery of stuck transactions.</li>
+<li><strong>Several microservices, external APIs, or long-running steps?</strong> Use a saga.</li>
+</ol>
+<h4>Signals you need a saga</h4>
+<ul>
+<li>One user action changes data owned by two or more services.</li>
+<li>Partial success is unacceptable and must be cleaned up (paid but not shipped).</li>
+<li>Steps call external systems that can’t join a transaction.</li>
+<li>The process can take seconds, minutes, or days (approvals, bookings).</li>
+</ul>
+<h4>When you probably need neither</h4>
+<ul>
+<li>A failed step can simply be retried later with no harm (updating a search index, sending analytics). A reliable message with retries (outbox + idempotent consumer) is enough; no undo needed.</li>
+<li>Two services always have to change together. That may mean the boundary between them is wrong, and merging them removes the problem.</li>
+</ul>
+
+<!-- section: mistakes -->
+<h4>With 2PC</h4>
+<ul>
+<li><strong>No recovery plan for stuck prepared transactions.</strong> They hold locks forever and can block vacuum and other work in PostgreSQL. Monitor <code>pg_prepared_xacts</code>.</li>
+<li><strong>Not logging the decision durably before sending it.</strong> After a crash, the coordinator can’t know what it decided.</li>
+<li><strong>Using 2PC across slow or unreliable networks</strong> (across regions, over the internet). Lock times and blocking get much worse.</li>
+<li><strong>Assuming 2PC can include a payment gateway or a message broker.</strong> Most can’t take part.</li>
+</ul>
+<h4>With sagas</h4>
+<ul>
+<li><strong>Treating compensation like a rollback.</strong> Others may have seen or used the data. Design compensations as real business actions.</li>
+<li><strong>Non-idempotent steps.</strong> Messages get delivered twice; without idempotency a customer can be charged twice. Use idempotency keys (for example, the order ID) with payment providers.</li>
+<li><strong>Sending messages outside the transaction.</strong> Leads to lost or phantom events. Use the outbox pattern.</li>
+<li><strong>Keeping saga state only in memory.</strong> A crash or deploy loses in-flight sagas.</li>
+<li><strong>Compensations that give up.</strong> They must retry until success, with alerts for a human when they can’t.</li>
+<li><strong>Bad step order.</strong> Hard-to-undo steps (charging money, sending emails) belong after easy-to-undo ones.</li>
+<li><strong>No timeouts.</strong> If a service never replies, the saga hangs forever.</li>
+</ul>
+<h4>With both</h4>
+<ul>
+<li><strong>Reaching for either when one database would do.</strong> Distributed transactions are a cost you only pay when data truly lives apart.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<p><strong>“How do you keep data consistent across microservices when placing an order?”</strong><br>
+Use a saga: a chain of local transactions with compensations. Walk through the steps, which step can fail, and what gets undone. Mention the outbox pattern and idempotency for reliable messaging, and a <code>PENDING</code> status for the in-between state.</p>
+<p><strong>“Explain two-phase commit.”</strong><br>
+A coordinator asks all participants to prepare. Each one does the work, saves it, locks the rows, and votes. If all vote yes, the coordinator logs commit and tells everyone to commit; otherwise everyone aborts. It is atomic, but participants are blocked if the coordinator dies after they vote yes.</p>
+<p><strong>“Why not use 2PC between microservices?”</strong><br>
+Locks held across network calls, all services must be up together, coordinator failure blocks everyone, and brokers and external APIs don’t support it. Sagas trade strict consistency for availability and independence.</p>
+<p><strong>“Choreography or orchestration?”</strong><br>
+Choreography for short, simple flows; orchestration when there are many steps, timeouts, or you need clear visibility.</p>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>In 2PC, what exactly happens if the coordinator crashes after receiving all YES votes? (Participants block; on restart the coordinator reads its log; if no decision was logged, it aborts.)</li>
+<li>Why can’t a participant decide on its own after voting YES?</li>
+<li>How do distributed databases make 2PC practical? (Replicated, consensus-backed coordinators and participants.)</li>
+<li>In a saga, what if a compensation fails? (Retry with backoff; store state; alert and allow manual fixes.)</li>
+<li>How do you avoid charging twice? (Idempotency keys, deduplication.)</li>
+<li>Which step can’t be compensated, and where do you place it?</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>In e-commerce checkout, travel booking, or wallet transfers, interviewers want to hear that you noticed the action crosses service boundaries, and that you chose deliberately: one database and a normal transaction if possible, a saga for cross-service workflows, and 2PC mostly inside databases that handle it for you.</p>
+
+<!-- section: revision -->
+<ul>
+<li>A distributed transaction changes data in more than one database or service.</li>
+<li>2PC: prepare and vote, then commit or abort together. Atomic and isolated.</li>
+<li>2PC’s weakness: locks held across network calls, and blocking if the coordinator fails after votes.</li>
+<li>Saga: a chain of local transactions; compensations undo earlier steps on failure.</li>
+<li>Sagas give eventual consistency and no isolation between steps.</li>
+<li>Choreography: services react to events. Orchestration: one controller drives the steps.</li>
+<li>Outbox pattern + idempotent consumers make saga messaging reliable.</li>
+<li>Prefer one database and a normal transaction when you can; use distributed SQL for cross-shard transactions; use sagas across services.</li>
+</ul>

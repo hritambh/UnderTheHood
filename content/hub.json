@@ -1,0 +1,501 @@
+{
+  "title": "My System Design Learning Hub",
+  "intro": "A personal textbook for system design, written in simple English. Each topic explains the idea, the problem it solves, how it works inside, the trade-offs, and how it shows up in interviews.",
+  "tracks": [
+    {
+      "id": "core-concepts",
+      "title": "Core Concepts",
+      "description": "The building blocks. One idea at a time, from what it is to how it shows up in interviews.",
+      "sections": [
+        [
+          "what",
+          "What is it?"
+        ],
+        [
+          "why",
+          "Why do we need it?"
+        ],
+        [
+          "realWorld",
+          "Understand it with a real-world example"
+        ],
+        [
+          "software",
+          "Understand it with a software example"
+        ],
+        [
+          "internals",
+          "How does it work internally?"
+        ],
+        [
+          "types",
+          "Different types or approaches"
+        ],
+        [
+          "numbers",
+          "Practical example with numbers"
+        ],
+        [
+          "tradeoffs",
+          "Advantages, disadvantages, and trade-offs"
+        ],
+        [
+          "whenToUse",
+          "When should I use it?"
+        ],
+        [
+          "mistakes",
+          "Common mistakes"
+        ],
+        [
+          "interview",
+          "Interview perspective"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    },
+    {
+      "id": "system-design",
+      "title": "System Design",
+      "description": "Full designs of real systems, from the requirements to the bottlenecks.",
+      "sections": [
+        [
+          "problem",
+          "What are we building?"
+        ],
+        [
+          "requirements",
+          "Requirements"
+        ],
+        [
+          "estimates",
+          "Scale and numbers"
+        ],
+        [
+          "api",
+          "API design"
+        ],
+        [
+          "data",
+          "Data model and storage"
+        ],
+        [
+          "highLevel",
+          "High-level design"
+        ],
+        [
+          "deepDives",
+          "Deep dives into the hard parts"
+        ],
+        [
+          "scaling",
+          "Bottlenecks and scaling"
+        ],
+        [
+          "failures",
+          "What can go wrong"
+        ],
+        [
+          "tradeoffs",
+          "Trade-offs and other options"
+        ],
+        [
+          "interview",
+          "How to present it in an interview"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    },
+    {
+      "id": "internals",
+      "title": "Internals & Deep Dives",
+      "description": "How the tools we use every day work on the inside.",
+      "sections": [
+        [
+          "what",
+          "What is it?"
+        ],
+        [
+          "why",
+          "Why look inside?"
+        ],
+        [
+          "bigPicture",
+          "The big picture"
+        ],
+        [
+          "walkthrough",
+          "Follow one request through it"
+        ],
+        [
+          "storage",
+          "What it keeps in memory and on disk"
+        ],
+        [
+          "guarantees",
+          "What it promises, and what it doesn’t"
+        ],
+        [
+          "performance",
+          "What is fast, what is slow, and why"
+        ],
+        [
+          "failure",
+          "What happens when it crashes"
+        ],
+        [
+          "settings",
+          "Settings that matter"
+        ],
+        [
+          "tryIt",
+          "See it yourself"
+        ],
+        [
+          "myths",
+          "Common misunderstandings"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    },
+    {
+      "id": "incidents",
+      "title": "Incidents & Production Learnings",
+      "description": "Things that broke in production, why they broke, and what they teach.",
+      "sections": [
+        [
+          "summary",
+          "What happened"
+        ],
+        [
+          "context",
+          "The system before the incident"
+        ],
+        [
+          "timeline",
+          "Timeline"
+        ],
+        [
+          "impact",
+          "Impact"
+        ],
+        [
+          "detection",
+          "How it was noticed"
+        ],
+        [
+          "rootCause",
+          "Root cause"
+        ],
+        [
+          "factors",
+          "What made it worse"
+        ],
+        [
+          "fix",
+          "The fix"
+        ],
+        [
+          "prevention",
+          "How to stop it happening again"
+        ],
+        [
+          "lessons",
+          "Lessons for other systems"
+        ],
+        [
+          "checklist",
+          "Check your own system"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    },
+    {
+      "id": "patterns",
+      "title": "Engineering Patterns & Practices",
+      "description": "Proven ways to solve problems that keep coming back.",
+      "sections": [
+        [
+          "what",
+          "What is it?"
+        ],
+        [
+          "problem",
+          "The problem it solves"
+        ],
+        [
+          "realWorld",
+          "Understand it with a real-world example"
+        ],
+        [
+          "how",
+          "How it works"
+        ],
+        [
+          "code",
+          "Code example"
+        ],
+        [
+          "variants",
+          "Variants"
+        ],
+        [
+          "tradeoffs",
+          "Costs and trade-offs"
+        ],
+        [
+          "whenToUse",
+          "When to use it, and when not to"
+        ],
+        [
+          "mistakes",
+          "Common mistakes"
+        ],
+        [
+          "relatedPatterns",
+          "Patterns that go with it"
+        ],
+        [
+          "interview",
+          "Interview perspective"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    },
+    {
+      "id": "databases",
+      "title": "Database Engineering",
+      "description": "How databases store, find and protect data, and how to use them well.",
+      "sections": [
+        [
+          "what",
+          "What is it?"
+        ],
+        [
+          "why",
+          "Why does it matter?"
+        ],
+        [
+          "example",
+          "See it with a small example"
+        ],
+        [
+          "internals",
+          "How the database does it inside"
+        ],
+        [
+          "types",
+          "Different types or options"
+        ],
+        [
+          "numbers",
+          "Practical example with numbers"
+        ],
+        [
+          "commands",
+          "Queries and commands to know"
+        ],
+        [
+          "tradeoffs",
+          "Advantages, disadvantages, and trade-offs"
+        ],
+        [
+          "whenToUse",
+          "When should I use it?"
+        ],
+        [
+          "mistakes",
+          "Common mistakes"
+        ],
+        [
+          "interview",
+          "Interview perspective"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    },
+    {
+      "id": "dsa",
+      "title": "Problem Solving & DSA",
+      "description": "Data structures, algorithms, and the patterns behind interview problems.",
+      "sections": [
+        [
+          "problem",
+          "The problem"
+        ],
+        [
+          "examples",
+          "Examples"
+        ],
+        [
+          "think",
+          "How to think about it"
+        ],
+        [
+          "brute",
+          "The simple way first"
+        ],
+        [
+          "idea",
+          "The key idea"
+        ],
+        [
+          "walkthrough",
+          "Walk through an example"
+        ],
+        [
+          "code",
+          "Code"
+        ],
+        [
+          "complexity",
+          "Time and space"
+        ],
+        [
+          "edgeCases",
+          "Edge cases"
+        ],
+        [
+          "pattern",
+          "The pattern, and how to spot it"
+        ],
+        [
+          "interview",
+          "Interview perspective"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    },
+    {
+      "id": "security",
+      "title": "Security Engineering",
+      "description": "How systems get attacked, and how to build them so they hold up.",
+      "sections": [
+        [
+          "what",
+          "What is it?"
+        ],
+        [
+          "impact",
+          "What can go wrong"
+        ],
+        [
+          "realWorld",
+          "Understand it with a real-world example"
+        ],
+        [
+          "attack",
+          "How the attack works"
+        ],
+        [
+          "vulnerable",
+          "Vulnerable code"
+        ],
+        [
+          "defence",
+          "How to defend"
+        ],
+        [
+          "layers",
+          "More layers of defence"
+        ],
+        [
+          "detect",
+          "How to detect it"
+        ],
+        [
+          "tradeoffs",
+          "Costs and trade-offs"
+        ],
+        [
+          "mistakes",
+          "Common mistakes"
+        ],
+        [
+          "interview",
+          "Interview perspective"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    },
+    {
+      "id": "decisions",
+      "title": "Engineering Decisions & Trade-offs",
+      "description": "Choosing between two good options, and knowing what each one costs.",
+      "sections": [
+        [
+          "decision",
+          "The decision"
+        ],
+        [
+          "options",
+          "The options"
+        ],
+        [
+          "realWorld",
+          "Understand it with a real-world example"
+        ],
+        [
+          "criteria",
+          "What matters when choosing"
+        ],
+        [
+          "compare",
+          "Side by side"
+        ],
+        [
+          "numbers",
+          "Practical example with numbers"
+        ],
+        [
+          "whenEach",
+          "When each option wins"
+        ],
+        [
+          "hiddenCosts",
+          "Costs people miss"
+        ],
+        [
+          "changing",
+          "How hard is it to change later?"
+        ],
+        [
+          "mistakes",
+          "Common mistakes"
+        ],
+        [
+          "interview",
+          "Interview perspective"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "system-design-hub",
+  "private": true,
+  "type": "module",
+  "description": "System Design Learning Hub: a static website built from the topic files in content/topics",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "preview": "node scripts/serve.mjs"
+  }
+}

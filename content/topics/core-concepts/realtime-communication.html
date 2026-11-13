@@ -1,0 +1,272 @@
+<!--
+title: WebSockets vs Polling vs SSE
+summary: Four ways a server can get fresh data to a browser: short polling, long polling, Server-Sent Events, and WebSockets. When each one fits, and what each costs.
+category: Communication
+order: 10
+related: 
+-->
+
+<!-- section: what -->
+<p>Normal HTTP works like this: the browser asks, the server answers, and the conversation ends. The server cannot start a conversation on its own.</p>
+<p>That is a problem when the server has <em>new</em> information the user should see right away: a new chat message, a live score, a “your order is out for delivery” update.</p>
+<p>There are four common ways to solve this:</p>
+<ul>
+<li><strong>Short polling</strong>: the browser asks “anything new?” every few seconds.</li>
+<li><strong>Long polling</strong>: the browser asks, and the server waits before answering until it actually has something new.</li>
+<li><strong>Server-Sent Events (SSE)</strong>: the browser opens one long HTTP connection, and the server keeps sending updates down it. One direction only: server to browser.</li>
+<li><strong>WebSockets</strong>: the browser and server open one long connection, and <em>both</em> sides can send messages at any time.</li>
+</ul>
+<p class="note">One-line version: polling = “keep asking”, SSE = “server keeps talking”, WebSocket = “both keep talking”.</p>
+
+<!-- section: why -->
+<p>Users expect apps to feel live. If a teammate sends you a message, you expect to see it in about a second, not after refreshing the page.</p>
+<p>Without one of these techniques, the only option is the user pressing refresh. That gives stale data and a poor experience.</p>
+<p>The choice between the four matters because they have very different costs:</p>
+<ul>
+<li><strong>Polling too often</strong> wastes server work. Most requests come back empty.</li>
+<li><strong>Polling too rarely</strong> makes updates feel slow.</li>
+<li><strong>Long-lived connections</strong> (SSE, WebSockets) remove the waste, but each open connection uses memory on the server, and they are harder to load balance and scale.</li>
+</ul>
+<p>So the real question is: <em>how fresh must the data be, which direction does it flow, and how many users are connected at once?</em></p>
+
+<!-- section: realWorld -->
+<p>Imagine you ordered food at a busy counter and you are waiting for it.</p>
+<ul>
+<li><strong>Short polling</strong>: every 30 seconds you walk to the counter and ask, “Is my order ready?” Usually the answer is “no”. You waste your time and the staff’s time.</li>
+<li><strong>Long polling</strong>: you ask once, and the staff member says, “Wait here, I’ll tell you the moment it’s ready.” When it’s ready, you take it, and if you order something else you ask again.</li>
+<li><strong>SSE</strong>: the restaurant has a screen that shows order numbers as they become ready. The screen talks to you, but you cannot talk back through it. To place another order, you still go to the counter (a normal HTTP request).</li>
+<li><strong>WebSocket</strong>: you have a walkie-talkie with the kitchen. Either side can speak at any time: “Make it spicy”, “Your order is ready”.</li>
+</ul>
+<p>Notice the costs too. A walkie-talkie for every customer is great for chatting, but the kitchen must keep every one of them switched on. A display screen is cheaper, because information only flows one way.</p>
+
+<!-- section: software -->
+<p>Say you are building a food-delivery app with a NestJS backend. Two features need live updates:</p>
+<ol>
+<li><strong>Order status</strong> (“Preparing” → “Out for delivery”). Only the server sends updates. A good fit for <strong>SSE</strong>.</li>
+<li><strong>Chat with the delivery driver</strong>. Both sides send messages often. A good fit for <strong>WebSockets</strong>.</li>
+</ol>
+
+<h4>SSE in NestJS</h4>
+<pre><code>// orders.controller.ts
+import { Controller, Param, Sse, MessageEvent } from '@nestjs/common';
+import { Observable, map } from 'rxjs';
+
+@Controller('orders')
+export class OrdersController {
+  constructor(private readonly orderEvents: OrderEventsService) {}
+
+  // GET /orders/123/events  (response type: text/event-stream)
+  @Sse(':id/events')
+  stream(@Param('id') id: string): Observable&lt;MessageEvent&gt; {
+    return this.orderEvents.forOrder(id).pipe(
+      map(status =&gt; ({ data: { status } }))
+    );
+  }
+}</code></pre>
+<pre><code>// browser
+const source = new EventSource('/orders/123/events');
+source.onmessage = (e) =&gt; showStatus(JSON.parse(e.data).status);
+// If the connection drops, EventSource reconnects by itself.</code></pre>
+
+<h4>WebSocket in NestJS</h4>
+<pre><code>// chat.gateway.ts
+import { WebSocketGateway, SubscribeMessage, MessageBody,
+         ConnectedSocket, WebSocketServer } from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+
+@WebSocketGateway()
+export class ChatGateway {
+  @WebSocketServer() server: Server;
+
+  @SubscribeMessage('chat:send')
+  onMessage(@MessageBody() msg: { orderId: string; text: string },
+            @ConnectedSocket() client: Socket) {
+    // send to everyone in this order's chat room
+    this.server.to('order:' + msg.orderId).emit('chat:new', msg);
+  }
+}</code></pre>
+<p class="note">NestJS uses Socket.IO by default for gateways. Socket.IO is a library <em>on top of</em> WebSockets with extra features (rooms, auto reconnect, fallback to polling). A plain browser <code>WebSocket</code> cannot talk to a Socket.IO server directly; you need the Socket.IO client. NestJS also has a plain <code>ws</code> adapter if you want raw WebSockets.</p>
+
+<!-- section: internals -->
+<h4>Short polling</h4>
+<ol>
+<li>Browser sends <code>GET /orders/123</code>.</li>
+<li>Server reads the database and replies immediately, even if nothing changed.</li>
+<li>Browser waits N seconds (a timer) and repeats.</li>
+</ol>
+
+<h4>Long polling</h4>
+<ol>
+<li>Browser sends <code>GET /orders/123/updates</code>.</li>
+<li>Server does <em>not</em> reply right away. It keeps the request open and waits for a change.</li>
+<li>When a change happens, or a timeout is reached (for example 30 seconds), the server replies.</li>
+<li>Browser immediately sends a new request. Repeat.</li>
+</ol>
+
+<h4>Server-Sent Events</h4>
+<ol>
+<li>Browser opens a normal HTTP GET with <code>new EventSource(url)</code>.</li>
+<li>Server answers with header <code>Content-Type: text/event-stream</code> and never “finishes” the response.</li>
+<li>Whenever there is news, the server writes a small text block like <code>data: {"status":"OUT_FOR_DELIVERY"}</code> followed by a blank line.</li>
+<li>If the connection drops, the browser reconnects automatically. If the server gave events an <code>id:</code>, the browser sends a <code>Last-Event-ID</code> header so the server can resend what was missed (only if your server code supports that).</li>
+</ol>
+
+<h4>WebSockets</h4>
+<ol>
+<li>Browser sends an HTTP request with <code>Upgrade: websocket</code> headers. This is called the <strong>handshake</strong>.</li>
+<li>Server replies <code>101 Switching Protocols</code>. From now on, the TCP connection is no longer HTTP.</li>
+<li>Both sides send small <strong>frames</strong> (text or binary) at any time, in both directions.</li>
+<li>To detect dead connections, sides send <strong>ping/pong</strong> frames (heartbeats).</li>
+<li>If the connection drops, nothing reconnects automatically in the plain browser API. Your code (or a library like Socket.IO) must reconnect.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 300" role="img" aria-label="Message flow for short polling, SSE and WebSocket">
+<defs><marker id="ah-rt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<text x="20" y="22" class="lbl">Short polling</text>
+<text x="20" y="40" class="sub">Browser → Server, over and over</text>
+<line x1="230" y1="30" x2="300" y2="30" class="arr" marker-end="url(#ah-rt)"/><line x1="300" y1="38" x2="230" y2="38" class="arr dim" marker-end="url(#ah-rt)"/>
+<line x1="350" y1="30" x2="420" y2="30" class="arr" marker-end="url(#ah-rt)"/><line x1="420" y1="38" x2="350" y2="38" class="arr dim" marker-end="url(#ah-rt)"/>
+<line x1="470" y1="30" x2="540" y2="30" class="arr" marker-end="url(#ah-rt)"/><line x1="540" y1="38" x2="470" y2="38" class="arr dim" marker-end="url(#ah-rt)"/>
+<text x="560" y="38" class="sub">mostly empty</text>
+
+<text x="20" y="122" class="lbl">SSE</text>
+<text x="20" y="140" class="sub">One request, many updates down</text>
+<line x1="230" y1="115" x2="300" y2="115" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="320" y1="135" x2="250" y2="135" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="420" y1="135" x2="350" y2="135" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="540" y1="135" x2="470" y2="135" class="arr" marker-end="url(#ah-rt)"/>
+<text x="560" y="138" class="sub">server only</text>
+
+<text x="20" y="222" class="lbl">WebSocket</text>
+<text x="20" y="240" class="sub">One connection, both directions</text>
+<line x1="230" y1="215" x2="300" y2="215" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="320" y1="235" x2="250" y2="235" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="350" y1="215" x2="420" y2="215" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="540" y1="235" x2="470" y2="235" class="arr" marker-end="url(#ah-rt)"/>
+<text x="560" y="230" class="sub">anyone talks</text>
+<text x="230" y="285" class="sub">Arrows pointing right = browser to server. Arrows pointing left = server to browser.</text>
+</svg>
+</div>
+
+<!-- section: types -->
+<h4>1. Short polling</h4>
+<p><strong>How:</strong> a timer in the browser calls a normal API every N seconds.</p>
+<p><strong>Use when:</strong> updates are rare, a few seconds of delay is fine, and you want the simplest thing. Example: refreshing a dashboard every 60 seconds.</p>
+<p><strong>Good:</strong> works everywhere, stateless, easy to cache and load balance. <strong>Bad:</strong> many empty requests; delay of up to N seconds.</p>
+
+<h4>2. Long polling</h4>
+<p><strong>How:</strong> the server holds each request open until there is news or a timeout.</p>
+<p><strong>Use when:</strong> you need near-real-time updates but cannot use SSE or WebSockets (old proxies, strict networks). Socket.IO used it as a fallback for this reason.</p>
+<p><strong>Good:</strong> low delay, plain HTTP. <strong>Bad:</strong> each waiting user still holds a connection; messages that arrive between one response and the next request must be buffered by the server, or they are lost; more complex than it looks.</p>
+
+<h4>3. Server-Sent Events</h4>
+<p><strong>How:</strong> one long HTTP response that streams text events.</p>
+<p><strong>Use when:</strong> data flows from server to browser only. Notifications, live feeds, progress bars, streaming AI responses.</p>
+<p><strong>Good:</strong> plain HTTP (works with normal auth, cookies, HTTP/2), auto-reconnect built into the browser, simple server code. <strong>Bad:</strong> one direction only; text only (binary must be encoded, for example as base64); the browser <code>EventSource</code> API cannot set custom headers like <code>Authorization</code>, so people use cookies or a token in the URL, or a fetch-based SSE library.</p>
+<p class="note">Old limit to know: on HTTP/1.1, browsers allow about 6 open connections per domain, shared across tabs. Many tabs with SSE can use them all up. HTTP/2 sends many streams over one connection, so this mostly goes away.</p>
+
+<h4>4. WebSockets</h4>
+<p><strong>How:</strong> HTTP handshake, then a two-way connection that stays open.</p>
+<p><strong>Use when:</strong> both sides send frequent, small messages with low delay. Chat, multiplayer games, collaborative editing, live trading screens.</p>
+<p><strong>Good:</strong> two-way, low overhead per message, supports binary. <strong>Bad:</strong> stateful connections are harder to scale and load balance; you build reconnect, heartbeats, and “resend what I missed” yourself (or use a library); some corporate proxies and firewalls interfere with it.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Short polling</th><th>Long polling</th><th>SSE</th><th>WebSocket</th></tr>
+<tr><td>Direction</td><td>Browser asks</td><td>Browser asks, server waits</td><td>Server → browser</td><td>Both ways</td></tr>
+<tr><td>Delay</td><td>Up to the interval</td><td>Low</td><td>Low</td><td>Low</td></tr>
+<tr><td>Connection</td><td>New request each time</td><td>Request held open</td><td>One long HTTP response</td><td>One long non-HTTP connection</td></tr>
+<tr><td>Auto reconnect</td><td>Not needed</td><td>Your code</td><td>Built in</td><td>Your code or library</td></tr>
+<tr><td>Data type</td><td>Anything HTTP</td><td>Anything HTTP</td><td>Text</td><td>Text or binary</td></tr>
+<tr><td>Scaling difficulty</td><td>Easiest</td><td>Medium</td><td>Medium</td><td>Hardest</td></tr>
+<tr><td>Typical use</td><td>Slow dashboards</td><td>Fallback</td><td>Notifications, feeds, AI streaming</td><td>Chat, games, co-editing</td></tr>
+</table></div>
+
+<!-- section: numbers -->
+<p><strong>Assumptions</strong> (made up for this example, not benchmarks): 10,000 users are online. On average, each user gets 1 real update per minute.</p>
+
+<h4>Short polling every 5 seconds</h4>
+<ul>
+<li>Requests per second = 10,000 users ÷ 5 s = <strong>2,000 requests/s</strong>.</li>
+<li>Useful updates per second = 10,000 ÷ 60 ≈ <strong>167/s</strong>.</li>
+<li>So about 167 of every 2,000 requests carry news. Over <strong>90% are empty</strong>, but each still costs auth, routing, and maybe a database query.</li>
+<li>Average delay ≈ 2.5 s, worst case 5 s.</li>
+</ul>
+<p>Polling every 1 second for fresher data makes it 10,000 requests/s. The waste grows fast.</p>
+
+<h4>SSE or WebSocket</h4>
+<ul>
+<li>10,000 open connections at all times.</li>
+<li>About 167 messages/s are pushed, all useful.</li>
+<li>Delay is roughly network time, usually well under a second.</li>
+<li>The new cost is <strong>memory per connection</strong> and the effort to spread connections across servers. How many connections one Node.js server can hold depends on memory, message rate, and per-connection state; measure with a load test rather than trusting a number from a blog.</li>
+</ul>
+
+<h4>Several servers</h4>
+<p>Say you run 4 app servers with 2,500 connections each. User A (on server 1) sends a chat message to user B (on server 3). Server 1 does not have B’s connection. So servers need a shared channel, like <strong>Redis pub/sub</strong>: server 1 publishes, all servers receive it, and server 3 forwards it to B. The Socket.IO Redis adapter does exactly this.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Simplicity vs freshness.</strong> Polling is the simplest and is stateless, but either wastes requests or is slow.</li>
+<li><strong>One-way vs two-way.</strong> SSE is simpler than WebSockets because it is plain HTTP. If the browser only needs to receive, SSE plus normal POST requests for the rare upload is often enough.</li>
+<li><strong>Stateless vs stateful servers.</strong> With polling, any server can answer any request. With SSE and WebSockets, a user is tied to one server for the life of the connection. Deploys and restarts drop all connections on that server, and clients must reconnect.</li>
+<li><strong>Delivery guarantees.</strong> None of these guarantee delivery on their own. If a user is offline for a moment, messages sent in that gap are lost unless you store them and replay them (event IDs, “give me everything after message 812”).</li>
+<li><strong>Infrastructure.</strong> Load balancers, proxies, and API gateways often close idle connections after a timeout, and some buffer streaming responses. Long connections need heartbeats and the right settings.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Signals for each choice</h4>
+<ul>
+<li><strong>Short polling:</strong> data changes every minute or less often, a few seconds of delay is fine, or you need something working today.</li>
+<li><strong>SSE:</strong> server pushes, browser mostly listens. Notifications, order tracking, logs, build progress, streaming AI tokens.</li>
+<li><strong>WebSocket:</strong> both sides send often, or you need binary or very low delay. Chat with typing indicators, games, shared whiteboards.</li>
+<li><strong>Long polling:</strong> mostly as a fallback when the others are blocked.</li>
+</ul>
+<h4>When you probably don’t need real-time at all</h4>
+<p>If users look at a page for a short time, or the data changes rarely, a refresh button or polling every 30–60 seconds is fine. Don’t add WebSocket infrastructure for a report that updates hourly.</p>
+<h4>Mobile apps</h4>
+<p>When the app is closed or in the background, mobile systems usually stop your connections. To reach those users you need <strong>push notifications</strong> (APNs on iOS, FCM on Android), not WebSockets.</p>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Choosing WebSockets by default.</strong> If data only flows one way, SSE is usually simpler and enough.</li>
+<li><strong>No reconnect logic.</strong> Connections <em>will</em> drop (Wi-Fi changes, deploys, timeouts). Plain WebSockets need your own reconnect with backoff (wait a bit longer after each failed try).</li>
+<li><strong>Forgetting missed messages.</strong> After reconnecting, the client should ask “what did I miss since ID X?” Otherwise users silently miss updates.</li>
+<li><strong>No heartbeats.</strong> A dead connection can look open for a long time. Ping/pong or periodic SSE comments (lines starting with <code>:</code>) keep it alive and detect failures.</li>
+<li><strong>Multiple servers without a shared channel.</strong> Works in development with one server, breaks in production with several.</li>
+<li><strong>Proxy buffering SSE.</strong> Nginx and some gateways buffer responses, so events arrive in big delayed chunks. Turn buffering off for SSE routes (for Nginx, <code>proxy_buffering off</code> or the <code>X-Accel-Buffering: no</code> header).</li>
+<li><strong>Skipping auth on the socket.</strong> Check the user during the handshake, and check permissions for every message or room join, not just once.</li>
+<li><strong>Thundering herd after a deploy.</strong> When a server restarts, thousands of clients reconnect at the same moment. Add random delay (jitter) to reconnects.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<p><strong>“How would you build live notifications?”</strong><br>
+Start with SSE: the server pushes, the browser only listens. Store notifications in a database too, so a user who reconnects or was offline can fetch what they missed. Use Redis pub/sub so any server can deliver to any user.</p>
+<p><strong>“Design a chat app. How do messages reach the other user?”</strong><br>
+WebSockets, because both sides send often. Save each message to the database first, then publish it to the recipient’s server (via Redis pub/sub or a message broker), which forwards it on the socket. If the recipient is offline, send a push notification.</p>
+<p><strong>“Why not just poll?”</strong><br>
+Polling is fine at small scale or for slow-changing data. At scale it creates mostly empty requests and still has delay. Show the math (users ÷ interval).</p>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>How do you load balance WebSockets? (Any server can accept a new connection; you need a shared pub/sub to route messages, and sticky sessions only if your library needs them, like Socket.IO when it falls back to polling.)</li>
+<li>What happens during a deploy? (Connections drop; clients reconnect with jitter and fetch missed messages.)</li>
+<li>How do you know a user is online? (Presence: track connections in Redis with an expiry refreshed by heartbeats.)</li>
+<li>How many connections per server? (Say it depends on memory and message rate, and you would measure with a load test.)</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>The real-time connection is usually only the last step. Behind it sits a database (the source of truth), a message broker or pub/sub (to move events between servers), and a gateway layer that only holds connections.</p>
+
+<!-- section: revision -->
+<ul>
+<li>HTTP alone can’t let the server start a conversation.</li>
+<li>Short polling: ask every N seconds. Simple, wasteful, delayed.</li>
+<li>Long polling: server waits to answer until there is news.</li>
+<li>SSE: one long HTTP response, server → browser only, auto reconnect, text.</li>
+<li>WebSocket: upgrade handshake, then two-way messages, text or binary.</li>
+<li>Long connections tie a user to one server; use pub/sub to reach users on other servers.</li>
+<li>None of them guarantee delivery: store messages and replay after reconnect.</li>
+<li>Pick the simplest option that meets the freshness and direction needs.</li>
+</ul>

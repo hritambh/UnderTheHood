@@ -1,0 +1,1948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>My System Design Learning Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600;7..72,700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EDF0EB; --surface:#F8FAF7; --ink:#1C2826; --muted:#56655F; --line:#D2D9D3;
+  --accent:#2949C6; --accent-soft:#E1E6F9;
+  --prog:#9A6214; --prog-soft:#F5E8D2; --done:#2A7148; --done-soft:#DAEDE1; --not:#7A8783;
+  --code-bg:#E3E8E2;
+  --serif:"Literata", Georgia, "Times New Roman", serif;
+  --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#131918; --surface:#1B2321; --ink:#E3EAE6; --muted:#9BA9A4; --line:#2D3835;
+    --accent:#93A6FF; --accent-soft:#232B4A;
+    --prog:#E2AA50; --prog-soft:#382D1B; --done:#72C595; --done-soft:#1C3226; --not:#8A9893;
+    --code-bg:#222C2A; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131918; --surface:#1B2321; --ink:#E3EAE6; --muted:#9BA9A4; --line:#2D3835;
+  --accent:#93A6FF; --accent-soft:#232B4A;
+  --prog:#E2AA50; --prog-soft:#382D1B; --done:#72C595; --done-soft:#1C3226; --not:#8A9893;
+  --code-bg:#222C2A; color-scheme: dark;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.55;-webkit-text-size-adjust:100%}
+a{color:var(--accent)}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.wrap{max-width:1120px;margin:0 auto;padding:28px 20px 64px}
+
+/* ---------- Home ---------- */
+.home-head{max-width:68ch;margin-bottom:28px}
+.home-head h1{font-family:var(--serif);font-weight:700;font-size:clamp(2rem,6vw,3.1rem);line-height:1.08;letter-spacing:-.015em;margin:8px 0 14px}
+.home-head p{color:var(--muted);margin:0 0 10px;font-size:1.02rem}
+.how{margin:18px 0 0;padding:14px 16px;border-left:3px solid var(--accent);background:var(--surface);border-radius:0 8px 8px 0}
+.how summary{font-weight:600;cursor:pointer}
+.how ul{margin:10px 0 2px;padding-left:20px;color:var(--ink)}
+.how li{margin:4px 0}
+
+.progress{display:flex;align-items:center;gap:14px;margin:26px 0 18px;flex-wrap:wrap}
+.progress-bar{flex:1 1 220px;height:8px;background:var(--line);border-radius:99px;overflow:hidden;display:flex}
+.progress-bar span{display:block;height:100%}
+.progress-bar .b-done{background:var(--done)}
+.progress-bar .b-prog{background:var(--prog)}
+.progress-text{font-size:.92rem;color:var(--muted)}
+
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px}
+.search{flex:1 1 240px;min-width:0;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);font:inherit}
+.filters{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:7px 12px;border-radius:99px;border:1px solid var(--line);background:transparent;font-size:.88rem}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+
+.topic-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.topic-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 18px 14px;display:flex;flex-direction:column;gap:8px}
+.topic-card h3{font-family:var(--serif);font-size:1.22rem;font-weight:600;margin:0;line-height:1.25}
+.topic-card h3 button{all:unset;cursor:pointer}
+.topic-card h3 button:hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+.topic-card h3 button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+.topic-card p{margin:0;color:var(--muted);font-size:.95rem}
+.card-meta{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:auto;padding-top:8px;flex-wrap:wrap}
+.cat{font-size:.82rem;color:var(--muted)}
+.status-select{font:inherit;font-size:.85rem;padding:5px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:1px;background:var(--not)}
+.dot.progress{background:var(--prog)} .dot.done{background:var(--done)}
+
+.empty{background:var(--surface);border:1px dashed var(--line);border-radius:12px;padding:26px 22px;max-width:72ch}
+.empty h2{font-family:var(--serif);font-size:1.5rem;margin:0 0 8px}
+.empty p{margin:0 0 12px;color:var(--muted)}
+.empty ol{margin:8px 0 0;padding-left:22px;columns:2 220px;column-gap:28px}
+.empty li{margin:3px 0;break-inside:avoid}
+.no-match{color:var(--muted);padding:12px 2px}
+
+/* ---------- Topic view ---------- */
+.topic-layout{display:grid;grid-template-columns:1fr;gap:28px}
+@media (min-width:920px){.topic-layout{grid-template-columns:230px minmax(0,1fr)}}
+.sidebar{display:none}
+@media (min-width:920px){
+  .sidebar{display:block;position:sticky;top:calc(16px + env(safe-area-inset-top,0px));align-self:start;max-height:calc(100vh - 40px);overflow:auto;padding-right:6px}
+}
+.sidebar h4{font-size:.85rem;color:var(--muted);margin:4px 0 8px;font-weight:600}
+.sidebar ul{list-style:none;margin:0 0 20px;padding:0}
+.sidebar li button{all:unset;display:block;cursor:pointer;padding:6px 8px;border-radius:6px;font-size:.92rem;line-height:1.35;width:100%;box-sizing:border-box}
+.sidebar li button:hover{background:var(--surface)}
+.sidebar li button[aria-current="true"]{background:var(--accent-soft);color:var(--ink);font-weight:600}
+.sidebar li button:focus-visible{outline:2px solid var(--accent)}
+
+.back{background:none;border:none;padding:6px 0;color:var(--accent);font-weight:500}
+article{max-width:74ch;min-width:0}
+article h1{font-family:var(--serif);font-size:clamp(1.8rem,5vw,2.5rem);line-height:1.12;margin:10px 0 10px;letter-spacing:-.01em}
+.topic-intro{color:var(--muted);font-size:1.05rem;margin:0 0 16px}
+.status-row{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px}
+.status-btn{padding:7px 12px;border-radius:8px;border:1px solid var(--line);background:var(--surface);font-size:.88rem}
+.status-btn[aria-pressed="true"].s-not{background:var(--line);border-color:var(--not)}
+.status-btn[aria-pressed="true"].s-progress{background:var(--prog-soft);border-color:var(--prog);color:var(--ink)}
+.status-btn[aria-pressed="true"].s-done{background:var(--done-soft);border-color:var(--done);color:var(--ink)}
+.prereq{font-size:.93rem;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:0 0 16px}
+.prereq button{all:unset;cursor:pointer;color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.expand-row{display:flex;justify-content:flex-end;gap:12px;margin:6px 0 8px}
+.linkish{background:none;border:none;padding:4px 0;color:var(--accent);font-size:.88rem}
+
+details.sec{border-top:1px solid var(--line)}
+details.sec:last-of-type{border-bottom:1px solid var(--line)}
+details.sec > summary{list-style:none;cursor:pointer;padding:16px 4px;display:flex;align-items:baseline;gap:12px}
+details.sec > summary::-webkit-details-marker{display:none}
+.sec-num{font-family:var(--serif);color:var(--muted);font-size:1rem;min-width:1.6em}
+.sec-title{font-family:var(--serif);font-size:1.28rem;font-weight:600;flex:1}
+.sec-toggle{color:var(--muted);transition:transform .15s}
+details.sec[open] .sec-toggle{transform:rotate(90deg)}
+@media (prefers-reduced-motion:reduce){.sec-toggle{transition:none}}
+.sec-body{padding:0 4px 22px 4px;font-family:var(--serif);font-size:1.05rem;line-height:1.7}
+@media (min-width:600px){.sec-body{padding-left:calc(1.6em + 16px)}}
+.sec-body p{margin:0 0 .9em}
+.sec-body h4{font-family:var(--sans);font-size:1rem;margin:1.3em 0 .4em}
+.sec-body ul,.sec-body ol{padding-left:1.3em;margin:0 0 1em}
+.sec-body li{margin:.25em 0}
+.sec-body code{font-family:var(--mono);font-size:.86em;background:var(--code-bg);padding:1px 5px;border-radius:4px}
+.sec-body pre{font-family:var(--mono);font-size:.85rem;line-height:1.55;background:var(--code-bg);padding:14px 16px;border-radius:10px;overflow-x:auto;margin:0 0 1em}
+.sec-body pre code{background:none;padding:0}
+.table-wrap{overflow-x:auto;margin:0 0 1em}
+.sec-body table{border-collapse:collapse;font-family:var(--sans);font-size:.92rem;min-width:520px;width:100%}
+.sec-body th,.sec-body td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+.sec-body th{background:var(--surface)}
+.diagram{overflow-x:auto;margin:0 0 1em;padding:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.diagram svg{display:block;max-width:100%;height:auto;margin:0 auto}
+.diagram svg .box{fill:var(--bg);stroke:var(--ink);stroke-width:1.4}
+.diagram svg .box.hi{fill:var(--accent-soft);stroke:var(--accent)}
+.diagram svg .box.warn{fill:var(--prog-soft);stroke:var(--prog)}
+.diagram svg .box.faintbox{stroke:var(--line);stroke-dasharray:4 4}
+.diagram svg .lbl{fill:var(--ink);font:600 13px var(--sans)}
+.diagram svg .sub{fill:var(--muted);font:12px var(--sans)}
+.diagram svg .arr{stroke:var(--accent);stroke-width:1.6;fill:none}
+.diagram svg .arr.dim{stroke:var(--muted)}
+.diagram svg .arr.faint{stroke:var(--line)}
+.diagram svg .arr.warnline{stroke:var(--prog)}
+.diagram svg .ahead{fill:var(--accent)}
+.diagram svg .ahead-warn{fill:var(--prog)}
+.diagram svg{min-width:560px}
+.note{font-family:var(--sans);font-size:.93rem;background:var(--accent-soft);border-radius:8px;padding:10px 14px;margin:0 0 1em}
+.sec-body details.answer{font-family:var(--sans);font-size:.95rem;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:0 0 1em}
+.sec-body details.answer summary{cursor:pointer;font-weight:600;color:var(--accent)}
+.pager{display:flex;justify-content:space-between;gap:12px;margin-top:28px;flex-wrap:wrap}
+.pager button{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 14px;text-align:left;max-width:48%}
+.pager small{display:block;color:var(--muted);font-size:.8rem}
+.sync{font-size:.8rem;color:var(--muted);margin-top:40px}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ================= HOME ================= -->
+  <main id="home">
+    <header class="home-head">
+      <h1>My System Design Learning Hub</h1>
+      <p>A personal textbook for system design, written in simple English. Each topic explains the idea, the problem it solves, how it works inside, the trade-offs, and how it shows up in interviews.</p>
+      <details class="how">
+        <summary>How to use this hub</summary>
+        <ul>
+          <li>Open a topic and read one section at a time. Sections are folded, so you can stop and come back.</li>
+          <li>Mark each topic as Not started, In progress, or Completed. Your progress is saved.</li>
+          <li>Use search or the status filters to find a topic quickly.</li>
+          <li>At the end of every topic, try the revision questions before opening the answers.</li>
+          <li>To add or change topics, ask in the chat. New topics are added without changing the old ones.</li>
+        </ul>
+      </details>
+    </header>
+
+    <div class="progress" id="progressWrap">
+      <div class="progress-bar" aria-hidden="true"><span class="b-done" id="barDone"></span><span class="b-prog" id="barProg"></span></div>
+      <div class="progress-text" id="progressText"></div>
+    </div>
+
+    <div class="controls" id="controls">
+      <input class="search" id="search" type="search" placeholder="Search topics" aria-label="Search topics">
+      <div class="filters" role="group" aria-label="Filter by status">
+        <button class="chip" data-filter="all" aria-pressed="true">All</button>
+        <button class="chip" data-filter="not" aria-pressed="false">Not started</button>
+        <button class="chip" data-filter="progress" aria-pressed="false">In progress</button>
+        <button class="chip" data-filter="done" aria-pressed="false">Completed</button>
+      </div>
+    </div>
+
+    <section id="topicList" class="topic-list" aria-label="Topics"></section>
+    <p class="no-match" id="noMatch" hidden></p>
+
+    <section class="empty" id="emptyState" hidden>
+      <h2>No topics yet</h2>
+      <p>Send your first two or three system design topics in the chat, and they’ll appear here as cards.</p>
+      <p>Every topic will follow the same 12 steps:</p>
+      <ol id="structureList"></ol>
+    </section>
+  </main>
+
+  <!-- ================= TOPIC ================= -->
+  <div id="topicView" class="topic-layout" hidden>
+    <nav class="sidebar" id="sidebar" aria-label="All topics"></nav>
+    <article id="article"></article>
+  </div>
+
+  <p class="sync" id="syncNote"></p>
+</div>
+
+<script>
+/* =====================================================================
+   TOPIC DATA
+   Each topic is one object in TOPICS. New topics are appended between
+   the TOPICS:START and TOPICS:END markers; existing ones are left alone.
+
+   Shape:
+   {
+     id: "caching",                 // short, letters/digits/dashes
+     title: "Caching",
+     summary: "One or two simple sentences for the card.",
+     category: "Performance",
+     order: 10,                     // learning order (lower = earlier)
+     prerequisites: ["latency"],    // ids of related earlier topics
+     sections: {                    // HTML strings; any key may be omitted
+       what, why, realWorld, software, internals, types,
+       numbers, tradeoffs, whenToUse, mistakes, interview, revision
+     }
+   }
+   Revision answers go inside <details class="answer"><summary>Show answers</summary>...</details>
+   ===================================================================== */
+const TOPICS = [
+/* TOPICS:START */
+{
+  id: "realtime-communication",
+  title: "WebSockets vs Polling vs SSE",
+  summary: "Four ways a server can get fresh data to a browser: short polling, long polling, Server-Sent Events, and WebSockets. When each one fits, and what each costs.",
+  category: "Communication",
+  order: 10,
+  prerequisites: [],
+  sections: {
+what: `
+<p>Normal HTTP works like this: the browser asks, the server answers, and the conversation ends. The server cannot start a conversation on its own.</p>
+<p>That is a problem when the server has <em>new</em> information the user should see right away: a new chat message, a live score, a “your order is out for delivery” update.</p>
+<p>There are four common ways to solve this:</p>
+<ul>
+<li><strong>Short polling</strong>: the browser asks “anything new?” every few seconds.</li>
+<li><strong>Long polling</strong>: the browser asks, and the server waits before answering until it actually has something new.</li>
+<li><strong>Server-Sent Events (SSE)</strong>: the browser opens one long HTTP connection, and the server keeps sending updates down it. One direction only: server to browser.</li>
+<li><strong>WebSockets</strong>: the browser and server open one long connection, and <em>both</em> sides can send messages at any time.</li>
+</ul>
+<p class="note">One-line version: polling = “keep asking”, SSE = “server keeps talking”, WebSocket = “both keep talking”.</p>`,
+
+why: `
+<p>Users expect apps to feel live. If a teammate sends you a message, you expect to see it in about a second, not after refreshing the page.</p>
+<p>Without one of these techniques, the only option is the user pressing refresh. That gives stale data and a poor experience.</p>
+<p>The choice between the four matters because they have very different costs:</p>
+<ul>
+<li><strong>Polling too often</strong> wastes server work. Most requests come back empty.</li>
+<li><strong>Polling too rarely</strong> makes updates feel slow.</li>
+<li><strong>Long-lived connections</strong> (SSE, WebSockets) remove the waste, but each open connection uses memory on the server, and they are harder to load balance and scale.</li>
+</ul>
+<p>So the real question is: <em>how fresh must the data be, which direction does it flow, and how many users are connected at once?</em></p>`,
+
+realWorld: `
+<p>Imagine you ordered food at a busy counter and you are waiting for it.</p>
+<ul>
+<li><strong>Short polling</strong>: every 30 seconds you walk to the counter and ask, “Is my order ready?” Usually the answer is “no”. You waste your time and the staff’s time.</li>
+<li><strong>Long polling</strong>: you ask once, and the staff member says, “Wait here, I’ll tell you the moment it’s ready.” When it’s ready, you take it, and if you order something else you ask again.</li>
+<li><strong>SSE</strong>: the restaurant has a screen that shows order numbers as they become ready. The screen talks to you, but you cannot talk back through it. To place another order, you still go to the counter (a normal HTTP request).</li>
+<li><strong>WebSocket</strong>: you have a walkie-talkie with the kitchen. Either side can speak at any time: “Make it spicy”, “Your order is ready”.</li>
+</ul>
+<p>Notice the costs too. A walkie-talkie for every customer is great for chatting, but the kitchen must keep every one of them switched on. A display screen is cheaper, because information only flows one way.</p>`,
+
+software: `
+<p>Say you are building a food-delivery app with a NestJS backend. Two features need live updates:</p>
+<ol>
+<li><strong>Order status</strong> (“Preparing” → “Out for delivery”). Only the server sends updates. A good fit for <strong>SSE</strong>.</li>
+<li><strong>Chat with the delivery driver</strong>. Both sides send messages often. A good fit for <strong>WebSockets</strong>.</li>
+</ol>
+
+<h4>SSE in NestJS</h4>
+<pre><code>// orders.controller.ts
+import { Controller, Param, Sse, MessageEvent } from '@nestjs/common';
+import { Observable, map } from 'rxjs';
+
+@Controller('orders')
+export class OrdersController {
+  constructor(private readonly orderEvents: OrderEventsService) {}
+
+  // GET /orders/123/events  (response type: text/event-stream)
+  @Sse(':id/events')
+  stream(@Param('id') id: string): Observable&lt;MessageEvent&gt; {
+    return this.orderEvents.forOrder(id).pipe(
+      map(status =&gt; ({ data: { status } }))
+    );
+  }
+}</code></pre>
+<pre><code>// browser
+const source = new EventSource('/orders/123/events');
+source.onmessage = (e) =&gt; showStatus(JSON.parse(e.data).status);
+// If the connection drops, EventSource reconnects by itself.</code></pre>
+
+<h4>WebSocket in NestJS</h4>
+<pre><code>// chat.gateway.ts
+import { WebSocketGateway, SubscribeMessage, MessageBody,
+         ConnectedSocket, WebSocketServer } from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+
+@WebSocketGateway()
+export class ChatGateway {
+  @WebSocketServer() server: Server;
+
+  @SubscribeMessage('chat:send')
+  onMessage(@MessageBody() msg: { orderId: string; text: string },
+            @ConnectedSocket() client: Socket) {
+    // send to everyone in this order's chat room
+    this.server.to('order:' + msg.orderId).emit('chat:new', msg);
+  }
+}</code></pre>
+<p class="note">NestJS uses Socket.IO by default for gateways. Socket.IO is a library <em>on top of</em> WebSockets with extra features (rooms, auto reconnect, fallback to polling). A plain browser <code>WebSocket</code> cannot talk to a Socket.IO server directly; you need the Socket.IO client. NestJS also has a plain <code>ws</code> adapter if you want raw WebSockets.</p>`,
+
+internals: `
+<h4>Short polling</h4>
+<ol>
+<li>Browser sends <code>GET /orders/123</code>.</li>
+<li>Server reads the database and replies immediately, even if nothing changed.</li>
+<li>Browser waits N seconds (a timer) and repeats.</li>
+</ol>
+
+<h4>Long polling</h4>
+<ol>
+<li>Browser sends <code>GET /orders/123/updates</code>.</li>
+<li>Server does <em>not</em> reply right away. It keeps the request open and waits for a change.</li>
+<li>When a change happens, or a timeout is reached (for example 30 seconds), the server replies.</li>
+<li>Browser immediately sends a new request. Repeat.</li>
+</ol>
+
+<h4>Server-Sent Events</h4>
+<ol>
+<li>Browser opens a normal HTTP GET with <code>new EventSource(url)</code>.</li>
+<li>Server answers with header <code>Content-Type: text/event-stream</code> and never “finishes” the response.</li>
+<li>Whenever there is news, the server writes a small text block like <code>data: {"status":"OUT_FOR_DELIVERY"}</code> followed by a blank line.</li>
+<li>If the connection drops, the browser reconnects automatically. If the server gave events an <code>id:</code>, the browser sends a <code>Last-Event-ID</code> header so the server can resend what was missed (only if your server code supports that).</li>
+</ol>
+
+<h4>WebSockets</h4>
+<ol>
+<li>Browser sends an HTTP request with <code>Upgrade: websocket</code> headers. This is called the <strong>handshake</strong>.</li>
+<li>Server replies <code>101 Switching Protocols</code>. From now on, the TCP connection is no longer HTTP.</li>
+<li>Both sides send small <strong>frames</strong> (text or binary) at any time, in both directions.</li>
+<li>To detect dead connections, sides send <strong>ping/pong</strong> frames (heartbeats).</li>
+<li>If the connection drops, nothing reconnects automatically in the plain browser API. Your code (or a library like Socket.IO) must reconnect.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 300" role="img" aria-label="Message flow for short polling, SSE and WebSocket">
+<defs><marker id="ah-rt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<text x="20" y="22" class="lbl">Short polling</text>
+<text x="20" y="40" class="sub">Browser → Server, over and over</text>
+<line x1="230" y1="30" x2="300" y2="30" class="arr" marker-end="url(#ah-rt)"/><line x1="300" y1="38" x2="230" y2="38" class="arr dim" marker-end="url(#ah-rt)"/>
+<line x1="350" y1="30" x2="420" y2="30" class="arr" marker-end="url(#ah-rt)"/><line x1="420" y1="38" x2="350" y2="38" class="arr dim" marker-end="url(#ah-rt)"/>
+<line x1="470" y1="30" x2="540" y2="30" class="arr" marker-end="url(#ah-rt)"/><line x1="540" y1="38" x2="470" y2="38" class="arr dim" marker-end="url(#ah-rt)"/>
+<text x="560" y="38" class="sub">mostly empty</text>
+
+<text x="20" y="122" class="lbl">SSE</text>
+<text x="20" y="140" class="sub">One request, many updates down</text>
+<line x1="230" y1="115" x2="300" y2="115" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="320" y1="135" x2="250" y2="135" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="420" y1="135" x2="350" y2="135" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="540" y1="135" x2="470" y2="135" class="arr" marker-end="url(#ah-rt)"/>
+<text x="560" y="138" class="sub">server only</text>
+
+<text x="20" y="222" class="lbl">WebSocket</text>
+<text x="20" y="240" class="sub">One connection, both directions</text>
+<line x1="230" y1="215" x2="300" y2="215" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="320" y1="235" x2="250" y2="235" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="350" y1="215" x2="420" y2="215" class="arr" marker-end="url(#ah-rt)"/>
+<line x1="540" y1="235" x2="470" y2="235" class="arr" marker-end="url(#ah-rt)"/>
+<text x="560" y="230" class="sub">anyone talks</text>
+<text x="230" y="285" class="sub">Arrows pointing right = browser to server. Arrows pointing left = server to browser.</text>
+</svg>
+</div>`,
+
+types: `
+<h4>1. Short polling</h4>
+<p><strong>How:</strong> a timer in the browser calls a normal API every N seconds.</p>
+<p><strong>Use when:</strong> updates are rare, a few seconds of delay is fine, and you want the simplest thing. Example: refreshing a dashboard every 60 seconds.</p>
+<p><strong>Good:</strong> works everywhere, stateless, easy to cache and load balance. <strong>Bad:</strong> many empty requests; delay of up to N seconds.</p>
+
+<h4>2. Long polling</h4>
+<p><strong>How:</strong> the server holds each request open until there is news or a timeout.</p>
+<p><strong>Use when:</strong> you need near-real-time updates but cannot use SSE or WebSockets (old proxies, strict networks). Socket.IO used it as a fallback for this reason.</p>
+<p><strong>Good:</strong> low delay, plain HTTP. <strong>Bad:</strong> each waiting user still holds a connection; messages that arrive between one response and the next request must be buffered by the server, or they are lost; more complex than it looks.</p>
+
+<h4>3. Server-Sent Events</h4>
+<p><strong>How:</strong> one long HTTP response that streams text events.</p>
+<p><strong>Use when:</strong> data flows from server to browser only. Notifications, live feeds, progress bars, streaming AI responses.</p>
+<p><strong>Good:</strong> plain HTTP (works with normal auth, cookies, HTTP/2), auto-reconnect built into the browser, simple server code. <strong>Bad:</strong> one direction only; text only (binary must be encoded, for example as base64); the browser <code>EventSource</code> API cannot set custom headers like <code>Authorization</code>, so people use cookies or a token in the URL, or a fetch-based SSE library.</p>
+<p class="note">Old limit to know: on HTTP/1.1, browsers allow about 6 open connections per domain, shared across tabs. Many tabs with SSE can use them all up. HTTP/2 sends many streams over one connection, so this mostly goes away.</p>
+
+<h4>4. WebSockets</h4>
+<p><strong>How:</strong> HTTP handshake, then a two-way connection that stays open.</p>
+<p><strong>Use when:</strong> both sides send frequent, small messages with low delay. Chat, multiplayer games, collaborative editing, live trading screens.</p>
+<p><strong>Good:</strong> two-way, low overhead per message, supports binary. <strong>Bad:</strong> stateful connections are harder to scale and load balance; you build reconnect, heartbeats, and “resend what I missed” yourself (or use a library); some corporate proxies and firewalls interfere with it.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Short polling</th><th>Long polling</th><th>SSE</th><th>WebSocket</th></tr>
+<tr><td>Direction</td><td>Browser asks</td><td>Browser asks, server waits</td><td>Server → browser</td><td>Both ways</td></tr>
+<tr><td>Delay</td><td>Up to the interval</td><td>Low</td><td>Low</td><td>Low</td></tr>
+<tr><td>Connection</td><td>New request each time</td><td>Request held open</td><td>One long HTTP response</td><td>One long non-HTTP connection</td></tr>
+<tr><td>Auto reconnect</td><td>Not needed</td><td>Your code</td><td>Built in</td><td>Your code or library</td></tr>
+<tr><td>Data type</td><td>Anything HTTP</td><td>Anything HTTP</td><td>Text</td><td>Text or binary</td></tr>
+<tr><td>Scaling difficulty</td><td>Easiest</td><td>Medium</td><td>Medium</td><td>Hardest</td></tr>
+<tr><td>Typical use</td><td>Slow dashboards</td><td>Fallback</td><td>Notifications, feeds, AI streaming</td><td>Chat, games, co-editing</td></tr>
+</table></div>`,
+
+numbers: `
+<p><strong>Assumptions</strong> (made up for this example, not benchmarks): 10,000 users are online. On average, each user gets 1 real update per minute.</p>
+
+<h4>Short polling every 5 seconds</h4>
+<ul>
+<li>Requests per second = 10,000 users ÷ 5 s = <strong>2,000 requests/s</strong>.</li>
+<li>Useful updates per second = 10,000 ÷ 60 ≈ <strong>167/s</strong>.</li>
+<li>So about 167 of every 2,000 requests carry news. Over <strong>90% are empty</strong>, but each still costs auth, routing, and maybe a database query.</li>
+<li>Average delay ≈ 2.5 s, worst case 5 s.</li>
+</ul>
+<p>Polling every 1 second for fresher data makes it 10,000 requests/s. The waste grows fast.</p>
+
+<h4>SSE or WebSocket</h4>
+<ul>
+<li>10,000 open connections at all times.</li>
+<li>About 167 messages/s are pushed, all useful.</li>
+<li>Delay is roughly network time, usually well under a second.</li>
+<li>The new cost is <strong>memory per connection</strong> and the effort to spread connections across servers. How many connections one Node.js server can hold depends on memory, message rate, and per-connection state; measure with a load test rather than trusting a number from a blog.</li>
+</ul>
+
+<h4>Several servers</h4>
+<p>Say you run 4 app servers with 2,500 connections each. User A (on server 1) sends a chat message to user B (on server 3). Server 1 does not have B’s connection. So servers need a shared channel, like <strong>Redis pub/sub</strong>: server 1 publishes, all servers receive it, and server 3 forwards it to B. The Socket.IO Redis adapter does exactly this.</p>`,
+
+tradeoffs: `
+<ul>
+<li><strong>Simplicity vs freshness.</strong> Polling is the simplest and is stateless, but either wastes requests or is slow.</li>
+<li><strong>One-way vs two-way.</strong> SSE is simpler than WebSockets because it is plain HTTP. If the browser only needs to receive, SSE plus normal POST requests for the rare upload is often enough.</li>
+<li><strong>Stateless vs stateful servers.</strong> With polling, any server can answer any request. With SSE and WebSockets, a user is tied to one server for the life of the connection. Deploys and restarts drop all connections on that server, and clients must reconnect.</li>
+<li><strong>Delivery guarantees.</strong> None of these guarantee delivery on their own. If a user is offline for a moment, messages sent in that gap are lost unless you store them and replay them (event IDs, “give me everything after message 812”).</li>
+<li><strong>Infrastructure.</strong> Load balancers, proxies, and API gateways often close idle connections after a timeout, and some buffer streaming responses. Long connections need heartbeats and the right settings.</li>
+</ul>`,
+
+whenToUse: `
+<h4>Signals for each choice</h4>
+<ul>
+<li><strong>Short polling:</strong> data changes every minute or less often, a few seconds of delay is fine, or you need something working today.</li>
+<li><strong>SSE:</strong> server pushes, browser mostly listens. Notifications, order tracking, logs, build progress, streaming AI tokens.</li>
+<li><strong>WebSocket:</strong> both sides send often, or you need binary or very low delay. Chat with typing indicators, games, shared whiteboards.</li>
+<li><strong>Long polling:</strong> mostly as a fallback when the others are blocked.</li>
+</ul>
+<h4>When you probably don’t need real-time at all</h4>
+<p>If users look at a page for a short time, or the data changes rarely, a refresh button or polling every 30–60 seconds is fine. Don’t add WebSocket infrastructure for a report that updates hourly.</p>
+<h4>Mobile apps</h4>
+<p>When the app is closed or in the background, mobile systems usually stop your connections. To reach those users you need <strong>push notifications</strong> (APNs on iOS, FCM on Android), not WebSockets.</p>`,
+
+mistakes: `
+<ul>
+<li><strong>Choosing WebSockets by default.</strong> If data only flows one way, SSE is usually simpler and enough.</li>
+<li><strong>No reconnect logic.</strong> Connections <em>will</em> drop (Wi-Fi changes, deploys, timeouts). Plain WebSockets need your own reconnect with backoff (wait a bit longer after each failed try).</li>
+<li><strong>Forgetting missed messages.</strong> After reconnecting, the client should ask “what did I miss since ID X?” Otherwise users silently miss updates.</li>
+<li><strong>No heartbeats.</strong> A dead connection can look open for a long time. Ping/pong or periodic SSE comments (lines starting with <code>:</code>) keep it alive and detect failures.</li>
+<li><strong>Multiple servers without a shared channel.</strong> Works in development with one server, breaks in production with several.</li>
+<li><strong>Proxy buffering SSE.</strong> Nginx and some gateways buffer responses, so events arrive in big delayed chunks. Turn buffering off for SSE routes (for Nginx, <code>proxy_buffering off</code> or the <code>X-Accel-Buffering: no</code> header).</li>
+<li><strong>Skipping auth on the socket.</strong> Check the user during the handshake, and check permissions for every message or room join, not just once.</li>
+<li><strong>Thundering herd after a deploy.</strong> When a server restarts, thousands of clients reconnect at the same moment. Add random delay (jitter) to reconnects.</li>
+</ul>`,
+
+interview: `
+<h4>Common questions</h4>
+<p><strong>“How would you build live notifications?”</strong><br>
+Start with SSE: the server pushes, the browser only listens. Store notifications in a database too, so a user who reconnects or was offline can fetch what they missed. Use Redis pub/sub so any server can deliver to any user.</p>
+<p><strong>“Design a chat app. How do messages reach the other user?”</strong><br>
+WebSockets, because both sides send often. Save each message to the database first, then publish it to the recipient’s server (via Redis pub/sub or a message broker), which forwards it on the socket. If the recipient is offline, send a push notification.</p>
+<p><strong>“Why not just poll?”</strong><br>
+Polling is fine at small scale or for slow-changing data. At scale it creates mostly empty requests and still has delay. Show the math (users ÷ interval).</p>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>How do you load balance WebSockets? (Any server can accept a new connection; you need a shared pub/sub to route messages, and sticky sessions only if your library needs them, like Socket.IO when it falls back to polling.)</li>
+<li>What happens during a deploy? (Connections drop; clients reconnect with jitter and fetch missed messages.)</li>
+<li>How do you know a user is online? (Presence: track connections in Redis with an expiry refreshed by heartbeats.)</li>
+<li>How many connections per server? (Say it depends on memory and message rate, and you would measure with a load test.)</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>The real-time connection is usually only the last step. Behind it sits a database (the source of truth), a message broker or pub/sub (to move events between servers), and a gateway layer that only holds connections.</p>`,
+
+revision: `
+<h4>Summary</h4>
+<ul>
+<li>HTTP alone can’t let the server start a conversation.</li>
+<li>Short polling: ask every N seconds. Simple, wasteful, delayed.</li>
+<li>Long polling: server waits to answer until there is news.</li>
+<li>SSE: one long HTTP response, server → browser only, auto reconnect, text.</li>
+<li>WebSocket: upgrade handshake, then two-way messages, text or binary.</li>
+<li>Long connections tie a user to one server; use pub/sub to reach users on other servers.</li>
+<li>None of them guarantee delivery: store messages and replay after reconnect.</li>
+<li>Pick the simplest option that meets the freshness and direction needs.</li>
+</ul>
+<h4>Key terms</h4>
+<ul>
+<li><strong>Handshake</strong>: the first HTTP request that upgrades a connection to WebSocket.</li>
+<li><strong>Full duplex</strong>: both sides can send at the same time.</li>
+<li><strong>Heartbeat</strong>: small regular message to check the connection is alive.</li>
+<li><strong>Fan-out</strong>: sending one event to many connected users.</li>
+<li><strong>Pub/sub</strong>: publishers send to a channel; every subscriber of that channel gets it.</li>
+</ul>
+<h4>Test yourself</h4>
+<ol>
+<li>Your app shows a progress bar for a long export job. Which technique, and why?</li>
+<li>Why does a chat app with 3 servers need Redis pub/sub (or similar)?</li>
+<li>5,000 users poll every 2 seconds. How many requests per second is that?</li>
+<li>What does <code>Last-Event-ID</code> do in SSE, and what must your server do for it to help?</li>
+<li>Why can’t WebSockets keep a mobile app updated when the app is closed?</li>
+</ol>
+<details class="answer"><summary>Show answers</summary>
+<ol>
+<li>SSE. The server sends progress; the browser only listens. Plain HTTP and built-in reconnect make it simpler than WebSockets.</li>
+<li>Each user is connected to one server. A message from a user on server 1 must reach a user on server 3, so servers need a shared channel to pass events between them.</li>
+<li>5,000 ÷ 2 = 2,500 requests per second.</li>
+<li>After reconnecting, the browser sends the ID of the last event it got. Your server must keep recent events with IDs and resend everything after that ID; otherwise the header does nothing.</li>
+<li>The operating system pauses or kills background connections to save battery. You need APNs or FCM push notifications for that case.</li>
+</ol>
+</details>
+<h4>Scenario</h4>
+<p>You are adding a “live order status” widget to an admin panel used by 50 staff. Status changes a few times per hour per order. Your team has never run WebSockets in production. What do you build?</p>
+<details class="answer"><summary>Show a good answer</summary>
+<p>With 50 users and rare changes, short polling every 10–30 seconds is fine and costs very little (50 ÷ 15 ≈ 3 requests/s). If staff need updates within a second, SSE is the next step: still plain HTTP, minimal new infrastructure. WebSockets add complexity with no benefit here, because data only flows from server to browser.</p>
+</details>`
+  }
+},
+{
+  id: "database-sharding",
+  title: "Database Sharding",
+  summary: "Splitting one big database into several smaller databases on different servers, so no single server has to store all the data or take all the writes.",
+  category: "Databases",
+  order: 20,
+  prerequisites: ["saga-pattern"],
+  sections: {
+what: `
+<p><strong>Sharding</strong> means splitting the rows of a table across several database servers. Each server holds only part of the data. Each part is called a <strong>shard</strong>.</p>
+<p>All shards have the <em>same tables and columns</em>. They just hold different rows. For example, users 1 to 1 million on shard A, users 1 million to 2 million on shard B.</p>
+<p>The column used to decide which shard a row goes to is called the <strong>shard key</strong> (for example <code>user_id</code> or <code>tenant_id</code>).</p>
+<div class="note"><strong>Quick background</strong>, since sharding builds on these ideas:
+<ul style="margin:6px 0 0">
+<li><strong>Vertical scaling</strong>: give the one database server more CPU, RAM, and faster disks. Simple, but there is a ceiling and it gets expensive.</li>
+<li><strong>Replication</strong>: keep <em>copies</em> of the same data on several servers. Usually one <strong>primary</strong> takes writes, and <strong>replicas</strong> serve reads. Every server still holds all the data.</li>
+<li><strong>Partitioning</strong>: splitting a table into pieces. If the pieces stay on one server (like PostgreSQL’s built-in table partitioning), that is partitioning but not sharding. Sharding is partitioning <em>across servers</em>.</li>
+</ul></div>
+<p>So: replication = same data, many copies. Sharding = different data, many pieces. Real systems often use both: each shard has its own replicas.</p>`,
+
+why: `
+<p>A single database server has limits:</p>
+<ul>
+<li><strong>Writes.</strong> Read replicas help with reads, but every write still goes to the one primary. If writes grow beyond what one machine can handle, replicas don’t help.</li>
+<li><strong>Storage.</strong> The data might grow larger than one machine can store comfortably. Large tables also make backups, restores, index builds, and schema changes slow.</li>
+<li><strong>Working set.</strong> Databases are fast when the frequently used data and indexes fit in memory. When they no longer fit, more queries hit disk and slow down.</li>
+</ul>
+<p>Sharding solves these by dividing the work. With 4 shards, each server stores roughly a quarter of the data and takes roughly a quarter of the writes, <em>if</em> the shard key spreads the load evenly.</p>
+<p>Without it, once you hit the ceiling of the biggest machine you can buy, the only options left are to delete or archive data, or to slow down growth.</p>`,
+
+realWorld: `
+<p>Think of a city library that has grown too big for one building.</p>
+<p><strong>Replication</strong> is building three identical libraries with the same books. More people can read at once, but every new book must be added to all three buildings. And each building still needs room for every book.</p>
+<p><strong>Sharding</strong> is splitting the collection: authors A–H in the north branch, I–P in the central branch, Q–Z in the south branch. Each branch holds fewer books, and new books only go to one branch.</p>
+<p>The trade-offs show up immediately:</p>
+<ul>
+<li>To find a book, you need to know the rule (“authors starting with M are central”). That rule is the <strong>shard key</strong>.</li>
+<li>A question like “list every book published in 2020” means visiting all three branches. That is a <strong>cross-shard query</strong>.</li>
+<li>If authors starting with S are hugely popular, the south branch gets crowded while others are quiet. That is a <strong>hot shard</strong>.</li>
+<li>Opening a fourth branch means moving books around. That is <strong>resharding</strong>.</li>
+</ul>`,
+
+software: `
+<p>Say you run a multi-tenant SaaS product on PostgreSQL. Each customer company is a <strong>tenant</strong>. Almost every query is about one tenant: “show this tenant’s invoices”.</p>
+<p>That makes <code>tenant_id</code> a natural shard key: all data for one tenant lives on one shard, so most queries touch only one database.</p>
+<p>A simple version uses a <strong>lookup table</strong> that says which shard each tenant lives on:</p>
+<pre><code>// shard-router.ts
+import { Pool } from 'pg';
+
+const shards: Record&lt;string, Pool&gt; = {
+  shard_1: new Pool({ connectionString: process.env.SHARD_1_URL }),
+  shard_2: new Pool({ connectionString: process.env.SHARD_2_URL }),
+};
+
+// tenant -&gt; shard mapping, stored in a small "directory" database,
+// cached in memory or Redis because it is read on every request
+async function shardFor(tenantId: string): Promise&lt;Pool&gt; {
+  const name = await directory.getShardName(tenantId); // e.g. "shard_2"
+  return shards[name];
+}
+
+export async function getInvoices(tenantId: string) {
+  const db = await shardFor(tenantId);
+  const res = await db.query(
+    'SELECT * FROM invoices WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 50',
+    [tenantId]
+  );
+  return res.rows;
+}</code></pre>
+<p>Notice what is now harder:</p>
+<ul>
+<li>“Total revenue across all tenants” must query every shard and add up the results in your app.</li>
+<li>You can’t rely on one <code>SERIAL</code> sequence for IDs across shards, because each shard has its own. Use UUIDs (UUIDv7 sorts by time), or another globally unique scheme.</li>
+<li>A transaction that changes data on two shards is no longer a normal single-database transaction. (The Saga Pattern and 2PC topic covers how to handle this.)</li>
+</ul>
+<p class="note">Tools: you don’t always write this routing yourself. For PostgreSQL, the <strong>Citus</strong> extension shards tables across nodes. For MySQL, <strong>Vitess</strong> does it. MongoDB and Cassandra shard built-in. Many teams still route in the app for full control.</p>`,
+
+internals: `
+<p>Flow of one request in an app-level sharded system:</p>
+<ol>
+<li>The user sends <code>GET /invoices</code> with their auth token.</li>
+<li>The API server reads the shard key from the request (here, <code>tenant_id</code> from the token).</li>
+<li>The <strong>router</strong> works out which shard holds that key: by a formula (hash or range) or by looking it up in the directory.</li>
+<li>The server sends the query to that one shard only.</li>
+<li>The shard runs the query on its smaller dataset and returns rows.</li>
+<li>The server returns the result to the user.</li>
+</ol>
+<p>For a query <em>without</em> the shard key (“find invoice by invoice number” when you don’t know the tenant), the router must send it to <em>all</em> shards and merge the results. This is called <strong>scatter-gather</strong>. It is slower and gets worse as you add shards.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 290" role="img" aria-label="Request routed through a shard router to one of three shards">
+<defs><marker id="ah-sh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="20" y="115" width="110" height="50" rx="8" class="box"/><text x="75" y="145" text-anchor="middle" class="lbl">User</text>
+<rect x="180" y="115" width="130" height="50" rx="8" class="box"/><text x="245" y="137" text-anchor="middle" class="lbl">API server</text><text x="245" y="154" text-anchor="middle" class="sub">+ shard router</text>
+<rect x="250" y="220" width="130" height="50" rx="8" class="box"/><text x="315" y="242" text-anchor="middle" class="lbl">Directory</text><text x="315" y="259" text-anchor="middle" class="sub">tenant → shard</text>
+<rect x="440" y="20" width="170" height="50" rx="8" class="box"/><text x="525" y="42" text-anchor="middle" class="lbl">Shard 1</text><text x="525" y="59" text-anchor="middle" class="sub">tenants A, D, G…</text>
+<rect x="440" y="115" width="170" height="50" rx="8" class="box hi"/><text x="525" y="137" text-anchor="middle" class="lbl">Shard 2</text><text x="525" y="154" text-anchor="middle" class="sub">tenants B, E, H…</text>
+<rect x="440" y="210" width="170" height="50" rx="8" class="box"/><text x="525" y="232" text-anchor="middle" class="lbl">Shard 3</text><text x="525" y="249" text-anchor="middle" class="sub">tenants C, F, I…</text>
+<line x1="130" y1="140" x2="178" y2="140" class="arr" marker-end="url(#ah-sh)"/>
+<line x1="260" y1="165" x2="295" y2="218" class="arr dim" marker-end="url(#ah-sh)"/>
+<line x1="310" y1="140" x2="438" y2="140" class="arr" marker-end="url(#ah-sh)"/>
+<line x1="310" y1="128" x2="438" y2="50" class="arr faint" marker-end="url(#ah-sh)"/>
+<line x1="310" y1="152" x2="438" y2="230" class="arr faint" marker-end="url(#ah-sh)"/>
+<text x="330" y="132" class="sub">tenant B → shard 2</text>
+</svg>
+</div>
+<p>Each shard is usually a full database setup on its own: one primary plus replicas, its own backups, and its own monitoring.</p>`,
+
+types: `
+<h4>1. Range-based sharding</h4>
+<p><strong>What:</strong> each shard owns a range of key values. IDs 1–1M on shard 1, 1M–2M on shard 2. Or dates: 2024 on one shard, 2025 on another.</p>
+<p><strong>Good:</strong> range queries (“orders from March”) touch few shards. Easy to understand.</p>
+<p><strong>Bad:</strong> new data often goes to the newest range, so one shard takes all the writes (a hot shard). Uneven data needs ranges to be split later.</p>
+
+<h4>2. Hash-based sharding</h4>
+<p><strong>What:</strong> run the key through a hash function and use the result to pick a shard. Simplest form: <code>hash(user_id) % N</code>.</p>
+<p><strong>Good:</strong> spreads keys evenly, so load is usually balanced.</p>
+<p><strong>Bad:</strong> range queries must hit every shard. With plain <code>% N</code>, changing N moves most keys (see the numbers section). <strong>Consistent hashing</strong> or a fixed large number of virtual buckets (for example 1,024 buckets mapped onto however many servers you have) reduces how much data moves.</p>
+
+<h4>How consistent hashing helps</h4>
+<p><strong>The one-minute version:</strong> consistent hashing is a way to assign keys to servers so that when you add or remove a server, only a small share of keys move, instead of almost all of them.</p>
+
+<p><strong>The problem it solves.</strong> With <code>hash(key) % N</code>, the shard for every key depends on N. Change N from 8 to 9 and the answer changes for most keys. Most of your data now sits on the “wrong” shard and must be copied. While that copy runs, reads may look in the wrong place. With terabytes of data, that is hours or days of risky work.</p>
+
+<p><strong>The idea: a ring.</strong> Imagine all possible hash values arranged in a circle, like the numbers on a clock, where the largest value wraps back to the smallest.</p>
+<ol>
+<li>Hash each <strong>server’s name</strong> (for example <code>hash("shard-A")</code>) to get its position on the ring.</li>
+<li>Hash each <strong>key</strong> (for example <code>hash(user_id)</code>) to get its position on the same ring.</li>
+<li>To find a key’s shard, start at the key’s position and walk <strong>clockwise</strong> until you reach a server. That server owns the key.</li>
+</ol>
+<p>The important part: a key’s owner depends only on its <em>nearest server clockwise</em>, not on the total number of servers.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 300" role="img" aria-label="Hash ring before and after adding server D. Only key k1 moves.">
+<text x="150" y="18" text-anchor="middle" class="lbl">Before: servers A, B, C</text>
+<circle cx="150" cy="140" r="90" class="box" style="fill:none"/>
+<circle cx="150" cy="50" r="9" class="box hi"/><text x="150" y="36" text-anchor="middle" class="lbl">A</text>
+<circle cx="228" cy="185" r="9" class="box hi"/><text x="246" y="200" class="lbl">B</text>
+<circle cx="72" cy="185" r="9" class="box hi"/><text x="46" y="200" class="lbl">C</text>
+<circle cx="228" cy="95" r="5" class="box"/><text x="240" y="90" class="sub">k1 → B</text>
+<circle cx="240" cy="140" r="5" class="box"/><text x="252" y="144" class="sub">k2 → B</text>
+<circle cx="119" cy="225" r="5" class="box"/><text x="80" y="248" class="sub">k3 → C</text>
+<circle cx="72" cy="95" r="5" class="box"/><text x="14" y="90" class="sub">k4 → A</text>
+
+<text x="470" y="18" text-anchor="middle" class="lbl">After: add server D</text>
+<circle cx="470" cy="140" r="90" class="box" style="fill:none"/>
+<circle cx="470" cy="50" r="9" class="box hi"/><text x="470" y="36" text-anchor="middle" class="lbl">A</text>
+<circle cx="548" cy="185" r="9" class="box hi"/><text x="566" y="200" class="lbl">B</text>
+<circle cx="392" cy="185" r="9" class="box hi"/><text x="366" y="200" class="lbl">C</text>
+<circle cx="557" cy="117" r="9" class="box warn"/><text x="573" y="121" class="lbl">D</text>
+<circle cx="548" cy="95" r="5" class="box warn"/><text x="500" y="80" class="sub">k1 → D (moved)</text>
+<circle cx="560" cy="140" r="5" class="box"/><text x="572" y="156" class="sub">k2 → B</text>
+<circle cx="439" cy="225" r="5" class="box"/><text x="400" y="248" class="sub">k3 → C</text>
+<circle cx="392" cy="95" r="5" class="box"/><text x="334" y="90" class="sub">k4 → A</text>
+<text x="320" y="285" text-anchor="middle" class="sub">Each key walks clockwise to the first server. D only takes keys between A and D, which used to belong to B.</text>
+</svg>
+</div>
+
+<p><strong>Adding a server.</strong> When D joins the ring, it lands between two existing servers. Only the keys on the arc just before D (keys that used to walk past that spot to B) now stop at D. Every other key still reaches the same server as before. In the diagram, only k1 moves.</p>
+<p><strong>Removing a server.</strong> If a server leaves (or fails), only its keys move, to the next server clockwise. Everyone else stays put.</p>
+
+<h4>The catch, and the fix: virtual nodes</h4>
+<p>With only a few servers, their random positions on the ring are rarely evenly spaced. One server might own a huge arc and get far more keys than the others. Also, when a server leaves, <em>all</em> its keys land on just one neighbour, which can overload it.</p>
+<p>The usual fix is <strong>virtual nodes</strong>: put each physical server on the ring many times (for example, hash <code>"shard-A#1"</code>, <code>"shard-A#2"</code>, … up to 100 or more). Now each server owns many small arcs spread around the ring. This gives two benefits:</p>
+<ul>
+<li>Load is much more even, because many small random arcs average out.</li>
+<li>When a server leaves, its keys spread across <em>many</em> other servers instead of one neighbour.</li>
+</ul>
+<p>It also lets you give a bigger machine more virtual nodes, so it takes a bigger share.</p>
+
+<h4>A small code sketch</h4>
+<pre><code>// consistent-hash-ring.ts  (to show the idea, not production code)
+import { createHash } from 'crypto';
+
+const hash = (s: string) =&gt;
+  createHash('md5').update(s).digest().readUInt32BE(0); // 0 .. 2^32-1
+
+class HashRing {
+  private ring: { pos: number; server: string }[] = [];
+
+  constructor(servers: string[], private vnodes = 100) {
+    servers.forEach(s =&gt; this.add(s));
+  }
+
+  add(server: string) {
+    for (let i = 0; i &lt; this.vnodes; i++) {
+      this.ring.push({ pos: hash(server + '#' + i), server });
+    }
+    this.ring.sort((a, b) =&gt; a.pos - b.pos);
+  }
+
+  remove(server: string) {
+    this.ring = this.ring.filter(n =&gt; n.server !== server);
+  }
+
+  // first ring position at or after the key's hash; wrap to the start if none
+  serverFor(key: string): string {
+    const h = hash(key);
+    const node = this.ring.find(n =&gt; n.pos &gt;= h) ?? this.ring[0];
+    return node.server;
+  }
+}
+
+const ring = new HashRing(['shard-A', 'shard-B', 'shard-C']);
+ring.serverFor('user-42'); // e.g. 'shard-B'</code></pre>
+<p>A real implementation would use binary search instead of <code>find</code>, because the ring can have thousands of entries and this lookup runs on every request.</p>
+
+<h4>Numbers: % N vs consistent hashing</h4>
+<p>Assume 10 million keys spread evenly (illustrative).</p>
+<div class="table-wrap"><table>
+<tr><th>Change</th><th>hash % N: keys that move</th><th>Consistent hashing: keys that move</th></tr>
+<tr><td>4 → 5 servers</td><td>about 4/5 ≈ 8,000,000</td><td>about 1/5 ≈ 2,000,000</td></tr>
+<tr><td>8 → 9 servers</td><td>about 8/9 ≈ 8,900,000</td><td>about 1/9 ≈ 1,100,000</td></tr>
+<tr><td>One of 8 servers removed</td><td>about 7/8 ≈ 8,750,000</td><td>about 1/8 ≈ 1,250,000 (only the removed server’s keys)</td></tr>
+</table></div>
+<p>The consistent hashing column is the minimum possible: the new server must receive its fair share from somewhere. Those figures assume a well-balanced ring (virtual nodes); with few virtual nodes the real share can be noticeably higher or lower.</p>
+
+<h4>A popular alternative: fixed slots</h4>
+<p>Many systems get the same benefit in a simpler way. They split the hash space into a fixed, large number of <strong>slots</strong> (buckets) that never changes, and keep a small table saying which server owns each slot. Adding a server means handing it some slots. Example: Redis Cluster uses 16,384 hash slots. This is easy to reason about and lets you move exactly the slots you choose.</p>
+
+<h4>What consistent hashing does not solve</h4>
+<ul>
+<li>It decides <em>which</em> keys move. You still have to actually copy that data to the new shard while live traffic continues, then switch routing.</li>
+<li>It doesn’t fix hot keys. If one user or tenant gets huge traffic, they are still one key on one server.</li>
+<li>Range queries still need to hit many shards, because hashing scatters neighbouring keys.</li>
+<li>Every app server must use the same ring (same hash function, same server list, same virtual node count). If two servers disagree, they route the same key to different shards.</li>
+</ul>
+<p>Where you will see it: Amazon’s Dynamo paper, Cassandra (token ring with virtual nodes), many caching clients for spreading keys across Memcached or Redis servers, and load balancers that need “same user → same server” without a lookup table.</p>
+
+<h4>3. Directory-based (lookup) sharding</h4>
+<p><strong>What:</strong> a lookup table maps each key (or tenant) to a shard.</p>
+<p><strong>Good:</strong> very flexible. You can move one big tenant to its own shard. Common for multi-tenant SaaS.</p>
+<p><strong>Bad:</strong> the directory is an extra component on every request. It must be fast (cached) and highly available, or it becomes a single point of failure.</p>
+
+<h4>4. Geographic sharding</h4>
+<p><strong>What:</strong> shard by region: Indian users in an India data center, EU users in the EU.</p>
+<p><strong>Good:</strong> lower delay for users, and helps with data residency laws.</p>
+<p><strong>Bad:</strong> regions are rarely equal in size; users who move or interact across regions are tricky.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Range</th><th>Hash</th><th>Directory</th><th>Geographic</th></tr>
+<tr><td>Even spread</td><td>Often uneven</td><td>Usually even</td><td>You control it</td><td>Depends on users</td></tr>
+<tr><td>Range queries</td><td>Efficient</td><td>Hit all shards</td><td>Depends on mapping</td><td>Efficient within a region</td></tr>
+<tr><td>Adding shards</td><td>Split a range</td><td>Hard with % N; easier with buckets</td><td>Update the mapping, move data</td><td>Add a region</td></tr>
+<tr><td>Extra parts</td><td>Range map</td><td>None</td><td>Directory service</td><td>Region routing</td></tr>
+<tr><td>Typical use</td><td>Time-series, logs</td><td>User data at large scale</td><td>Multi-tenant SaaS</td><td>Global apps, data laws</td></tr>
+</table></div>
+
+<h4>Choosing a shard key</h4>
+<p>This is the most important decision, and it is hard to change later. A good shard key:</p>
+<ul>
+<li>Appears in most queries (so most queries hit one shard).</li>
+<li>Has many distinct values and spreads load evenly.</li>
+<li>Keeps data that is used together on the same shard (all of one tenant’s rows together).</li>
+</ul>`,
+
+numbers: `
+<p><strong>Assumptions</strong> (illustrative only, not benchmarks): your database has 2 TB of data and must handle 20,000 writes per second at peak. Load tests showed one primary handles about 5,000 writes per second comfortably for your workload.</p>
+<ul>
+<li>Minimum shards for writes: 20,000 ÷ 5,000 = <strong>4</strong>.</li>
+<li>You want headroom for growth and uneven traffic, so plan for <strong>8 shards</strong>: about 2,500 writes/s and 250 GB each.</li>
+</ul>
+
+<h4>Why <code>% N</code> hurts when you add a shard</h4>
+<p>With <code>shard = hash(key) % 8</code>, going from 8 to 9 shards changes the result for most keys. On average about <strong>8 out of 9 keys (≈ 89%) move</strong> to a different shard. Moving most of 2 TB while serving live traffic is risky and slow.</p>
+<p>With consistent hashing, adding the 9th shard moves only about <strong>1/9 of keys (≈ 11%)</strong>: just enough to fill the new shard.</p>
+
+<h4>Hot shard example</h4>
+<p>Say 1,000 tenants are spread evenly across 8 shards (125 each). One tenant is a huge customer producing 30% of all writes: 6,000 writes/s. Whatever shard holds them now gets 6,000 + about 1,750 (its share of the rest) = <strong>~7,750 writes/s</strong>, far over the 5,000 limit, while other shards sit at ~1,750.</p>
+<p>Even sharding by tenant count did not give even load. With directory-based sharding you can give that tenant its own shard. If one tenant alone exceeds a shard’s capacity, you need a finer key for them (for example tenant plus customer ID).</p>`,
+
+tradeoffs: `
+<h4>What you gain</h4>
+<ul>
+<li>Write capacity and storage that grow by adding servers.</li>
+<li>Smaller datasets per server: faster backups, restores, index builds.</li>
+<li>Failure isolation: one shard down affects only part of the users.</li>
+</ul>
+<h4>What you give up</h4>
+<ul>
+<li><strong>Cross-shard queries</strong> become scatter-gather; slower and more complex.</li>
+<li><strong>Joins across shards</strong> aren’t done by the database for you (unless a tool like Citus handles some cases).</li>
+<li><strong>Transactions across shards</strong> lose simple ACID guarantees. You need two-phase commit or patterns like sagas.</li>
+<li><strong>Unique constraints and foreign keys</strong> only work inside one shard.</li>
+<li><strong>Operations</strong> multiply: N shards means N sets of backups, migrations, monitoring, and failovers. Schema migrations must run on every shard.</li>
+<li><strong>Resharding</strong> later is one of the hardest operations in backend engineering.</li>
+</ul>
+<p>Sharding is a big, mostly one-way step. Most teams treat it as a last resort.</p>`,
+
+whenToUse: `
+<h4>Signals you may need sharding</h4>
+<ul>
+<li>Write load is near the limit of your largest reasonable primary, even after tuning.</li>
+<li>Data size makes backups, restores, or migrations unacceptably slow.</li>
+<li>Your growth forecast clearly passes one machine’s limits soon.</li>
+<li>You need data in specific regions for legal reasons.</li>
+</ul>
+<h4>Try these first (usually in this order)</h4>
+<ol>
+<li>Fix slow queries and add the right indexes.</li>
+<li>Add caching (for example Redis) for hot reads.</li>
+<li>Add read replicas for read-heavy load.</li>
+<li>Scale the server up (vertical scaling). Modern machines are very large.</li>
+<li>Archive or delete old data; use table partitioning on one server.</li>
+<li>Split by feature: move a separate domain (like analytics or logs) to its own database. This is sometimes called vertical partitioning or functional partitioning.</li>
+</ol>
+<p>Many large products run for years on one well-tuned PostgreSQL primary plus replicas. Only shard when you have numbers showing you need it.</p>`,
+
+mistakes: `
+<ul>
+<li><strong>Sharding too early.</strong> You pay the complexity cost long before you get any benefit.</li>
+<li><strong>A bad shard key.</strong> For example <code>created_at</code> (all new writes go to one shard) or <code>country</code> (one country dominates).</li>
+<li><strong>Using <code>% N</code> without a plan for growth.</strong> Adding a shard then means moving most of the data.</li>
+<li><strong>Confusing sharding with replication.</strong> Replicas add read capacity and availability; they don’t add write capacity or reduce data per server.</li>
+<li><strong>Ignoring queries without the shard key.</strong> Admin search, reporting, and analytics often need a separate system (a search index like Meilisearch/Elasticsearch, or a data warehouse fed by change events).</li>
+<li><strong>Relying on auto-increment IDs.</strong> Two shards both create order #1001.</li>
+<li><strong>Forgetting each shard needs replicas.</strong> Without them, losing one shard’s server loses that part of the data until restore.</li>
+</ul>`,
+
+interview: `
+<h4>Common questions</h4>
+<p><strong>“Your database can’t keep up. What do you do?”</strong><br>
+First find out why: reads or writes? Fix queries and indexes, add caching, add read replicas for reads, scale up. Shard only when writes or data size exceed one machine. Interviewers like hearing that order.</p>
+<p><strong>“How would you shard the users table?”</strong><br>
+Choose a key used in most queries and spread evenly, like <code>user_id</code>, with hashing. Mention how you’d handle lookups by email (a separate lookup table from email to user_id) and how you’d add shards later (buckets or consistent hashing).</p>
+<p><strong>“What’s the difference between sharding and replication?”</strong><br>
+Replication copies the same data to more servers (helps reads and availability). Sharding splits the data across servers (helps writes and storage). They are usually combined.</p>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>How do you handle a celebrity user or a huge tenant (hot shard)?</li>
+<li>How do you do a transaction across two shards? (2PC or sagas; ideally design so it isn’t needed.)</li>
+<li>How do you generate unique IDs?</li>
+<li>How do you add a shard with no downtime? (Copy data in the background, keep it in sync with change capture or double writes, then switch routing.)</li>
+<li>How do you run a report across all users? (Scatter-gather for small cases; a separate analytics store for real reporting.)</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>In a design like “Twitter” or “Uber”, sharding usually appears when you estimate storage and write rates. Show the numbers that justify it, pick the key, and name the trade-off you accept.</p>`,
+
+revision: `
+<h4>Summary</h4>
+<ul>
+<li>Sharding splits rows across several database servers; each part is a shard.</li>
+<li>Replication copies data; sharding divides it. They are often combined.</li>
+<li>The shard key decides where each row lives, and it is hard to change later.</li>
+<li>Range, hash, directory, and geographic are the main strategies.</li>
+<li>Queries with the shard key hit one shard; queries without it hit all.</li>
+<li>Cross-shard joins, transactions, and unique constraints get harder.</li>
+<li>Plain <code>% N</code> moves most data when N changes; buckets or consistent hashing help.</li>
+<li>Shard last, after indexes, caching, replicas, and vertical scaling.</li>
+</ul>
+<h4>Key terms</h4>
+<ul>
+<li><strong>Shard</strong>: one piece of the data, on its own server.</li>
+<li><strong>Shard key</strong>: the column used to pick the shard.</li>
+<li><strong>Hot shard</strong>: one shard getting much more load than others.</li>
+<li><strong>Scatter-gather</strong>: sending a query to all shards and merging results.</li>
+<li><strong>Resharding</strong>: changing the number of shards or the mapping, which means moving data.</li>
+<li><strong>Consistent hashing</strong>: a hashing method where adding a server moves only a small share of keys.</li>
+</ul>
+<h4>Test yourself</h4>
+<ol>
+<li>Your app is read-heavy and reads are slow, but writes are low. Does sharding help most? What would you try?</li>
+<li>Why is <code>created_at</code> usually a bad shard key for an orders table?</li>
+<li>With <code>hash(key) % 4</code>, roughly what share of keys move when you go to 5 shards?</li>
+<li>Name two things that a single PostgreSQL database gives you for free but that become hard after sharding.</li>
+<li>Is PostgreSQL’s built-in table partitioning the same as sharding? Why or why not?</li>
+</ol>
+<details class="answer"><summary>Show answers</summary>
+<ol>
+<li>Probably not. Try query tuning, indexes, caching, and read replicas first. Sharding mainly helps write load and data size.</li>
+<li>All new orders have recent timestamps, so all writes go to the newest shard while older shards sit idle.</li>
+<li>About 4 out of 5, so around 80%.</li>
+<li>Any two of: transactions across all data, joins, foreign keys, unique constraints across all rows, a single auto-increment sequence.</li>
+<li>No. Built-in partitioning splits a table into pieces on the same server. Sharding spreads pieces across different servers.</li>
+</ol>
+</details>
+<h4>Scenario</h4>
+<p>A B2B app has 300 tenants on one PostgreSQL server: 400 GB, CPU at 70% at peak, mostly from reports run by a few big tenants. The team proposes sharding by <code>tenant_id</code>. What do you suggest?</p>
+<details class="answer"><summary>Show a good answer</summary>
+<p>Sharding looks premature. 400 GB fits on one server. The pressure comes from reports, which are reads: move them to a read replica or an analytics store, and tune the report queries. If growth continues, directory-based sharding by <code>tenant_id</code> is a good future plan, because almost every query is per tenant and big tenants can be placed on their own shard. Prepare now by using UUIDs instead of sequences and keeping <code>tenant_id</code> on every table.</p>
+</details>`
+  }
+},
+{
+  id: "saga-pattern",
+  title: "Saga Pattern and Two-Phase Commit (2PC)",
+  summary: "Two ways to complete one business action that changes data in several databases or services: 2PC makes it all-or-nothing, a saga runs steps one by one and undoes them if something fails.",
+  category: "Distributed transactions",
+  order: 30,
+  prerequisites: ["database-sharding"],
+  sections: {
+what: `
+<p>Sometimes one user action must change data in <strong>more than one database</strong>. Example: placing an order must create the order, take payment, and reserve stock, and each of those lives in a different service with its own database.</p>
+<p>We want this to behave like one unit: either everything happens, or nothing does. This is called a <strong>distributed transaction</strong>. There are two main ways to handle it:</p>
+<ul>
+<li><strong>Two-Phase Commit (2PC)</strong>: a coordinator first asks every database “Can you commit?” Only if <em>all</em> say yes does it tell them “Commit now.” If anyone says no, everyone cancels. The result is truly all-or-nothing.</li>
+<li><strong>Saga</strong>: do the steps one after another, each as its own small transaction that commits immediately. If a later step fails, run <strong>compensating actions</strong> to undo the earlier steps (for example, refund a payment).</li>
+</ul>
+<p class="note">One-line version: 2PC = “everyone agrees first, then everyone commits together.” Saga = “commit step by step, and clean up if something goes wrong.”</p>
+
+<div class="note"><strong>Quick background</strong>:
+<ul style="margin:6px 0 0">
+<li>A <strong>transaction</strong> inside one database is all-or-nothing. Its guarantees are called <strong>ACID</strong>: Atomic (all or nothing), Consistent (rules are kept), Isolated (others don’t see half-done work), Durable (once saved, it stays saved).</li>
+<li>A <strong>local transaction</strong> is a normal transaction inside one database.</li>
+<li>In microservices, each service usually owns its database (<strong>database-per-service</strong>). The Order service can’t simply open a transaction that also covers the Payment database.</li>
+<li>The same problem appears after sharding: one transaction can’t easily cover rows on two different shards. See the Database Sharding topic.</li>
+</ul></div>`,
+
+why: `
+<p>Without any plan, you call the services one by one and hope nothing fails. Here is what goes wrong:</p>
+<ol>
+<li>Order service creates the order. ✔</li>
+<li>Payment service charges ₹2,000. ✔</li>
+<li>Inventory service says “out of stock”. ✘</li>
+</ol>
+<p>Now the customer has paid for something you can’t ship. The databases disagree with each other. Someone has to notice and fix it by hand.</p>
+<p>Both 2PC and sagas exist to prevent this. They make different promises:</p>
+<ul>
+<li><strong>2PC</strong> promises nobody ever sees the half-done state. The cost: databases must hold locks while waiting for everyone to agree, and if the coordinator fails at the wrong moment, those locks can stay stuck.</li>
+<li><strong>A saga</strong> promises the system will <em>end up</em> correct (either fully done or fully undone). The cost: for a short time, the half-done state is real and visible, and you must write the undo logic yourself.</li>
+</ul>
+<p>So the question is: <em>do you need strict all-or-nothing at every moment, or is “correct in the end” good enough?</em> For most business workflows across services, “correct in the end” is acceptable, which is why sagas are common in microservices.</p>`,
+
+realWorld: `
+<h4>2PC: a wedding ceremony</h4>
+<p>The officiant is the <strong>coordinator</strong>. The two people getting married are the <strong>participants</strong>.</p>
+<ol>
+<li><strong>Phase 1 (prepare):</strong> the officiant asks each person, “Do you take…?” Each one must answer. Once someone says “I do,” they can’t change their mind or walk away. They are now waiting.</li>
+<li><strong>Phase 2 (commit):</strong> only if <em>both</em> said “I do,” the officiant says, “I now pronounce you married.” If either said no, the wedding is off for both.</li>
+</ol>
+<p>Now imagine the officiant faints right after both said “I do” but before the final words. The two people are stuck. They can’t leave (they promised), and they can’t declare themselves married (only the officiant can decide). They wait until the officiant wakes up. This is exactly 2PC’s famous weakness: <strong>blocking</strong>.</p>
+
+<h4>Saga: booking a trip</h4>
+<p>You book a flight, a hotel, and a rental car from three different companies. No one can book all three as a single unit, so you go step by step:</p>
+<ol>
+<li>Book the flight. ✔</li>
+<li>Book the hotel. ✔</li>
+<li>Book the car. ✘ None available.</li>
+</ol>
+<p>So you cancel the hotel, then cancel the flight. Notice:</p>
+<ul>
+<li>For a while, you really held a flight seat and a hotel room. Other people couldn’t book them. That visible in-between state is normal in a saga.</li>
+<li>Cancelling isn’t the same as “it never happened.” The airline may charge a fee. Undo can be imperfect.</li>
+<li>If the airline’s line is busy when you try to cancel, you must keep trying. Undo steps must be retried until they succeed.</li>
+</ul>`,
+
+software: `
+<h4>2PC between two PostgreSQL databases</h4>
+<p>Say you move ₹500 from an account in database A to an account in database B. PostgreSQL supports 2PC with <code>PREPARE TRANSACTION</code>. Here your Node.js app acts as the coordinator.</p>
+<pre><code>// transfer-2pc.ts  (simplified, to show the idea)
+import { Client } from 'pg';
+
+export async function transfer(a: Client, b: Client, txId: string) {
+  const idA = txId + '-a', idB = txId + '-b';
+  try {
+    // PHASE 1: do the work, then "prepare" (vote yes) on each database
+    await a.query('BEGIN');
+    await a.query('UPDATE accounts SET balance = balance - 500 WHERE id = $1 AND balance &gt;= 500', [1]);
+    await a.query("PREPARE TRANSACTION '" + idA + "'");
+
+    await b.query('BEGIN');
+    await b.query('UPDATE accounts SET balance = balance + 500 WHERE id = $1', [2]);
+    await b.query("PREPARE TRANSACTION '" + idB + "'");
+
+    // Both voted yes. Save the decision durably BEFORE telling anyone.
+    await decisionLog.save(txId, 'COMMIT');
+
+    // PHASE 2: commit everywhere
+    await a.query("COMMIT PREPARED '" + idA + "'");
+    await b.query("COMMIT PREPARED '" + idB + "'");
+  } catch (err) {
+    await decisionLog.save(txId, 'ABORT');
+    // roll back whatever was prepared (ignore "does not exist" errors)
+    await a.query("ROLLBACK PREPARED '" + idA + "'").catch(() =&gt; {});
+    await b.query("ROLLBACK PREPARED '" + idB + "'").catch(() =&gt; {});
+    throw err;
+  }
+}</code></pre>
+<p>Things this code shows:</p>
+<ul>
+<li>After <code>PREPARE TRANSACTION</code>, the changes are saved to disk but not visible, and the rows stay <strong>locked</strong> until <code>COMMIT PREPARED</code> or <code>ROLLBACK PREPARED</code>.</li>
+<li>If the app crashes between prepare and commit, those prepared transactions stay in PostgreSQL holding locks. You must have a recovery job that reads the decision log and finishes them. You can see stuck ones in the <code>pg_prepared_xacts</code> view.</li>
+<li>Prepared transactions are disabled by default (<code>max_prepared_transactions = 0</code>). PostgreSQL’s docs suggest most applications shouldn’t use this directly; it is mainly for transaction managers.</li>
+</ul>
+<p class="note">In practice, few teams hand-write 2PC like this. You meet 2PC inside tools: Java XA transaction managers, distributed databases (they use it internally between their own nodes), and Kafka’s transactions, which use a 2PC-style protocol internally.</p>
+
+<h4>Saga for placing an order</h4>
+<p>Same order example, with NestJS services talking over RabbitMQ or Kafka. This is an <strong>orchestrated</strong> saga: one place runs the steps and knows how to undo them.</p>
+<pre><code>// place-order.saga.ts  (simplified, to show the idea)
+type Step = {
+  name: string;
+  run: (ctx: OrderCtx) =&gt; Promise&lt;void&gt;;
+  compensate: (ctx: OrderCtx) =&gt; Promise&lt;void&gt;;
+};
+
+const steps: Step[] = [
+  { name: 'createOrder',
+    run: ctx =&gt; orders.create(ctx.orderId, 'PENDING'),
+    compensate: ctx =&gt; orders.setStatus(ctx.orderId, 'CANCELLED') },
+  { name: 'reserveStock',
+    run: ctx =&gt; inventory.reserve(ctx.orderId, ctx.items),
+    compensate: ctx =&gt; inventory.release(ctx.orderId) },
+  { name: 'chargePayment',
+    run: ctx =&gt; payments.charge(ctx.orderId, ctx.amount),
+    compensate: ctx =&gt; payments.refund(ctx.orderId) },
+  { name: 'confirmOrder',
+    run: ctx =&gt; orders.setStatus(ctx.orderId, 'CONFIRMED'),
+    compensate: async () =&gt; {} },
+];
+
+export async function placeOrder(ctx: OrderCtx) {
+  const done: Step[] = [];
+  for (const step of steps) {
+    try {
+      await step.run(ctx);
+      done.push(step);
+      await sagaLog.save(ctx.orderId, step.name, 'DONE'); // remember progress
+    } catch (err) {
+      for (const s of done.reverse()) {
+        await retryUntilSuccess(() =&gt; s.compensate(ctx));
+      }
+      return { status: 'FAILED', reason: String(err) };
+    }
+  }
+  return { status: 'CONFIRMED' };
+}</code></pre>
+<p>Why this order? Reserving stock is easy to undo. Charging money is harder to undo (refunds cost money and annoy customers). So the hard-to-undo step goes <em>later</em>, after the cheap checks pass.</p>
+<p class="note">This sketch keeps progress inside a running function. If the server crashes mid-saga, that is lost. Real systems store saga state in a database and resume after restart, or use a workflow engine such as <strong>Temporal</strong>, <strong>Camunda</strong>, or <strong>AWS Step Functions</strong>.</p>`,
+
+internals: `
+<h4>How 2PC works, step by step</h4>
+<p>Roles: one <strong>coordinator</strong> (decides) and several <strong>participants</strong> (the databases doing the work).</p>
+<p><strong>Phase 1: prepare (voting)</strong></p>
+<ol>
+<li>The coordinator sends “prepare” to every participant.</li>
+<li>Each participant does the work, writes everything needed to disk, and locks the affected rows.</li>
+<li>Each participant votes: <strong>YES</strong> (“I can commit and I promise I will, even if I crash and restart”) or <strong>NO</strong>.</li>
+</ol>
+<p><strong>Phase 2: commit or abort (decision)</strong></p>
+<ol start="4">
+<li>If every vote is YES, the coordinator writes “COMMIT” to its own log on disk. This moment is the real decision point.</li>
+<li>The coordinator sends “commit” to every participant. Each one commits and releases its locks.</li>
+<li>If any vote is NO (or a participant doesn’t answer in time), the coordinator decides “ABORT” and tells everyone to roll back.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 270" role="img" aria-label="Two-phase commit: prepare and vote, then commit">
+<defs><marker id="ah-2pc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="20" y="105" width="140" height="56" rx="8" class="box hi"/><text x="90" y="129" text-anchor="middle" class="lbl">Coordinator</text><text x="90" y="147" text-anchor="middle" class="sub">decides</text>
+<rect x="460" y="30" width="160" height="56" rx="8" class="box"/><text x="540" y="54" text-anchor="middle" class="lbl">Database A</text><text x="540" y="72" text-anchor="middle" class="sub">participant</text>
+<rect x="460" y="180" width="160" height="56" rx="8" class="box"/><text x="540" y="204" text-anchor="middle" class="lbl">Database B</text><text x="540" y="222" text-anchor="middle" class="sub">participant</text>
+<line x1="160" y1="115" x2="458" y2="50" class="arr" marker-end="url(#ah-2pc)"/>
+<line x1="458" y1="66" x2="160" y2="125" class="arr dim" marker-end="url(#ah-2pc)"/>
+<line x1="160" y1="150" x2="458" y2="200" class="arr" marker-end="url(#ah-2pc)"/>
+<line x1="458" y1="216" x2="160" y2="160" class="arr dim" marker-end="url(#ah-2pc)"/>
+<text x="250" y="66" class="sub">1. prepare?</text>
+<text x="300" y="112" class="sub">2. vote YES</text>
+<text x="250" y="198" class="sub">1. prepare?</text>
+<text x="300" y="170" class="sub">2. vote YES</text>
+<text x="20" y="200" class="lbl">3. log COMMIT</text>
+<text x="20" y="218" class="sub">4. send commit to all</text>
+<text x="320" y="262" text-anchor="middle" class="sub">Between voting YES and hearing the decision, each database keeps its rows locked.</text>
+</svg>
+</div>
+
+<h4>What happens when things fail</h4>
+<div class="table-wrap"><table>
+<tr><th>Failure</th><th>What happens</th></tr>
+<tr><td>A participant votes NO</td><td>Coordinator aborts. Everyone rolls back. Safe.</td></tr>
+<tr><td>A participant crashes before voting</td><td>Coordinator times out and aborts. Safe.</td></tr>
+<tr><td>A participant crashes after voting YES</td><td>When it restarts, it finds the prepared transaction on disk and asks the coordinator what was decided. It must not decide alone.</td></tr>
+<tr><td>Coordinator crashes after logging COMMIT</td><td>When it restarts, it reads its log and sends “commit” again. Participants wait until then.</td></tr>
+<tr><td>Coordinator crashes after votes, before deciding</td><td><strong>The bad case.</strong> Participants voted YES, so they can’t abort on their own (maybe the coordinator decided commit). They can’t commit either (maybe it decided abort). They stay <strong>blocked</strong>, holding locks, until the coordinator comes back.</td></tr>
+</table></div>
+<p>That last row is why people say <strong>2PC is a blocking protocol</strong>. It is safe (it never commits on one side and aborts on the other), but it can stop making progress.</p>
+
+<h4>How a saga works, step by step</h4>
+<ol>
+<li>User sends <code>POST /orders</code>.</li>
+<li>Order service saves the order as <code>PENDING</code>, starts the saga, and replies right away: “Order received.”</li>
+<li>Orchestrator tells Inventory to reserve stock. Inventory commits its local transaction and replies “reserved”.</li>
+<li>Orchestrator tells Payment to charge. Payment commits and replies “charged”.</li>
+<li>Orchestrator marks the order <code>CONFIRMED</code>. The user sees the final status by refresh or a push update.</li>
+</ol>
+<p>If payment fails at step 4: the orchestrator tells Inventory to release the stock, then marks the order <code>CANCELLED</code> with a reason.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 260" role="img" aria-label="Saga steps forward and compensation backward">
+<defs>
+<marker id="ah-sg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+<marker id="ah-sg2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead-warn"/></marker>
+</defs>
+<text x="20" y="30" class="sub">Forward steps (each one is a local transaction that commits immediately)</text>
+<rect x="20" y="45" width="130" height="54" rx="8" class="box"/><text x="85" y="68" text-anchor="middle" class="lbl">Create order</text><text x="85" y="86" text-anchor="middle" class="sub">PENDING</text>
+<rect x="180" y="45" width="130" height="54" rx="8" class="box"/><text x="245" y="68" text-anchor="middle" class="lbl">Reserve stock</text><text x="245" y="86" text-anchor="middle" class="sub">Inventory</text>
+<rect x="340" y="45" width="130" height="54" rx="8" class="box warn"/><text x="405" y="68" text-anchor="middle" class="lbl">Charge payment</text><text x="405" y="86" text-anchor="middle" class="sub">✘ declined</text>
+<rect x="500" y="45" width="120" height="54" rx="8" class="box faintbox"/><text x="560" y="76" text-anchor="middle" class="sub">Confirm order</text>
+<line x1="150" y1="72" x2="178" y2="72" class="arr" marker-end="url(#ah-sg)"/>
+<line x1="310" y1="72" x2="338" y2="72" class="arr" marker-end="url(#ah-sg)"/>
+<line x1="470" y1="72" x2="498" y2="72" class="arr faint" marker-end="url(#ah-sg)"/>
+<text x="20" y="160" class="sub">Compensations (run in reverse for steps that finished)</text>
+<rect x="20" y="175" width="130" height="54" rx="8" class="box"/><text x="85" y="198" text-anchor="middle" class="lbl">Cancel order</text><text x="85" y="216" text-anchor="middle" class="sub">CANCELLED</text>
+<rect x="180" y="175" width="130" height="54" rx="8" class="box"/><text x="245" y="198" text-anchor="middle" class="lbl">Release stock</text><text x="245" y="216" text-anchor="middle" class="sub">Inventory</text>
+<line x1="405" y1="99" x2="312" y2="190" class="arr warnline" marker-end="url(#ah-sg2)"/>
+<line x1="180" y1="202" x2="152" y2="202" class="arr warnline" marker-end="url(#ah-sg2)"/>
+</svg>
+</div>
+
+<h4>The outbox problem (important for sagas)</h4>
+<p>Each saga step usually does two things: update its database <em>and</em> send a message (“stock reserved”). If the database commit succeeds but the app crashes before sending, the saga gets stuck. If the message is sent but the commit fails, others act on something that didn’t happen.</p>
+<p>The common fix is the <strong>transactional outbox</strong>: write the message into an <code>outbox</code> table in the <em>same</em> local transaction as the business change. A separate relay process reads the outbox and publishes to RabbitMQ or Kafka.</p>
+<pre><code>BEGIN;
+  UPDATE stock SET reserved = reserved + 2 WHERE sku = 'SKU-1';
+  INSERT INTO outbox (id, topic, payload)
+  VALUES (gen_random_uuid(), 'stock.reserved', '{"orderId":"o-42"}');
+COMMIT;
+-- a relay process later publishes outbox rows and marks them sent</code></pre>
+<p>The relay may publish a message twice (for example, it crashes after publishing but before marking it sent). So every consumer must be <strong>idempotent</strong>: handling the same message twice has the same effect as once. A simple way is to store processed message IDs and skip duplicates.</p>`,
+
+types: `
+<h4>2PC vs Saga: the main comparison</h4>
+<div class="table-wrap"><table>
+<tr><th></th><th>2PC</th><th>Saga</th></tr>
+<tr><td>Main idea</td><td>Everyone votes, then everyone commits together</td><td>Commit step by step, undo if a later step fails</td></tr>
+<tr><td>Consistency</td><td>Strong: all-or-nothing at every moment</td><td>Eventual: correct once all steps or undos finish</td></tr>
+<tr><td>Isolation</td><td>Yes. Others don’t see half-done work</td><td>No. Half-done work is real and visible</td></tr>
+<tr><td>Locks across systems</td><td>Held from prepare until decision</td><td>None across services</td></tr>
+<tr><td>Needs all participants up at once</td><td>Yes</td><td>No; steps can wait in a queue</td></tr>
+<tr><td>Coordinator failure</td><td>Can block participants</td><td>Saga resumes from stored state</td></tr>
+<tr><td>Works with external APIs (payment gateways, email)</td><td>No; they don’t support “prepare”</td><td>Yes</td></tr>
+<tr><td>Undo logic</td><td>Built in (rollback)</td><td>You write compensations</td></tr>
+<tr><td>Typical use</td><td>Inside one distributed database; a few databases under one team’s control</td><td>Business workflows across microservices</td></tr>
+</table></div>
+
+<h4>Two styles of saga</h4>
+<p><strong>1. Choreography.</strong> No central controller. Each service listens for events and decides what to do next. Order publishes <code>OrderCreated</code> → Inventory reserves and publishes <code>StockReserved</code> → Payment charges and publishes <code>PaymentCompleted</code> → Order confirms. On failure, Payment publishes <code>PaymentFailed</code>, and Inventory listens for it to release stock.</p>
+<ul>
+<li><strong>Good:</strong> services stay loosely connected; no extra component; easy for 2–3 steps.</li>
+<li><strong>Bad:</strong> the overall flow isn’t written down anywhere; it is spread across services. Hard to answer “where is order 42 stuck?” Gets messy beyond a few steps.</li>
+</ul>
+<p><strong>2. Orchestration.</strong> One orchestrator (a service or workflow engine) sends commands to each participant, waits for replies, and tracks state. This is the style in the code example.</p>
+<ul>
+<li><strong>Good:</strong> the whole flow lives in one place; easier to add timeouts, retries, and to debug.</li>
+<li><strong>Bad:</strong> another component to build and run; it must store its state durably; risk of stuffing too much business logic into it.</li>
+</ul>
+<div class="table-wrap"><table>
+<tr><th></th><th>Choreography</th><th>Orchestration</th></tr>
+<tr><td>Who decides the next step</td><td>Each service, by reacting to events</td><td>The orchestrator</td></tr>
+<tr><td>Where the flow is visible</td><td>Spread across services</td><td>In one place</td></tr>
+<tr><td>Debugging</td><td>Harder; needs good tracing</td><td>Easier; one state record per saga</td></tr>
+<tr><td>Good fit</td><td>Short, simple flows</td><td>Longer flows, timeouts, many failure paths</td></tr>
+</table></div>
+
+<h4>Related ideas around 2PC</h4>
+<ul>
+<li><strong>Three-phase commit (3PC)</strong> adds an extra round to reduce blocking. It relies on assumptions about network timing that real networks don’t always meet, so it is rarely used in practice.</li>
+<li><strong>2PC with a highly available coordinator.</strong> Distributed databases like Google Spanner run 2PC where each participant and the coordinator is a replicated group (using a consensus algorithm like Paxos). If one machine dies, another copy continues, so the blocking problem mostly goes away. This is how modern distributed SQL databases give you real transactions across shards. You get this “for free” when you use such a database; it is hard to build yourself.</li>
+</ul>`,
+
+numbers: `
+<h4>2PC: how long locks are held</h4>
+<p><strong>Assumptions</strong> (illustrative, inside one data center): a network round trip takes about 2 ms, and each disk flush (making data safe on disk) takes about 3 ms.</p>
+<ul>
+<li>Prepare round: send + participant flushes + vote ≈ 2 + 3 = 5 ms.</li>
+<li>Coordinator logs the decision ≈ 3 ms.</li>
+<li>Commit round ≈ 2 ms to send the decision.</li>
+<li>So each row stays locked for roughly <strong>10 ms</strong> or more, compared with maybe 1–3 ms in a single-database transaction.</li>
+</ul>
+<p>If many transactions update the <em>same</em> row (a popular account balance, a stock counter for a hot product), they must wait for each other. At ~10 ms per lock, that row can handle at most about <strong>100 transactions per second</strong>. Across regions, where a round trip can be 100+ ms, that drops to single digits.</p>
+<p>And in the bad case: if the coordinator crashes and takes 2 minutes to come back, those rows stay locked for <strong>2 minutes</strong>. Every request touching them waits or times out.</p>
+
+<h4>2PC: availability</h4>
+<p>2PC needs every participant up at the same moment. If each of 3 services is up 99.9% of the time (independently), all three are up about 0.999 × 0.999 × 0.999 ≈ <strong>99.7%</strong> of the time. That’s about 26 hours a year when the action can’t run at all, versus about 9 hours for one service.</p>
+<p>A saga built on queues can still accept the order while Payment is briefly down; the payment step simply waits in the queue and runs when it’s back.</p>
+
+<h4>Saga: how often compensations run</h4>
+<p><strong>Assumptions</strong> (illustrative): an order saga has 4 steps, each succeeds 99.9% of the time, and you get 1,000 orders per minute.</p>
+<ul>
+<li>Chance all 4 succeed = 0.999<sup>4</sup> ≈ <strong>0.996</strong>, so about <strong>0.4%</strong> hit at least one failure.</li>
+<li>At 1,000 orders/min, that’s about <strong>4 sagas per minute</strong> needing a retry or compensation (roughly 5,700 per day).</li>
+</ul>
+<p>Failure handling isn’t an edge case at scale. Compensations run constantly and must be reliable, logged, and monitored. Many failures are temporary (timeouts), so retry a step a few times before compensating, and set an overall saga timeout so orders don’t stay <code>PENDING</code> forever.</p>`,
+
+tradeoffs: `
+<h4>2PC</h4>
+<p><strong>You gain:</strong> true all-or-nothing. No one ever sees half-done work. No undo code to write.</p>
+<p><strong>You give up:</strong></p>
+<ul>
+<li><strong>Speed under contention:</strong> locks are held across network round trips.</li>
+<li><strong>Availability:</strong> every participant must be reachable at the same time.</li>
+<li><strong>Progress during failures:</strong> a coordinator crash can block participants with locks held.</li>
+<li><strong>Reach:</strong> only works with systems that support a “prepare” step. Most message brokers, SaaS APIs, and payment gateways don’t.</li>
+<li><strong>Independence:</strong> services become tightly tied to one shared transaction manager.</li>
+</ul>
+
+<h4>Saga</h4>
+<p><strong>You gain:</strong> no cross-service locks, independent services, works with external APIs, keeps working when one service is briefly down.</p>
+<p><strong>You give up:</strong></p>
+<ul>
+<li><strong>Isolation:</strong> other requests can see half-done work (stock reserved for an order that will be cancelled). Teams handle this with <strong>semantic locks</strong>: status fields like <code>PENDING</code> that other code respects.</li>
+<li><strong>Simplicity:</strong> every step needs a compensation, and both need retries and idempotency.</li>
+<li><strong>Perfect undo:</strong> some things can’t be undone (an email sent). You can only send a correction, so put such steps last.</li>
+<li><strong>Easy debugging:</strong> you need correlation IDs, stored saga state, and tracing across services.</li>
+</ul>`,
+
+whenToUse: `
+<h4>Decision guide</h4>
+<ol>
+<li><strong>Is all the data in one database?</strong> Use a normal transaction. It is simpler and stronger than both. Stop here.</li>
+<li><strong>Do you need cross-shard transactions inside one database system?</strong> Prefer a database that does it for you (distributed SQL like CockroachDB, YugabyteDB, Spanner, or Citus for PostgreSQL). They use 2PC internally with the hard parts solved.</li>
+<li><strong>A few databases you control, fast network, must be strictly atomic, low volume?</strong> 2PC (for example XA or PostgreSQL prepared transactions with a proper transaction manager) can work. Plan for recovery of stuck transactions.</li>
+<li><strong>Several microservices, external APIs, or long-running steps?</strong> Use a saga.</li>
+</ol>
+<h4>Signals you need a saga</h4>
+<ul>
+<li>One user action changes data owned by two or more services.</li>
+<li>Partial success is unacceptable and must be cleaned up (paid but not shipped).</li>
+<li>Steps call external systems that can’t join a transaction.</li>
+<li>The process can take seconds, minutes, or days (approvals, bookings).</li>
+</ul>
+<h4>When you probably need neither</h4>
+<ul>
+<li>A failed step can simply be retried later with no harm (updating a search index, sending analytics). A reliable message with retries (outbox + idempotent consumer) is enough; no undo needed.</li>
+<li>Two services always have to change together. That may mean the boundary between them is wrong, and merging them removes the problem.</li>
+</ul>`,
+
+mistakes: `
+<h4>With 2PC</h4>
+<ul>
+<li><strong>No recovery plan for stuck prepared transactions.</strong> They hold locks forever and can block vacuum and other work in PostgreSQL. Monitor <code>pg_prepared_xacts</code>.</li>
+<li><strong>Not logging the decision durably before sending it.</strong> After a crash, the coordinator can’t know what it decided.</li>
+<li><strong>Using 2PC across slow or unreliable networks</strong> (across regions, over the internet). Lock times and blocking get much worse.</li>
+<li><strong>Assuming 2PC can include a payment gateway or a message broker.</strong> Most can’t take part.</li>
+</ul>
+<h4>With sagas</h4>
+<ul>
+<li><strong>Treating compensation like a rollback.</strong> Others may have seen or used the data. Design compensations as real business actions.</li>
+<li><strong>Non-idempotent steps.</strong> Messages get delivered twice; without idempotency a customer can be charged twice. Use idempotency keys (for example, the order ID) with payment providers.</li>
+<li><strong>Sending messages outside the transaction.</strong> Leads to lost or phantom events. Use the outbox pattern.</li>
+<li><strong>Keeping saga state only in memory.</strong> A crash or deploy loses in-flight sagas.</li>
+<li><strong>Compensations that give up.</strong> They must retry until success, with alerts for a human when they can’t.</li>
+<li><strong>Bad step order.</strong> Hard-to-undo steps (charging money, sending emails) belong after easy-to-undo ones.</li>
+<li><strong>No timeouts.</strong> If a service never replies, the saga hangs forever.</li>
+</ul>
+<h4>With both</h4>
+<ul>
+<li><strong>Reaching for either when one database would do.</strong> Distributed transactions are a cost you only pay when data truly lives apart.</li>
+</ul>`,
+
+interview: `
+<h4>Common questions</h4>
+<p><strong>“How do you keep data consistent across microservices when placing an order?”</strong><br>
+Use a saga: a chain of local transactions with compensations. Walk through the steps, which step can fail, and what gets undone. Mention the outbox pattern and idempotency for reliable messaging, and a <code>PENDING</code> status for the in-between state.</p>
+<p><strong>“Explain two-phase commit.”</strong><br>
+A coordinator asks all participants to prepare. Each one does the work, saves it, locks the rows, and votes. If all vote yes, the coordinator logs commit and tells everyone to commit; otherwise everyone aborts. It is atomic, but participants are blocked if the coordinator dies after they vote yes.</p>
+<p><strong>“Why not use 2PC between microservices?”</strong><br>
+Locks held across network calls, all services must be up together, coordinator failure blocks everyone, and brokers and external APIs don’t support it. Sagas trade strict consistency for availability and independence.</p>
+<p><strong>“Choreography or orchestration?”</strong><br>
+Choreography for short, simple flows; orchestration when there are many steps, timeouts, or you need clear visibility.</p>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>In 2PC, what exactly happens if the coordinator crashes after receiving all YES votes? (Participants block; on restart the coordinator reads its log; if no decision was logged, it aborts.)</li>
+<li>Why can’t a participant decide on its own after voting YES?</li>
+<li>How do distributed databases make 2PC practical? (Replicated, consensus-backed coordinators and participants.)</li>
+<li>In a saga, what if a compensation fails? (Retry with backoff; store state; alert and allow manual fixes.)</li>
+<li>How do you avoid charging twice? (Idempotency keys, deduplication.)</li>
+<li>Which step can’t be compensated, and where do you place it?</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>In e-commerce checkout, travel booking, or wallet transfers, interviewers want to hear that you noticed the action crosses service boundaries, and that you chose deliberately: one database and a normal transaction if possible, a saga for cross-service workflows, and 2PC mostly inside databases that handle it for you.</p>`,
+
+revision: `
+<h4>Summary</h4>
+<ul>
+<li>A distributed transaction changes data in more than one database or service.</li>
+<li>2PC: prepare and vote, then commit or abort together. Atomic and isolated.</li>
+<li>2PC’s weakness: locks held across network calls, and blocking if the coordinator fails after votes.</li>
+<li>Saga: a chain of local transactions; compensations undo earlier steps on failure.</li>
+<li>Sagas give eventual consistency and no isolation between steps.</li>
+<li>Choreography: services react to events. Orchestration: one controller drives the steps.</li>
+<li>Outbox pattern + idempotent consumers make saga messaging reliable.</li>
+<li>Prefer one database and a normal transaction when you can; use distributed SQL for cross-shard transactions; use sagas across services.</li>
+</ul>
+<h4>Key terms</h4>
+<ul>
+<li><strong>Coordinator</strong>: in 2PC, the component that collects votes and makes the final decision.</li>
+<li><strong>Participant</strong>: a database or service taking part in the transaction.</li>
+<li><strong>Prepared</strong>: work is saved and locked, waiting for the final decision.</li>
+<li><strong>Blocking</strong>: participants can’t move forward until the coordinator returns.</li>
+<li><strong>Compensating action</strong>: a new action that cancels the business effect of an earlier step.</li>
+<li><strong>Eventual consistency</strong>: data may be temporarily inconsistent but becomes correct once processing finishes.</li>
+<li><strong>Idempotent</strong>: doing it twice has the same effect as doing it once.</li>
+<li><strong>Transactional outbox</strong>: saving outgoing messages in the same transaction as the data change.</li>
+</ul>
+<h4>Test yourself</h4>
+<ol>
+<li>In 2PC, after a participant votes YES, why can’t it just roll back if it waits too long?</li>
+<li>Name two reasons 2PC is a poor fit between microservices.</li>
+<li>Steps: send confirmation email, charge card, reserve stock. What saga order would you use, and why?</li>
+<li>A “PaymentCompleted” message is delivered twice. What prevents a double effect?</li>
+<li>What does “sagas have no isolation” mean in practice, and how do teams handle it?</li>
+</ol>
+<details class="answer"><summary>Show answers</summary>
+<ol>
+<li>The coordinator might already have decided COMMIT and told other participants, who committed. If this one rolled back, the data would be inconsistent. A YES vote is a promise to obey the decision.</li>
+<li>Any two of: locks held across network calls; all services must be up at the same time; coordinator failure blocks everyone; brokers and external APIs don’t support prepare; it tightly couples services.</li>
+<li>Reserve stock → charge card → send email. Reserving is cheap to undo, charging is harder, and an email can’t be undone, so it goes last when nothing else can fail.</li>
+<li>Idempotent handling: the consumer records the message ID (or uses the order ID as a key) and ignores duplicates.</li>
+<li>Other requests can see in-between states, like stock reserved for an order that later gets cancelled. Teams use statuses like PENDING (semantic locks) and design the UI and other logic to respect them.</li>
+</ol>
+</details>
+<h4>Scenarios</h4>
+<p><strong>1.</strong> Your app has one NestJS service and one PostgreSQL database. A teammate wants a saga for “create invoice and update customer balance”. Good idea?</p>
+<details class="answer"><summary>Show a good answer</summary>
+<p>No. Both changes are in the same database, so use one normal transaction: full atomicity and isolation with far less code. A saga or 2PC only becomes necessary if the data moves into separate services or databases.</p>
+</details>
+<p><strong>2.</strong> You are building wallet transfers between users. Wallets are sharded across 8 PostgreSQL databases. Transfers must never lose or create money, and a sender’s balance must never go below zero. Saga or 2PC?</p>
+<details class="answer"><summary>Show a good answer</summary>
+<p>Both can work, with different costs. A saga (debit sender, then credit receiver, refund the sender if the credit fails) is common in practice: the debit step checks the balance in its own transaction, so the balance can’t go negative, and money is briefly “in transit” but never lost if steps are idempotent and retried. 2PC across shards gives strict atomicity but holds locks on hot wallets and needs careful recovery. If strict atomicity is a hard requirement, a database that supports distributed transactions natively (distributed SQL, or Citus) is often a better choice than hand-built 2PC. Say which property you’re trading and why.</p>
+</details>`
+  }
+},
+{
+  id: "pagination",
+  title: "Pagination in Backend Systems",
+  summary: "How an API returns a big list in small pieces: offset, page-number, keyset (seek), cursor, time-based, and hybrid pagination, and why some get slow or show duplicates.",
+  category: "APIs and Databases",
+  order: 5,
+  prerequisites: ["database-sharding"],
+  sections: {
+what: `
+<p><strong>Pagination</strong> means returning a large list in small pieces, called <strong>pages</strong>, instead of all at once.</p>
+<p>When you open Instagram, the app doesn’t download every post ever made. It loads 20, and when you scroll near the bottom, it asks for the next 20. Each request says, in some way, “give me the next part of the list, starting from <em>here</em>.”</p>
+<p>The different pagination types are really different ways of describing that “here”:</p>
+<ul>
+<li><strong>Offset / page number</strong>: “skip the first 40 items” or “give me page 3”. A position by <em>counting</em>.</li>
+<li><strong>Keyset / seek</strong>: “give me items after the one with id 9812”. A position by <em>value</em>.</li>
+<li><strong>Cursor</strong>: “continue from this bookmark token”. The server hides the position inside a token.</li>
+<li><strong>Time-based</strong>: “give me items created before 10:42 today”. A position by <em>time</em>.</li>
+<li><strong>Hybrid</strong>: mixing these, for example page numbers for the first few pages and keyset after that.</li>
+</ul>
+<p class="note"><strong>Important:</strong> these seven names are not seven different techniques. There are really two core methods underneath: <strong>counting rows (offset)</strong> and <strong>seeking to a value (keyset)</strong>. Page-number is a friendly form of offset. Seek is another name for keyset. Cursor is usually keyset wrapped in a token. Time-based is keyset where the value is a time. This topic explains each name, but keep those two core methods in mind.</p>`,
+
+why: `
+<p>Without pagination, an endpoint like <code>GET /orders</code> returns every row. With 5 million orders, that means:</p>
+<ul>
+<li>The database reads and sends millions of rows.</li>
+<li>Your Node.js server builds one giant JSON response in memory. It can run out of memory or block the event loop while doing it.</li>
+<li>The network transfers hundreds of megabytes.</li>
+<li>The phone or browser tries to render all of it, and freezes.</li>
+<li>The user only wanted to see the top 20.</li>
+</ul>
+<p>So we need pagination. But the <em>method</em> matters too. A naive method works fine on page 1 and becomes very slow on page 50,000. It can also show the same item twice, or skip items, when new data is added while someone is scrolling. Those two problems (<strong>deep-page slowness</strong> and <strong>shifting data</strong>) are what separate the methods.</p>`,
+
+realWorld: `
+<p>Imagine a long queue of people at a bank, and you want to talk to them in groups of 10.</p>
+<p><strong>Offset style:</strong> you say, “Skip the first 40 people, and send me the next 10.” To do that, the guard must walk down the queue <em>counting</em> 40 people every time. For group 1,000, he counts 9,990 people first. That gets slow.</p>
+<p>Worse: if 3 people join at the front while you are talking to a group, “skip 40” now lands 3 people earlier. The next group includes 3 people you already met. If 3 people leave instead, you skip 3 people without ever meeting them.</p>
+<p><strong>Keyset style:</strong> everyone holds a numbered token. You say, “Send me the 10 people after token #540.” The guard doesn’t count anyone. He goes straight to #540 (because tokens are in order) and takes the next 10. It’s just as fast for the 1,000th group as for the first. And people joining at the front don’t matter; #540 is still #540.</p>
+<p>The catch: with keyset, you can’t easily say “jump to group 700”, because you don’t know which token group 700 starts at without counting.</p>`,
+
+software: `
+<p>Say you have a <code>posts</code> table in PostgreSQL and an endpoint that returns the newest posts first.</p>
+
+<h4>Offset version</h4>
+<pre><code>-- GET /posts?limit=20&amp;offset=40
+SELECT id, title, created_at
+FROM posts
+ORDER BY created_at DESC, id DESC
+LIMIT 20 OFFSET 40;</code></pre>
+<p>Simple, and easy to jump to any page. But PostgreSQL must still find and throw away the first 40 rows before returning 20. With <code>OFFSET 1000000</code>, it walks past a million rows.</p>
+
+<h4>Keyset (cursor) version</h4>
+<pre><code>-- first page
+SELECT id, title, created_at
+FROM posts
+ORDER BY created_at DESC, id DESC
+LIMIT 21;                       -- ask for one extra to know if there is a next page
+
+-- next page: start after the last row we returned
+SELECT id, title, created_at
+FROM posts
+WHERE (created_at, id) &lt; ($1, $2)   -- last row's created_at and id
+ORDER BY created_at DESC, id DESC
+LIMIT 21;
+
+-- index that makes this fast
+CREATE INDEX posts_created_id_idx ON posts (created_at DESC, id DESC);</code></pre>
+<p>Why <code>id</code> as well as <code>created_at</code>? Two posts can have the same timestamp. Without a unique <strong>tiebreaker</strong>, rows with equal times could be skipped or repeated at page edges.</p>
+
+<h4>Cursor API in NestJS</h4>
+<p>Clients shouldn’t need to know about <code>created_at</code> and <code>id</code>. So we pack them into an opaque token, the <strong>cursor</strong>:</p>
+<pre><code>// posts.service.ts  (simplified)
+type Cursor = { createdAt: string; id: string };
+
+const encode = (c: Cursor) =&gt;
+  Buffer.from(JSON.stringify(c)).toString('base64url');
+const decode = (s: string): Cursor =&gt;
+  JSON.parse(Buffer.from(s, 'base64url').toString('utf8'));
+
+async list(limit = 20, after?: string) {
+  limit = Math.min(Math.max(limit, 1), 100);         // never trust client limits
+  const params: unknown[] = [limit + 1];
+  let where = '';
+  if (after) {
+    const c = decode(after);                          // validate in real code
+    params.push(c.createdAt, c.id);
+    where = 'WHERE (created_at, id) &lt; ($2, $3)';
+  }
+  const { rows } = await this.db.query(
+    'SELECT id, title, created_at FROM posts ' + where +
+    ' ORDER BY created_at DESC, id DESC LIMIT $1', params);
+
+  const hasMore = rows.length &gt; limit;
+  const items = rows.slice(0, limit);
+  const last = items[items.length - 1];
+  return {
+    items,
+    nextCursor: hasMore
+      ? encode({ createdAt: last.created_at.toISOString(), id: last.id })
+      : null,
+  };
+}</code></pre>
+<p>The response looks like <code>{ items: [...], nextCursor: "eyJjcmVhdGVkQXQiOi..." }</code>. The client sends <code>?after=eyJj...</code> for the next page, and stops when <code>nextCursor</code> is <code>null</code>.</p>
+<p class="note">Base64 is <em>not</em> encryption. Anyone can decode this cursor. That’s fine if it only holds sort values, but always validate it on the server, and sign or encrypt it if it contains anything you don’t want users to read or change.</p>`,
+
+internals: `
+<h4>Offset flow</h4>
+<ol>
+<li>Client sends <code>GET /posts?offset=40&amp;limit=20</code>.</li>
+<li>Server runs <code>ORDER BY ... LIMIT 20 OFFSET 40</code>.</li>
+<li>The database walks the index (or sorts the table) from the start, reads rows 1–40, throws them away, then reads rows 41–60.</li>
+<li>Server returns those 20 rows, often with a total count so the UI can show page numbers.</li>
+</ol>
+<p>Step 3 is the problem: work grows with the offset. There is no shortcut to “the 40th row”, because the database doesn’t store row positions; it must count.</p>
+
+<h4>Keyset flow</h4>
+<ol>
+<li>Client sends <code>GET /posts?after=&lt;cursor&gt;</code>.</li>
+<li>Server decodes the cursor into the last seen <code>(created_at, id)</code>.</li>
+<li>The database uses the index (a B-tree, which keeps values sorted) to jump directly to that position, like opening a dictionary at the right letter.</li>
+<li>It reads the next 21 entries and stops.</li>
+<li>Server returns 20 rows and a new cursor built from the last one.</li>
+</ol>
+<p>Work stays the same no matter how deep you are: one index jump plus about 20 rows.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 280" role="img" aria-label="Offset reads and discards rows; keyset jumps to the right spot through the index">
+<defs><marker id="ah-pg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+<marker id="ah-pg2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead-warn"/></marker></defs>
+<text x="150" y="20" text-anchor="middle" class="lbl">OFFSET 40 LIMIT 20</text>
+<rect x="90" y="35" width="120" height="130" rx="6" class="box faintbox"/><text x="150" y="95" text-anchor="middle" class="sub">rows 1–40</text><text x="150" y="113" text-anchor="middle" class="sub">read, then thrown away</text>
+<rect x="90" y="170" width="120" height="60" rx="6" class="box hi"/><text x="150" y="205" text-anchor="middle" class="lbl">rows 41–60</text>
+<line x1="60" y1="40" x2="60" y2="225" class="arr warnline" marker-end="url(#ah-pg2)"/>
+<text x="30" y="255" class="sub">Work grows with the offset</text>
+
+<text x="470" y="20" text-anchor="middle" class="lbl">WHERE (created_at, id) &lt; cursor</text>
+<rect x="410" y="35" width="120" height="130" rx="6" class="box faintbox"/><text x="470" y="95" text-anchor="middle" class="sub">earlier rows</text><text x="470" y="113" text-anchor="middle" class="sub">never touched</text>
+<rect x="410" y="170" width="120" height="60" rx="6" class="box hi"/><text x="470" y="205" text-anchor="middle" class="lbl">next 20 rows</text>
+<rect x="560" y="110" width="70" height="40" rx="6" class="box"/><text x="595" y="135" text-anchor="middle" class="sub">index</text>
+<line x1="578" y1="150" x2="532" y2="185" class="arr" marker-end="url(#ah-pg)"/>
+<text x="350" y="255" class="sub">Index jumps straight to the cursor position</text>
+</svg>
+</div>
+
+<h4>Why offset shows duplicates or skips</h4>
+<ol>
+<li>User loads page 1: posts 1–20 (newest first).</li>
+<li>3 new posts are published. They go to the top of the list.</li>
+<li>User loads page 2 with <code>OFFSET 20</code>. Everything has shifted down by 3, so rows 21–40 now start with the last 3 posts the user already saw on page 1. <strong>Duplicates.</strong></li>
+<li>If 3 posts had been <em>deleted</em> instead, everything shifts up and 3 posts are never shown. <strong>Skips.</strong></li>
+</ol>
+<p>Keyset doesn’t have this problem in the same way: “posts older than this exact post” means the same thing no matter what was added at the top. (It can still miss a row whose sort value changes while you page, for example if you sort by <code>updated_at</code> and a row gets updated. More on that under time-based.)</p>`,
+
+types: `
+<h4>1. Offset-based pagination</h4>
+<p><strong>What:</strong> the client sends how many items to skip and how many to return: <code>?offset=40&amp;limit=20</code>. The database uses <code>LIMIT</code> and <code>OFFSET</code>.</p>
+<p><strong>When to use:</strong> small or medium tables, admin screens, internal tools, any list where users rarely go deep.</p>
+<p><strong>Good:</strong> very simple; can jump to any position; works with any sort order and filter.</p>
+<p><strong>Bad:</strong> slow at large offsets; duplicates and skips when data changes between requests.</p>
+
+<h4>2. Page-number pagination</h4>
+<p><strong>What:</strong> the client sends a page number and page size: <code>?page=3&amp;pageSize=20</code>. The server converts it: <code>offset = (page - 1) × pageSize</code>. <em>It is offset pagination with a friendlier interface.</em></p>
+<p><strong>When to use:</strong> UIs with numbered pages (“‹ 1 2 3 … 50 ›”), search results, e-commerce category pages.</p>
+<p><strong>Good:</strong> people understand it; easy to share a link to page 7.</p>
+<p><strong>Bad:</strong> same problems as offset. Showing “page 3 of 2,481” also needs a total count, and <code>COUNT(*)</code> on a large PostgreSQL table can be slow, because PostgreSQL has to scan to count. Many apps show an estimate (“about 49,000 results”) or just “Next”.</p>
+
+<h4>3. Keyset pagination</h4>
+<p><strong>What:</strong> use the sort values of the last row you returned to fetch the next rows: <code>WHERE (created_at, id) &lt; (last_created_at, last_id)</code>.</p>
+<p><strong>When to use:</strong> big tables, infinite scroll, “load more”, exports, batch jobs that walk through a whole table.</p>
+<p><strong>Good:</strong> fast at any depth with the right index; stable when new rows are inserted.</p>
+<p><strong>Bad:</strong> can’t jump to page N; needs a unique tiebreaker column; needs an index that matches the sort; changing the sort order or filters means building a new query shape; going <em>backward</em> needs a reversed query.</p>
+
+<h4>4. Seek pagination</h4>
+<p><strong>What:</strong> another name for keyset pagination. The query “seeks” (jumps) to a position in the index instead of counting rows. The name comes from the “seek method”, popularized by Markus Winand’s <em>Use The Index, Luke</em>.</p>
+<p>If an interviewer says “seek pagination”, everything in point 3 applies. It’s worth saying out loud that they are the same, since some articles list them as different types.</p>
+
+<h4>5. Cursor-based pagination</h4>
+<p><strong>What:</strong> the server gives the client an <strong>opaque token</strong> (the cursor) with each page. The client sends it back to get the next page. The client doesn’t know or care what is inside.</p>
+<p>Inside, the cursor is <em>usually</em> keyset values, sometimes with the sort order and filters too. Some systems store a server-side position instead (database cursors, or search engines like Elasticsearch’s scroll and point-in-time features). Real APIs: Stripe uses <code>starting_after</code> with an object ID; Slack returns <code>next_cursor</code>; GraphQL’s Relay “connections” standard uses cursors on each item.</p>
+<p><strong>When to use:</strong> public APIs, mobile apps, infinite feeds.</p>
+<p><strong>Good:</strong> the server can change how pagination works internally without breaking clients; clients can’t make malformed positions as easily; same speed as keyset.</p>
+<p><strong>Bad:</strong> no page numbers or jumping; cursors can become invalid (for example if the row they point to is deleted, depending on design); harder to debug by eye.</p>
+
+<h4>6. Time-based pagination</h4>
+<p><strong>What:</strong> the position is a time: <code>?before=2026-11-04T10:42:00Z</code> or <code>?since=...&amp;until=...</code>. Facebook’s Graph API, for example, offers <code>since</code> and <code>until</code> parameters.</p>
+<p><strong>When to use:</strong> feeds, logs, events, messages, and “give me everything that changed since my last sync”.</p>
+<p><strong>Good:</strong> natural for time-ordered data; easy to read; works well with time-partitioned tables.</p>
+<p><strong>Bad:</strong></p>
+<ul>
+<li><strong>Same-time rows.</strong> Many rows can share a timestamp. Using time alone can skip or repeat them at page edges. Add a tiebreaker (<code>id</code>), which turns it into keyset pagination.</li>
+<li><strong>Late commits in sync jobs.</strong> A transaction can set <code>updated_at = 10:00:00</code> but commit at 10:00:05. If your sync already read “everything up to 10:00:03”, that row is missed forever. Fixes: re-read a small overlap window, only read up to a little before “now”, or use an ever-increasing sequence or a change log instead of wall-clock time.</li>
+<li><strong>Clock differences</strong> between servers can put times slightly out of order.</li>
+</ul>
+
+<h4>7. Hybrid pagination</h4>
+<p><strong>What:</strong> combining methods to get the best parts of each. Common patterns:</p>
+<ul>
+<li><strong>Offset for shallow, keyset for deep.</strong> Show page numbers 1–10 using offset (cheap at small offsets). Beyond that, switch to “Next” using keyset. Search engines do something similar: Elasticsearch limits normal <code>from + size</code> paging to 10,000 results by default and recommends <code>search_after</code> (keyset-style) for going deeper.</li>
+<li><strong>Keyset + cap.</strong> Allow infinite scroll but cap how deep users can go, as many search UIs do.</li>
+<li><strong>Keyset + page numbers.</strong> Walk the table once with keyset in the background and store the starting key of every 100th page, so users can jump approximately.</li>
+<li><strong>Cursor with an offset inside.</strong> Use opaque cursors in the API, but encode an offset internally for small lists. Later you can switch the inside to keyset without changing clients.</li>
+</ul>
+<p><strong>Good:</strong> matches what users actually do. <strong>Bad:</strong> more code paths to test and keep consistent.</p>
+
+<h4>Comparison</h4>
+<div class="table-wrap"><table>
+<tr><th></th><th>Offset / Page number</th><th>Keyset / Seek</th><th>Cursor</th><th>Time-based</th></tr>
+<tr><td>Position described by</td><td>Count of rows to skip</td><td>Last row’s sort values</td><td>Opaque token (usually keyset inside)</td><td>A timestamp</td></tr>
+<tr><td>Speed at deep pages</td><td>Gets slower</td><td>Stays fast (with index)</td><td>Stays fast (if keyset inside)</td><td>Stays fast (with index)</td></tr>
+<tr><td>Jump to page N</td><td>Yes</td><td>No</td><td>No</td><td>Jump to a time, not a page</td></tr>
+<tr><td>New rows during paging</td><td>Duplicates or skips</td><td>Stable</td><td>Stable</td><td>Stable if tiebreaker used</td></tr>
+<tr><td>Total count</td><td>Often shown (can be slow)</td><td>Usually not</td><td>Usually not</td><td>Usually not</td></tr>
+<tr><td>Best for</td><td>Admin tables, small lists, numbered UIs</td><td>Large tables, exports, batch jobs</td><td>Public APIs, feeds, mobile</td><td>Logs, events, syncing changes</td></tr>
+</table></div>`,
+
+numbers: `
+<p><strong>Assumptions</strong> (illustrative): a <code>posts</code> table with 10 million rows, 20 rows per page, with an index on <code>(created_at DESC, id DESC)</code>.</p>
+
+<h4>Rows the database touches</h4>
+<div class="table-wrap"><table>
+<tr><th>Page</th><th>Offset method</th><th>Keyset method</th></tr>
+<tr><td>1</td><td>20</td><td>about 20</td></tr>
+<tr><td>100 (offset 1,980)</td><td>2,000</td><td>about 20</td></tr>
+<tr><td>10,000 (offset 199,980)</td><td>200,000</td><td>about 20</td></tr>
+<tr><td>500,000 (offset 9,999,980)</td><td>10,000,000</td><td>about 20</td></tr>
+</table></div>
+<p>The row counts are exact; the time per row depends on your hardware, whether data is in memory, and how wide the rows are. Measure with <code>EXPLAIN (ANALYZE, BUFFERS)</code> rather than trusting a number from an article. The shape is the point: offset cost grows with depth, keyset cost stays flat.</p>
+
+<h4>Does this matter if users never reach page 10,000?</h4>
+<p>Humans rarely do. But other things do:</p>
+<ul>
+<li><strong>Scrapers and bots</strong> walking every page.</li>
+<li><strong>Your own export or migration job</strong> processing all 10 million rows in batches of 1,000. With offset, that is 10,000 queries where the last ones each scan almost 10 million rows: roughly 50 billion rows touched in total (the sum 1,000 + 2,000 + … + 10,000,000). With keyset, it’s about 10 million rows in total.</li>
+</ul>
+
+<h4>Page size</h4>
+<p>Bigger pages mean fewer requests but bigger, slower responses. If each post in JSON is about 1 KB (assumption), then 20 per page ≈ 20 KB, and 1,000 per page ≈ 1 MB. Most APIs pick a default of 20–50 and enforce a maximum (often 100) so one client can’t ask for 100,000 rows at once.</p>`,
+
+tradeoffs: `
+<ul>
+<li><strong>Flexibility vs speed.</strong> Offset lets users jump anywhere and works with any sort or filter. Keyset is fast and stable but only goes forward (or backward) from where you are.</li>
+<li><strong>Total counts vs cost.</strong> “Page 3 of 2,481” is friendly, but counting a huge filtered result can cost more than fetching the page itself. Estimates or “Next”-only UIs avoid that.</li>
+<li><strong>Opaque cursors vs transparency.</strong> Cursors let you change internals freely and stop clients from inventing positions. But they are harder to debug, and clients can’t build links like “page 7”.</li>
+<li><strong>Consistency.</strong> No method gives a perfect frozen snapshot across many requests by default. Offset can duplicate or skip; keyset can miss rows whose sort values change. If you truly need a snapshot (for example an export that must match an exact moment), you need something more: a database snapshot, a point-in-time feature in a search engine, or copying results into a temporary table.</li>
+<li><strong>Indexes.</strong> Keyset is only fast with an index matching the sort order and filters. Each new sort option may need its own index, which costs disk space and slows writes.</li>
+</ul>`,
+
+whenToUse: `
+<h4>Quick guide</h4>
+<ul>
+<li><strong>Small list (a few thousand rows), admin or internal UI:</strong> offset or page numbers. Simple and good enough.</li>
+<li><strong>User-facing numbered pages on a large dataset:</strong> page numbers for the first pages, and limit or switch to keyset for deep pages (hybrid).</li>
+<li><strong>Infinite scroll, mobile feeds, public APIs:</strong> cursor-based, with keyset inside.</li>
+<li><strong>Exports, backfills, batch jobs over a whole table:</strong> keyset on the primary key (<code>WHERE id &gt; $last ORDER BY id LIMIT 1000</code>). Never offset.</li>
+<li><strong>Logs, events, “what changed since my last sync”:</strong> time-based, with a tiebreaker and an overlap window, or a sequence number.</li>
+</ul>
+<h4>When you probably don’t need anything fancy</h4>
+<p>If a list can never grow beyond a few hundred items (a user’s saved addresses, the list of countries), return it all or use simple offset. Building cursor pagination for 12 rows adds code with no benefit.</p>
+<h4>A practical tip</h4>
+<p>Even if you start with offset, design the API with an opaque cursor field (<code>nextCursor</code>) instead of exposing <code>offset</code> directly. Then you can switch the inside to keyset later without breaking clients.</p>`,
+
+mistakes: `
+<ul>
+<li><strong>No stable sort.</strong> <code>ORDER BY created_at</code> alone isn’t unique. Rows with equal values can come back in different orders between requests, causing duplicates and skips even with offset. Always add a unique tiebreaker like <code>id</code>.</li>
+<li><strong>No <code>ORDER BY</code> at all.</strong> Without it, SQL doesn’t guarantee any order. Pages can overlap randomly.</li>
+<li><strong>Keyset without a matching index.</strong> The query still works but scans and sorts, losing the whole benefit.</li>
+<li><strong>Writing keyset conditions by hand wrong.</strong> <code>WHERE created_at &lt; $1 AND id &lt; $2</code> is <em>not</em> the same as <code>(created_at, id) &lt; ($1, $2)</code>, and silently skips rows. Use the row comparison, or write it out fully: <code>created_at &lt; $1 OR (created_at = $1 AND id &lt; $2)</code>.</li>
+<li><strong>Mixed sort directions with row comparison.</strong> <code>(a, b) &lt; (x, y)</code> only works when both columns sort the same direction. For <code>ORDER BY a DESC, b ASC</code> you must write the long form.</li>
+<li><strong>Running <code>COUNT(*)</code> on every page request</strong> for a large table. Cache it, estimate it, or drop it.</li>
+<li><strong>No maximum page size.</strong> <code>?limit=1000000</code> becomes an easy way to overload your server.</li>
+<li><strong>Trusting the cursor.</strong> Clients can send anything. Validate it, and sign it if changing it could expose data (for example if a filter like <code>tenantId</code> were stored inside it).</li>
+<li><strong>Using offset for batch jobs.</strong> The job gets slower and slower as it runs, and misses or repeats rows if data changes meanwhile.</li>
+<li><strong>Pagination across shards.</strong> With data split across shards (see Database Sharding), “page 3 sorted by date” needs the top rows from <em>every</em> shard merged together. Offset becomes very costly here (each shard must return offset + limit rows). Keyset works better: each shard returns rows after the cursor, and the server merges them.</li>
+</ul>`,
+
+interview: `
+<h4>Common questions</h4>
+<p><strong>“How would you paginate a news feed?”</strong><br>
+Cursor-based with keyset inside: sort by <code>(created_at, id)</code> descending, return a <code>nextCursor</code> made from the last item, and use a matching index. Explain that offset gets slower with depth and shows duplicates when new posts arrive.</p>
+<p><strong>“What’s the difference between offset and cursor pagination?”</strong><br>
+Offset counts rows to skip, so the database does more work the deeper you go, and inserts or deletes shift results. Cursor remembers <em>where you were</em> by value, so it jumps straight there and stays stable. The trade-off: cursor can’t jump to an arbitrary page.</p>
+<p><strong>“How do you show ‘page 5 of 300’ on a huge table?”</strong><br>
+Offset works for shallow pages; the total count is the expensive part. Options: cache the count, use an estimate, cap depth, or switch to “Next” beyond some page.</p>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>Why add <code>id</code> to the sort? (Unique tiebreaker for equal timestamps.)</li>
+<li>What index do you need? (One matching the <code>ORDER BY</code> columns and directions, plus any equality filters first, like <code>(user_id, created_at DESC, id DESC)</code>.)</li>
+<li>How do you support “previous page” with cursors? (Reverse the comparison and sort, then reverse the results; or return a <code>prevCursor</code>.)</li>
+<li>What if an item is deleted or edited while the user is scrolling?</li>
+<li>How would you paginate across shards or search results?</li>
+<li>Is seek pagination different from keyset? (No, same thing.)</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>Almost every system design question with a list (feeds, chat history, order history, search results, notifications) has a pagination decision inside it. A strong answer names the method, the sort key with tiebreaker, the index, and the API shape (<code>items</code>, <code>nextCursor</code>, <code>limit</code> with a max).</p>`,
+
+revision: `
+<h4>Summary</h4>
+<ul>
+<li>Pagination returns large lists in small pages to protect the database, server, network, and client.</li>
+<li>Two core methods: offset (count rows to skip) and keyset (seek to a value).</li>
+<li>Page-number is offset with page math. Seek is another name for keyset.</li>
+<li>Cursor is usually keyset hidden inside an opaque token.</li>
+<li>Time-based is keyset on a timestamp; add a tiebreaker and watch for late commits.</li>
+<li>Offset gets slower with depth and shows duplicates or skips when data changes.</li>
+<li>Keyset stays fast with a matching index, but can’t jump to page N.</li>
+<li>Always use a stable, unique sort, a maximum page size, and validated cursors.</li>
+<li>Hybrid designs mix numbered shallow pages with keyset for depth.</li>
+</ul>
+<h4>Key terms</h4>
+<ul>
+<li><strong>Offset</strong>: number of rows to skip.</li>
+<li><strong>Keyset / seek</strong>: fetching rows after the last seen sort values.</li>
+<li><strong>Cursor</strong>: an opaque token the client sends back to continue.</li>
+<li><strong>Tiebreaker</strong>: a unique column added to the sort so the order is always the same.</li>
+<li><strong>Stable sort</strong>: an order that doesn’t change between requests for the same data.</li>
+<li><strong>Row comparison</strong>: <code>(a, b) &lt; (x, y)</code>, comparing column pairs in order.</li>
+</ul>
+<h4>Test yourself</h4>
+<ol>
+<li>Why does <code>OFFSET 1000000</code> take longer than <code>OFFSET 0</code>, even though both return 20 rows?</li>
+<li>A user sees the same post twice while scrolling. Which pagination method is the likely cause, and why?</li>
+<li>Why is <code>WHERE created_at &lt; $1 AND id &lt; $2</code> wrong for keyset pagination?</li>
+<li>Your sync job fetches rows with <code>updated_at &gt; last_sync</code> and sometimes misses rows. What could cause this?</li>
+<li>Are keyset and seek pagination different?</li>
+</ol>
+<details class="answer"><summary>Show answers</summary>
+<ol>
+<li>The database has to find and discard the first million rows before returning 20. It can’t jump to a row position directly.</li>
+<li>Offset. New posts were added at the top between requests, shifting older posts down, so the next page overlapped with the previous one.</li>
+<li>It requires <em>both</em> conditions, so a row with an older time but a larger id gets excluded and is skipped. Use <code>(created_at, id) &lt; ($1, $2)</code>, or <code>created_at &lt; $1 OR (created_at = $1 AND id &lt; $2)</code>.</li>
+<li>Late commits: a transaction set <code>updated_at</code> to an earlier time but committed after the sync read past that time. Also equal timestamps at the edge or clock differences. Use an overlap window, read up to a little before now, or use a sequence or change log.</li>
+<li>No. Seek is another name for keyset pagination.</li>
+</ol>
+</details>
+<h4>Scenario</h4>
+<p>You are building an <code>/orders</code> API for a B2B app. Customers see their orders in a web table with page numbers and filters. A nightly job also exports every order (about 30 million rows) to a data warehouse. Which pagination methods do you use?</p>
+<details class="answer"><summary>Show a good answer</summary>
+<p>For the web table: page-number pagination, since each customer’s order list is filtered by customer and usually small, and users want numbered pages. Index on <code>(customer_id, created_at DESC, id DESC)</code>, cap the page size, and if some customers have huge histories, cap depth or switch to “Next” after a certain page (hybrid). For the nightly export: keyset on the primary key, <code>WHERE id &gt; $last ORDER BY id LIMIT 5000</code>, because offset would get slower with every batch over 30 million rows. Optionally put an opaque cursor in the public API from day one so you can change the inside later.</p>
+</details>`
+  }
+},
+/* TOPICS:END */
+];
+
+const SECTIONS = [
+  ["what","What is it?"],
+  ["why","Why do we need it?"],
+  ["realWorld","Understand it with a real-world example"],
+  ["software","Understand it with a software example"],
+  ["internals","How does it work internally?"],
+  ["types","Different types or approaches"],
+  ["numbers","Practical example with numbers"],
+  ["tradeoffs","Advantages, disadvantages, and trade-offs"],
+  ["whenToUse","When should I use it?"],
+  ["mistakes","Common mistakes"],
+  ["interview","Interview perspective"],
+  ["revision","Quick revision"]
+];
+
+const STATUS_LABEL = { not:"Not started", progress:"In progress", done:"Completed" };
+const LS_KEY = "sd-hub-progress-v1";
+
+/* ---------------- state ---------------- */
+let progress = {};
+let filter = "all";
+let query = "";
+let homeScroll = 0;
+let currentId = null;
+let db = null, userId = null, saveTimer = null;
+
+const sorted = () => [...TOPICS].sort((a,b)=>(a.order??999)-(b.order??999) || a.title.localeCompare(b.title));
+const byId = id => TOPICS.find(t=>t.id===id);
+const statusOf = id => progress[id] || "not";
+const $ = id => document.getElementById(id);
+
+/* ---------------- storage ---------------- */
+try { const raw = localStorage.getItem(LS_KEY); if (raw) progress = JSON.parse(raw) || {}; } catch(e) {}
+
+function saveProgress(){
+  try { localStorage.setItem(LS_KEY, JSON.stringify(progress)); } catch(e) {}
+  if (!db || !userId) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async ()=>{
+    try { await db.doc("data/users/"+userId+"/hub").set({ progress, updatedAt: Date.now() }); setSync(true); }
+    catch(e){ setSync(false); }
+  }, 600);
+}
+function setSync(ok){
+  $("syncNote").textContent = ok
+    ? "Progress is saved to your account and follows you across devices."
+    : "Progress is saved in this browser only.";
+}
+setSync(false);
+
+(async function connect(){
+  try{
+    if (!window.claude || !window.claude.use) return;
+    const user = await window.claude.use("user");
+    const d = await window.claude.use("db");
+    if (!user || !d) return;
+    const id = await user.id();
+    if (!id) return;
+    db = d; userId = id;
+    const snap = await db.doc("data/users/"+userId+"/hub").get();
+    if (snap.exists){
+      const remote = (snap.data() || {}).progress || {};
+      progress = Object.assign({}, progress, remote);
+      try { localStorage.setItem(LS_KEY, JSON.stringify(progress)); } catch(e) {}
+      refresh();
+    }
+    setSync(true);
+  }catch(e){ setSync(false); }
+})();
+
+/* ---------------- home ---------------- */
+function renderHome(){
+  const list = sorted();
+  const total = list.length;
+  const done = list.filter(t=>statusOf(t.id)==="done").length;
+  const prog = list.filter(t=>statusOf(t.id)==="progress").length;
+
+  $("emptyState").hidden = total > 0;
+  $("controls").hidden = total === 0;
+  $("progressWrap").hidden = total === 0;
+  $("barDone").style.width = total ? (done/total*100)+"%" : "0";
+  $("barProg").style.width = total ? (prog/total*100)+"%" : "0";
+  $("progressText").textContent = `${done} of ${total} completed, ${prog} in progress`;
+
+  const q = query.trim().toLowerCase();
+  const shown = list.filter(t=>{
+    if (filter !== "all" && statusOf(t.id) !== filter) return false;
+    if (!q) return true;
+    return (t.title+" "+(t.summary||"")+" "+(t.category||"")).toLowerCase().includes(q);
+  });
+
+  const el = $("topicList");
+  el.innerHTML = "";
+  shown.forEach(t=>{
+    const s = statusOf(t.id);
+    const card = document.createElement("div");
+    card.className = "topic-card";
+    card.innerHTML = `
+      <h3><button type="button"><span class="dot ${s}" aria-hidden="true"></span></button></h3>
+      <p></p>
+      <div class="card-meta">
+        <span class="cat"></span>
+        <select class="status-select" aria-label="Status">
+          <option value="not">Not started</option>
+          <option value="progress">In progress</option>
+          <option value="done">Completed</option>
+        </select>
+      </div>`;
+    const btn = card.querySelector("h3 button");
+    btn.append(t.title);
+    btn.addEventListener("click", ()=>openTopic(t.id));
+    card.querySelector("p").textContent = t.summary || "";
+    card.querySelector(".cat").textContent = t.category || "";
+    const sel = card.querySelector("select");
+    sel.value = s;
+    sel.addEventListener("change", ()=>{ progress[t.id] = sel.value; saveProgress(); renderHome(); });
+    el.appendChild(card);
+  });
+
+  const nm = $("noMatch");
+  nm.hidden = !(total > 0 && shown.length === 0);
+  if (!nm.hidden) nm.textContent = q ? `No topics match “${query.trim()}”. Try another word or clear the filter.` : "No topics with this status yet.";
+}
+
+$("search").addEventListener("input", e=>{ query = e.target.value; renderHome(); });
+document.querySelectorAll(".chip").forEach(c=>c.addEventListener("click", ()=>{
+  filter = c.dataset.filter;
+  document.querySelectorAll(".chip").forEach(x=>x.setAttribute("aria-pressed", String(x===c)));
+  renderHome();
+}));
+SECTIONS.forEach(([,label])=>{ const li=document.createElement("li"); li.textContent=label; $("structureList").appendChild(li); });
+
+/* ---------------- topic ---------------- */
+function renderSidebar(){
+  const nav = $("sidebar");
+  nav.innerHTML = "<h4>Topics</h4><ul></ul>";
+  const ul = nav.querySelector("ul");
+  sorted().forEach(t=>{
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.innerHTML = `<span class="dot ${statusOf(t.id)}" aria-hidden="true"></span>`;
+    b.append(t.title);
+    if (t.id === currentId) b.setAttribute("aria-current","true");
+    b.addEventListener("click", ()=>openTopic(t.id));
+    li.appendChild(b); ul.appendChild(li);
+  });
+}
+
+function renderTopic(){
+  const t = byId(currentId);
+  if (!t) return goHome();
+  const a = $("article");
+  const s = statusOf(t.id);
+  const list = sorted();
+  const idx = list.findIndex(x=>x.id===t.id);
+  const prev = list[idx-1], next = list[idx+1];
+
+  const prereqs = (t.prerequisites||[]).map(byId).filter(Boolean);
+
+  let html = `<button class="back" type="button" id="backBtn">‹ All topics</button>
+    <h1></h1><p class="topic-intro"></p>
+    <div class="status-row" role="group" aria-label="Topic status">
+      ${["not","progress","done"].map(k=>`<button type="button" class="status-btn s-${k}" data-s="${k}" aria-pressed="${s===k}">${STATUS_LABEL[k]}</button>`).join("")}
+    </div>`;
+  if (prereqs.length){
+    html += `<div class="prereq">Related topics: ${prereqs.map(p=>`<button type="button" data-go="${p.id}"></button>`).join(", ")}</div>`;
+  }
+  html += `<div class="expand-row"><button class="linkish" type="button" data-all="open">Expand all</button><button class="linkish" type="button" data-all="close">Collapse all</button></div>`;
+
+  let n = 0;
+  SECTIONS.forEach(([key,label])=>{
+    const body = t.sections && t.sections[key];
+    if (!body) return;
+    n++;
+    html += `<details class="sec" data-key="${key}" ${n<=2?"open":""}>
+      <summary><span class="sec-num">${n}.</span><span class="sec-title">${label}</span><span class="sec-toggle" aria-hidden="true">›</span></summary>
+      <div class="sec-body">${body}</div></details>`;
+  });
+
+  html += `<div class="pager">
+    ${prev?`<button type="button" data-go="${prev.id}"><small>Previous</small></button>`:"<span></span>"}
+    ${next?`<button type="button" data-go="${next.id}" style="text-align:right"><small>Next</small></button>`:""}
+  </div>`;
+
+  a.innerHTML = html;
+  a.querySelector("h1").textContent = t.title;
+  a.querySelector(".topic-intro").textContent = t.summary || "";
+  a.querySelectorAll(".prereq [data-go]").forEach(b=>b.textContent = byId(b.dataset.go).title);
+  a.querySelectorAll(".pager [data-go]").forEach(b=>b.append(byId(b.dataset.go).title));
+  a.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click", ()=>openTopic(b.dataset.go)));
+  $("backBtn").addEventListener("click", goHome);
+  a.querySelectorAll(".status-btn").forEach(b=>b.addEventListener("click", ()=>{
+    progress[t.id] = b.dataset.s; saveProgress();
+    a.querySelectorAll(".status-btn").forEach(x=>x.setAttribute("aria-pressed", String(x===b)));
+    renderSidebar();
+  }));
+  a.querySelectorAll("[data-all]").forEach(b=>b.addEventListener("click", ()=>{
+    const open = b.dataset.all === "open";
+    a.querySelectorAll("details.sec").forEach(d=>d.open = open);
+  }));
+  renderSidebar();
+}
+
+function openTopic(id){
+  if (!byId(id)) return;
+  if (!currentId) homeScroll = window.scrollY;
+  currentId = id;
+  $("home").hidden = true; $("topicView").hidden = false;
+  renderTopic();
+  try { history.replaceState(null, "", "#"+id); } catch(e) {}
+  window.scrollTo(0,0);
+  $("article").querySelector("h1").setAttribute("tabindex","-1");
+  $("article").querySelector("h1").focus({preventScroll:true});
+}
+
+function goHome(){
+  currentId = null;
+  $("topicView").hidden = true; $("home").hidden = false;
+  renderHome();
+  try { history.replaceState(null, "", location.pathname + location.search); } catch(e) {}
+  requestAnimationFrame(()=>window.scrollTo(0, homeScroll));
+}
+
+function refresh(){ currentId ? renderTopic() : renderHome(); }
+
+/* ---------------- start ---------------- */
+const startId = (location.hash||"").slice(1);
+if (startId && byId(startId)) openTopic(startId); else renderHome();
+</script>
+</body>
+</html>
