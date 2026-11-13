@@ -71,6 +71,6 @@ These three files are the source of truth.
 
 ## Do not
 
-- Do not deploy as part of a review.
+- Do not push or deploy as part of a review. A push to `main` goes live automatically.
 - Do not rewrite sections that have no problem.
 - Do not move a topic to another track yourself. Flag it.

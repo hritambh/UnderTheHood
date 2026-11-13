@@ -103,7 +103,7 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
 ## Do not
 
 - Do not ask the user which track to use. Deciding that is this skill's job.
-- Do not deploy. The live site only changes when the user asks for a deploy (`npx vercel deploy --prod`). Say that the topic is built locally and not live yet.
+- Do not push or deploy. A push to `main` goes live automatically, so push only when the user asks to push or deploy. Say that the topic is built locally and not live yet.
 - Do not edit anything in `site/` by hand. It is rewritten on every build.
 - Do not change `TOPIC_STYLE.md`, `formats/`, the playbooks, `content/hub.json`, `src/` or `scripts/` to make a topic fit. Make the topic fit the format. If the format itself seems wrong for this topic, tell the user.
 - Do not add a new track or change a track's sections unless the user asks for exactly that. `CLAUDE.md` says how it is done.

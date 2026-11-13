@@ -342,7 +342,7 @@ Before and after:
 ```
 npm run build       # check the files and rebuild site/
 npm run preview     # look at it on http://localhost:4173
-npx vercel deploy --prod   # put it on the live site
+git push            # a push to main goes live automatically
 ```
 
 The build stops and lists what to fix if a topic file breaks the format.

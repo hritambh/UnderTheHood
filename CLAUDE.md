@@ -56,4 +56,6 @@ Only when the user asks for it.
 
 - Live at https://system-design-hub-rho.vercel.app (Vercel project `system-design-hub`, public).
 - Vercel runs `node scripts/build.mjs` and serves `site/` (see `vercel.json`).
-- A deploy is a separate step from a build: `npx vercel deploy --prod`. Deploy only when the user asks.
+- The Vercel project is connected to the GitHub repo. **Every push to `main` deploys to the live site automatically.** Other branches get a preview link.
+- So a push to `main` is a deploy. Commit locally as needed, but push to `main` only when the user asks to push or deploy.
+- `npx vercel deploy --prod` still works for a deploy without a push, but it should not be needed.
