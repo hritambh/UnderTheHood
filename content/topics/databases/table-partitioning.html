@@ -1,0 +1,400 @@
+<!--
+title: Table Partitioning
+summary: Splitting one huge table into smaller tables inside the same database, so old data can be dropped in one step and queries only touch the pieces they need.
+category: Scaling
+order: 20
+related: indexing-strategies, database-sharding, sql-vs-nosql
+-->
+
+<!-- section: what -->
+<p><strong>Partitioning</strong> means cutting one big table into several smaller tables, by a rule you choose. January’s orders go in one piece, February’s in the next, and so on. Each piece is called a <strong>partition</strong>. The column the rule looks at is the <strong>partition key</strong>.</p>
+<p>Your app doesn’t see the pieces. It still reads and writes one table called <code>orders</code>. The database sends each row to the right partition, and reads only the partitions a query can need.</p>
+<p>Everything stays in <em>one database on one machine</em>. That is the difference from <strong>sharding</strong>, where the pieces live on different machines. The topic “Database Sharding” covers that. Partitioning is the smaller, simpler step, and most tables that need one of the two only need this one.</p>
+<p>The examples use <strong>PostgreSQL 14</strong> and its built-in feature, called declarative partitioning. MySQL has partitioning too, with one extra limit worth knowing: a partitioned InnoDB table can’t have foreign keys.</p>
+<p class="note">One-line version: one table for your app, many smaller tables on disk, split by a column like the date. Queries skip the pieces they don’t need, and old pieces are dropped whole.</p>
+
+<!-- section: why -->
+<p>A table with a few million rows needs none of this. The trouble starts when one table grows to hundreds of millions of rows and keeps growing. Three things go wrong.</p>
+<ul>
+<li><strong>Deleting old data hurts.</strong> Say you keep one year of events and delete the oldest month every month. That <code>DELETE</code> touches tens of millions of rows, one at a time. It writes a lot, runs for a long time, and leaves the table file the same size. PostgreSQL marks the rows dead and reuses the space for new rows. It rarely hands it back to the disk.</li>
+<li><strong>Indexes outgrow memory.</strong> An index on a 600-million-row table can be bigger than the server’s memory. Then even a simple lookup has to read from disk.</li>
+<li><strong>Every maintenance job is huge.</strong> Rebuilding an index or cleaning up dead rows runs over the whole table, even though only last week’s rows changed.</li>
+</ul>
+<p>Here is the first one on a small scale. A test table on a laptop held 3.1 million rows, one month’s worth being 268,000. Deleting that month and cleaning up left the table at 316 MB, exactly what it was before. The same data in monthly partitions: dropping the month took 9 milliseconds and gave 33 MB back at once.</p>
+<p>With partitions, old data is a whole table that you drop. The index for this month is small. And maintenance runs on one piece at a time.</p>
+
+<!-- section: example -->
+<p>You can paste all of this into <code>psql</code> on an empty database. The first line makes dates print the same for everyone.</p>
+<pre><code>-- Create a table split by month
+SET timezone = 'UTC';
+
+CREATE TABLE orders (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY,
+  customer_id  INT           NOT NULL,
+  total        NUMERIC(10,2) NOT NULL,
+  created_at   TIMESTAMPTZ   NOT NULL,
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+
+CREATE TABLE orders_2026_01 PARTITION OF orders
+  FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+CREATE TABLE orders_2026_02 PARTITION OF orders
+  FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+CREATE TABLE orders_2026_03 PARTITION OF orders
+  FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
+
+INSERT INTO orders (customer_id, total, created_at) VALUES
+  (42, 250.00, '2026-01-05 10:00'),
+  (17,  80.50, '2026-01-20 18:30'),
+  (42, 120.00, '2026-02-10 09:15'),
+  (99, 999.99, '2026-02-28 23:59'),
+  (17,  45.00, '2026-03-01 00:00'),
+  (63, 310.25, '2026-03-14 12:00');</code></pre>
+<p>Two things to notice. <code>FROM</code> is included and <code>TO</code> is not, so a row at exactly midnight on 1 March belongs to March. And the primary key has <code>created_at</code> in it. That is a rule, and we’ll come back to it.</p>
+<p>We inserted into <code>orders</code>. Where did each row really go? The hidden column <code>tableoid</code> tells us.</p>
+<pre><code>-- Which partition holds each row?
+SELECT tableoid::regclass AS stored_in, id, customer_id, created_at
+FROM orders ORDER BY created_at;
+
+   stored_in    | id | customer_id |       created_at
+----------------+----+-------------+------------------------
+ orders_2026_01 |  1 |          42 | 2026-01-05 10:00:00+00
+ orders_2026_01 |  2 |          17 | 2026-01-20 18:30:00+00
+ orders_2026_02 |  3 |          42 | 2026-02-10 09:15:00+00
+ orders_2026_02 |  4 |          99 | 2026-02-28 23:59:00+00
+ orders_2026_03 |  5 |          17 | 2026-03-01 00:00:00+00
+ orders_2026_03 |  6 |          63 | 2026-03-14 12:00:00+00</code></pre>
+<p>Now ask for February only. <code>EXPLAIN</code> shows the plan without running the query.</p>
+<pre><code>-- A query that names the partition key
+EXPLAIN (COSTS OFF)
+SELECT * FROM orders
+WHERE created_at &gt;= '2026-02-01' AND created_at &lt; '2026-03-01';
+
+ Seq Scan on orders_2026_02 orders
+   Filter: ((created_at &gt;= '2026-02-01 00:00:00+00'::timestamp with time zone)
+     AND (created_at &lt; '2026-03-01 00:00:00+00'::timestamp with time zone))</code></pre>
+<p>Only <code>orders_2026_02</code> is in the plan. January and March were never opened. (The long filter line is wrapped here to fit.)</p>
+<p>Ask by customer, with no date, and the database has no way to skip anything:</p>
+<pre><code>-- A query that does not name the partition key
+EXPLAIN (COSTS OFF)
+SELECT * FROM orders WHERE customer_id = 42;
+
+ Append
+   -&gt;  Seq Scan on orders_2026_01 orders_1
+         Filter: (customer_id = 42)
+   -&gt;  Seq Scan on orders_2026_02 orders_2
+         Filter: (customer_id = 42)
+   -&gt;  Seq Scan on orders_2026_03 orders_3
+         Filter: (customer_id = 42)</code></pre>
+<p>A row with nowhere to go is refused:</p>
+<pre><code>-- April has no partition yet
+INSERT INTO orders (customer_id, total, created_at)
+VALUES (42, 60.00, '2026-04-02 08:00');
+
+ERROR:  no partition of relation "orders" found for row
+DETAIL:  Partition key of the failing row contains
+         (created_at) = (2026-04-02 08:00:00+00).</code></pre>
+<p>And removing a whole month is one statement:</p>
+<pre><code>-- Drop January
+DROP TABLE orders_2026_01;
+SELECT count(*) FROM orders;
+
+ count
+-------
+     4</code></pre>
+
+<!-- section: internals -->
+<p>The table you named, <code>orders</code>, is called the <strong>parent</strong>. It holds no rows at all. It only holds the rules: the partition key and the list of partitions with their ranges. Every partition is a normal table with its own files and its own indexes.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 250" role="img" aria-label="A query for February goes to the parent table orders, which holds no rows. The parent sends it only to the February partition. The January and March partitions are skipped.">
+<defs><marker id="ah-table-partitioning" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="15" y="97" width="150" height="56" rx="8" class="box"/><text x="90" y="121" text-anchor="middle" class="lbl">Query</text><text x="90" y="139" text-anchor="middle" class="sub">created_at in February</text>
+<rect x="215" y="97" width="170" height="56" rx="8" class="box"/><text x="300" y="121" text-anchor="middle" class="lbl">orders (parent)</text><text x="300" y="139" text-anchor="middle" class="sub">no rows, only the ranges</text>
+
+<rect x="455" y="20" width="170" height="52" rx="8" class="box faintbox"/><text x="540" y="42" text-anchor="middle" class="lbl">orders_2026_01</text><text x="540" y="59" text-anchor="middle" class="sub">January rows + indexes</text>
+<rect x="455" y="99" width="170" height="52" rx="8" class="box hi"/><text x="540" y="121" text-anchor="middle" class="lbl">orders_2026_02</text><text x="540" y="138" text-anchor="middle" class="sub">February rows + indexes</text>
+<rect x="455" y="178" width="170" height="52" rx="8" class="box faintbox"/><text x="540" y="200" text-anchor="middle" class="lbl">orders_2026_03</text><text x="540" y="217" text-anchor="middle" class="sub">March rows + indexes</text>
+
+<line x1="165" y1="125" x2="213" y2="125" class="arr" marker-end="url(#ah-table-partitioning)"/>
+<line x1="385" y1="125" x2="453" y2="125" class="arr" marker-end="url(#ah-table-partitioning)"/>
+<line x1="385" y1="110" x2="453" y2="52" class="arr faint"/>
+<line x1="385" y1="140" x2="453" y2="198" class="arr faint"/>
+<text x="408" y="62" text-anchor="middle" class="sub">skipped</text>
+<text x="408" y="196" text-anchor="middle" class="sub">skipped</text>
+</svg>
+</div>
+
+<h4>When a row is inserted</h4>
+<ol>
+<li>The insert arrives at the parent, <code>orders</code>.</li>
+<li>PostgreSQL reads the partition key from the new row: <code>created_at = 2026-02-10</code>.</li>
+<li>It keeps the ranges sorted, so it finds the matching one quickly: <code>orders_2026_02</code>.</li>
+<li>The row is written into that table, and that table’s indexes are updated. No other partition is touched.</li>
+<li>If no range matches, the insert fails with the error from the example.</li>
+</ol>
+
+<h4>When a query runs</h4>
+<ol>
+<li>The planner looks in the <code>WHERE</code> clause for conditions on the partition key.</li>
+<li>It compares them with each partition’s range and throws out every partition that can’t hold a matching row. This is <strong>partition pruning</strong>.</li>
+<li>It plans the query for the partitions that are left. Each one is read like any table, with its own index or a full scan.</li>
+<li>If the value is only known when the query runs, like <code>now()</code> or a parameter, the pruning happens at the start of the run. The plan then shows a line like <code>Subplans Removed: 1</code>.</li>
+<li>If there is no condition on the partition key, nothing can be pruned. Every partition is read and the results are joined end to end. That is the <code>Append</code> in the second plan.</li>
+</ol>
+<p>One more thing follows from “each partition has its own indexes”. There is no single index across all partitions. So PostgreSQL can only promise a value is unique if the partition key is part of it. That is why the primary key had to be <code>(id, created_at)</code>. Try <code>id</code> alone and you get:</p>
+<pre><code>-- What PostgreSQL says to PRIMARY KEY (id) on this table
+ERROR:  unique constraint on partitioned table must include all
+        partitioning columns</code></pre>
+
+<!-- section: types -->
+<p>PostgreSQL has three ways to split a table.</p>
+
+<h4>Range</h4>
+<p><strong>How it works:</strong> each partition takes a stretch of values, from one bound up to the next. This is what the <code>orders</code> example uses.</p>
+<p><strong>When to use it:</strong> data that arrives in time order and gets old: orders, events, logs, sensor readings.</p>
+<p><strong>Good:</strong> date queries hit one or two partitions, and old data is dropped whole. <strong>Bad:</strong> someone has to create the next partition before its first row arrives. And the newest partition takes nearly all the writes.</p>
+
+<h4>List</h4>
+<p><strong>How it works:</strong> each partition is given a list of exact values.</p>
+<pre><code>-- Split by country
+CREATE TABLE customers (
+  id       BIGINT NOT NULL,
+  country  TEXT   NOT NULL,
+  name     TEXT   NOT NULL,
+  PRIMARY KEY (id, country)
+) PARTITION BY LIST (country);
+
+CREATE TABLE customers_in PARTITION OF customers
+  FOR VALUES IN ('IN');
+CREATE TABLE customers_us_ca PARTITION OF customers
+  FOR VALUES IN ('US', 'CA');
+CREATE TABLE customers_other PARTITION OF customers DEFAULT;</code></pre>
+<p>The last one is a <strong>default partition</strong>. It takes every row that fits nowhere else. A customer from France lands in <code>customers_other</code>.</p>
+<p><strong>When to use it:</strong> a small, fixed set of values that queries nearly always filter on: country, region, tenant.</p>
+<p><strong>Good:</strong> one group can be moved, archived or dropped alone. <strong>Bad:</strong> sizes are uneven. If 80% of customers are in one country, that partition is nearly as big as the old table.</p>
+
+<h4>Hash</h4>
+<p><strong>How it works:</strong> PostgreSQL runs the key through a hash function, divides by the number of partitions, and uses the remainder to pick one.</p>
+<pre><code>-- Split into four even pieces by user
+CREATE TABLE sessions (
+  user_id     BIGINT      NOT NULL,
+  token       TEXT        NOT NULL,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (user_id, token)
+) PARTITION BY HASH (user_id);
+
+CREATE TABLE sessions_0 PARTITION OF sessions
+  FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+-- ... and the same for REMAINDER 1, 2 and 3</code></pre>
+<p>With 10,000 users inserted, the four partitions got 2,489, 2,527, 2,530 and 2,454 rows.</p>
+<p><strong>When to use it:</strong> there is no natural range or list, and you just want smaller pieces that all queries reach by one ID.</p>
+<p><strong>Good:</strong> even sizes, and nothing to create every month. <strong>Bad:</strong> you can’t drop “old” data, because old and new rows are mixed in every piece. A range of IDs reads all partitions. And changing the number of pieces means moving rows.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Range</th><th>List</th><th>Hash</th></tr>
+<tr><td>Splits by</td><td>A stretch of values</td><td>Exact values</td><td>Hash of the key</td></tr>
+<tr><td>Typical key</td><td>Date or time</td><td>Country, tenant</td><td>User ID</td></tr>
+<tr><td>Drop old data in one step</td><td>Yes</td><td>One group at a time</td><td>No</td></tr>
+<tr><td>Even sizes</td><td>If traffic is steady</td><td>Often not</td><td>Yes</td></tr>
+<tr><td>Ongoing work</td><td>Create new partitions on time</td><td>Add one when a new value appears</td><td>None</td></tr>
+<tr><td>Pruning works for</td><td>Ranges and exact values</td><td>Exact values and <code>IN</code> lists</td><td>Exact values only</td></tr>
+</table></div>
+
+<!-- section: numbers -->
+<p><strong>Assumptions</strong> (made up for this example, not measurements):</p>
+<ul>
+<li>An <code>events</code> table gets 50 million rows a month. A row takes about 200 bytes.</li>
+<li>We keep 12 months and remove the oldest one every month.</li>
+<li>One index entry takes about 25 bytes.</li>
+<li>The database can delete about 50,000 rows a second.</li>
+</ul>
+
+<h4>How big is it?</h4>
+<ul>
+<li>One month: 50,000,000 × 200 bytes = <strong>10 GB</strong>.</li>
+<li>Twelve months: 10 GB × 12 = <strong>120 GB</strong>, in 50,000,000 × 12 = <strong>600 million rows</strong>.</li>
+</ul>
+
+<h4>Removing the oldest month</h4>
+<ul>
+<li>As one table: <code>DELETE</code> has to remove 50 million rows. 50,000,000 ÷ 50,000 = 1,000 seconds, so about <strong>17 minutes</strong> of heavy writing. After that the clean-up job has 50 million dead rows to clear. The file is still 120 GB.</li>
+<li>With monthly partitions: drop one table. It takes <strong>milliseconds</strong>, and 10 GB of disk is free straight away.</li>
+</ul>
+
+<h4>The index on <code>created_at</code></h4>
+<ul>
+<li>As one table: 600,000,000 × 25 bytes = <strong>15 GB</strong>. On a server with 8 GB of memory, it can’t all stay in memory.</li>
+<li>With monthly partitions: the current month’s index is 50,000,000 × 25 bytes = <strong>1.25 GB</strong>. New rows and recent queries only use that one, and it fits in memory easily.</li>
+</ul>
+
+<h4>How many partitions?</h4>
+<ul>
+<li>By month: <strong>12</strong>, plus one made ahead for next month.</li>
+<li>By day: <strong>365</strong>. Still fine.</li>
+<li>By hour: 365 × 24 = <strong>8,760</strong>. Too many. Every query has to think about all of them before it starts.</li>
+</ul>
+<p>A real check of that last point, on a laptop: with 2,000 empty partitions, a query that named the partition key took under 3 ms to plan. A query that didn’t took about 150 ms to plan, before reading a single row.</p>
+
+<!-- section: commands -->
+<p>These carry on from the example, where February and March are left. Run them in order.</p>
+
+<h4>Create the next partition before it is needed</h4>
+<pre><code>-- Make April, then the insert that failed earlier works
+CREATE TABLE orders_2026_04 PARTITION OF orders
+  FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');
+
+INSERT INTO orders (customer_id, total, created_at)
+VALUES (42, 60.00, '2026-04-02 08:00');</code></pre>
+<p>In real work a scheduled job does this a few partitions ahead. Many teams use the <code>pg_partman</code> extension for it.</p>
+
+<h4>See the partitions and their sizes</h4>
+<pre><code>-- List partitions with a row estimate and size on disk
+ANALYZE orders;
+
+SELECT c.relname AS partition,
+       c.reltuples::bigint AS rows,
+       pg_size_pretty(pg_total_relation_size(c.oid)) AS size
+FROM pg_inherits i
+JOIN pg_class c ON c.oid = i.inhrelid
+WHERE i.inhparent = 'orders'::regclass
+ORDER BY c.relname;
+
+   partition    | rows | size
+----------------+------+-------
+ orders_2026_02 |    2 | 24 kB
+ orders_2026_03 |    2 | 24 kB
+ orders_2026_04 |    1 | 24 kB</code></pre>
+<p><code>rows</code> is the estimate from the last <code>ANALYZE</code>, not a live count. In <code>psql</code>, <code>\d+ orders</code> also lists every partition with its range.</p>
+
+<h4>Add a table that already has data</h4>
+<pre><code>-- Build May on the side, then attach it
+CREATE TABLE orders_2026_05
+  (LIKE orders INCLUDING DEFAULTS INCLUDING CONSTRAINTS);
+
+ALTER TABLE orders_2026_05 ADD CONSTRAINT orders_2026_05_range
+  CHECK (created_at &gt;= '2026-05-01' AND created_at &lt; '2026-06-01');
+
+ALTER TABLE orders ATTACH PARTITION orders_2026_05
+  FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
+
+ALTER TABLE orders_2026_05 DROP CONSTRAINT orders_2026_05_range;</code></pre>
+<p>Before attaching, PostgreSQL must be sure every row fits the range. The <code>CHECK</code> already proves it, so the scan is skipped. Attaching also takes a lighter lock on <code>orders</code> than <code>CREATE TABLE ... PARTITION OF</code> does, so reads and writes carry on.</p>
+
+<h4>Remove old data</h4>
+<pre><code>-- Take February out without blocking, then drop it
+ALTER TABLE orders DETACH PARTITION orders_2026_02 CONCURRENTLY;
+DROP TABLE orders_2026_02;</code></pre>
+<p>A plain <code>DROP TABLE</code> on a partition locks the parent for a moment, and has to wait for running queries first. Detaching with <code>CONCURRENTLY</code> avoids that. It can’t run inside a transaction, and it is refused if the table has a default partition. After detaching, <code>orders_2026_02</code> is a normal table. You can keep it as an archive in place of dropping it.</p>
+
+<h4>Add an index without blocking writes</h4>
+<pre><code>-- An empty index on the parent, then one partition at a time
+CREATE INDEX orders_customer_idx ON ONLY orders (customer_id);
+
+CREATE INDEX CONCURRENTLY orders_2026_03_customer_idx
+  ON orders_2026_03 (customer_id);
+ALTER INDEX orders_customer_idx
+  ATTACH PARTITION orders_2026_03_customer_idx;
+-- ... repeat both statements for every other partition</code></pre>
+<p>A plain <code>CREATE INDEX</code> on the parent builds the index on every partition, and blocks writes while it does. In PostgreSQL 14 you can’t add <code>CONCURRENTLY</code> to that. So you build each piece without blocking and attach it. When the last one is attached, the parent’s index becomes valid. Partitions created later get the index by themselves.</p>
+
+<h4>Check that pruning happens</h4>
+<pre><code>-- The date comes from a function, so it is only known at run time
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM orders
+WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
+
+ Append (actual rows=0 loops=1)
+   Subplans Removed: 1
+   -&gt;  Seq Scan on orders_2026_04 orders_1 (actual rows=0 loops=1)
+         Filter: (created_at &gt;= to_timestamp('2026-04-10'::text,
+           'YYYY-MM-DD'::text))
+         Rows Removed by Filter: 1
+   -&gt;  Seq Scan on orders_2026_05 orders_2 (actual rows=0 loops=1)
+         Filter: (created_at &gt;= to_timestamp('2026-04-10'::text,
+           'YYYY-MM-DD'::text))</code></pre>
+<p>How to read it:</p>
+<ul>
+<li><strong>Count the partitions in the plan.</strong> We have three: March, April, May. Two are listed.</li>
+<li><strong><code>Subplans Removed: 1</code></strong> is the third. The date came from a function, so it was only known when the query ran, and March was pruned then.</li>
+<li><strong><code>Append</code> with every partition under it</strong> means no pruning happened. Look at the <code>WHERE</code> clause.</li>
+</ul>
+<p>The usual cause is a function wrapped around the key. <code>WHERE date_trunc('month', created_at) = '2026-04-01'</code> reads all three partitions. Write it as a plain range on <code>created_at</code>.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Fast with the key vs slower without it.</strong> A query that names the partition key reads one piece. A query that doesn’t reads all of them. In a laptop test with 12 partitions, a lookup by user ID read 48 pages across 12 indexes. The same lookup on one plain table read 4.</li>
+<li><strong>Easy clean-up vs a job you must not forget.</strong> Dropping a month is instant. In return, new partitions have to exist on time, or inserts fail.</li>
+<li><strong>Small indexes vs limited unique rules.</strong> Each partition’s index is small. But a unique rule must include the partition key, so “this email is unique in the whole table” can’t be enforced when you partition by date.</li>
+<li><strong>Not a general speed-up.</strong> In the same laptop test, counting one month’s rows took about the same time with and without partitions, because the plain table had a good index. Partitioning pays off in clean-up and in keeping the busy index small, more than in single queries.</li>
+<li><strong>More pieces vs planning time.</strong> Smaller partitions are nicer to manage. Thousands of them slow down the planning of every query.</li>
+<li><strong>Partitioning vs sharding.</strong> Partitioning keeps one database, with joins and transactions working as before. It adds no machines. If the problem is total write load or disk space on one server, this doesn’t fix it.</li>
+<li><strong>Hard to undo.</strong> The key and the split are chosen when the table is created. Changing either means building a new table and moving the rows.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Signals that it fits</h4>
+<ul>
+<li>The table is bigger than the server’s memory, or clearly heading there.</li>
+<li>You delete or archive old data on a schedule.</li>
+<li>Nearly every query filters on the same column, usually a date or a tenant.</li>
+<li>Recent data is busy and old data is rarely read.</li>
+<li>Clean-up and index rebuilds on the whole table take too long.</li>
+</ul>
+
+<h4>When you don’t need it</h4>
+<ul>
+<li>The table and its indexes fit in memory. A plain table with the right index is simpler and just as fast.</li>
+<li>Queries reach the table in many different ways, with no column in common. Most of them would read every partition.</li>
+<li>You need a unique rule on a column that isn’t the partition key.</li>
+<li>A query is slow because an index is missing. Add the index first.</li>
+<li>One machine can’t hold the data or take the writes. That is a job for sharding.</li>
+</ul>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Partitioning to fix a slow query.</strong> If the query needed an index, it still does. Read the plan with <code>EXPLAIN</code> before changing the table.</li>
+<li><strong>Leaving the partition key out of queries.</strong> Then every partition is read, and the table is slower than before. Add the key to the <code>WHERE</code> clause wherever you can.</li>
+<li><strong>Wrapping the key in a function.</strong> <code>date_trunc('month', created_at) = ...</code> stops pruning. Use <code>created_at &gt;= ... AND created_at &lt; ...</code>.</li>
+<li><strong>Forgetting the next partition.</strong> At midnight on the first of the month, every insert starts failing. Create partitions ahead with a scheduled job, and alert when fewer than two future ones exist.</li>
+<li><strong>Using a default partition to hide that.</strong> Rows pile up in it quietly. Later, creating the real partition fails, because rows that belong to it are sitting in the default. You have to move them out first.</li>
+<li><strong>Too many partitions.</strong> Daily partitions kept for ten years is 3,650 tables. Pick a size that leaves you with tens or a few hundred.</li>
+<li><strong>Cleaning up with <code>DELETE</code> anyway.</strong> That throws away the main benefit. Detach and drop the partition.</li>
+<li><strong>Expecting more capacity.</strong> All partitions share one server’s CPU, memory and disk. Partitioning organises the data. It doesn’t add room.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<ul>
+<li><strong>What is partitioning, and how is it different from sharding?</strong> Both split one table into pieces by a key. With partitioning, the pieces are tables in the same database. With sharding, they are on different machines. Partitioning makes one big table easier to manage. Sharding adds capacity.</li>
+<li><strong>What is partition pruning?</strong> The database compares the query’s conditions with each partition’s range and skips the ones that can’t match. It only works when the query filters on the partition key.</li>
+<li><strong>How do you pick the partition key?</strong> Take the column that most queries filter on, and that decides when data gets old. For time-based data that is nearly always the timestamp.</li>
+<li><strong>Why must the primary key include the partition key?</strong> Each partition has its own index, and there is none across all of them. PostgreSQL can only check a value is unique inside one partition, so the key must decide the partition.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>What if an update changes the partition key?</strong> PostgreSQL moves the row to the right partition. It is a delete plus an insert underneath.</li>
+<li><strong>How do you partition a table that is already huge?</strong> You can’t convert it in place. Create a new partitioned table, copy the rows over in batches, then swap the names. Or attach the old table as one big partition and let new data go into new ones.</li>
+<li><strong>How many partitions is too many?</strong> Hundreds are fine. Thousands start to cost planning time on every query.</li>
+<li><strong>What happens to a query with no partition key?</strong> It reads every partition and joins the results.</li>
+<li><strong>Range, list or hash?</strong> Range for time, list for a few fixed groups, hash when you only want even pieces.</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>In a design interview, partitioning is the answer to “this table grows forever”. Say what the table is partitioned by and how old data leaves: “events are partitioned by month, and we drop partitions older than a year.” It comes before sharding. Reach for sharding only when one machine can’t hold the data or take the writes, and even then each shard often keeps its own tables partitioned by time.</p>
+
+<!-- section: revision -->
+<ul>
+<li>Partitioning splits one table into smaller tables inside the same database. The app still uses one table name.</li>
+<li>The parent table holds no rows, only the rules. Each partition is a normal table with its own indexes.</li>
+<li>An insert is sent to the partition whose range matches the row’s partition key. If none matches, the insert fails.</li>
+<li>Partition pruning skips partitions that can’t match the query. It needs a plain condition on the partition key.</li>
+<li>A query without the partition key reads every partition, and can be slower than on a plain table.</li>
+<li>Range suits time-based data, list suits a few fixed groups, and hash gives even pieces with no way to drop old data.</li>
+<li>Removing old data is a detach and a drop, which is instant and frees the disk. A big <code>DELETE</code> is slow and frees nothing.</li>
+<li>A primary key or unique rule must include the partition key, because no index covers all partitions.</li>
+<li>New partitions must exist before their rows arrive, and thousands of partitions slow down query planning.</li>
+<li>Partitioning does not add capacity. When one machine is not enough, that is sharding.</li>
+</ul>
