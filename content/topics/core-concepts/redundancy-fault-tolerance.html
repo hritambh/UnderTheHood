@@ -1,0 +1,316 @@
+<!--
+title: Redundancy and Fault Tolerance
+summary: Keeping spare copies of every important part, so that when one part fails the system carries on. What to duplicate, how the switch to a spare works, and what it really buys you.
+category: Reliability
+order: 40
+related: load-balancer, database-sharding, notification-service
+-->
+
+<!-- section: what -->
+<p>Every part of a system fails sooner or later. Disks die, servers crash, network cables get cut, a whole data centre loses power. You can’t stop that. What you can decide is what happens next.</p>
+<p><strong>Redundancy</strong> means having more of something than you need to do the job, so there is a spare when one breaks. Two servers where one would do. Three copies of the data. Two network links.</p>
+<p><strong>Fault tolerance</strong> is the result you want from those spares: a part fails, and the system keeps working. A <strong>fault</strong> is one part going wrong. A <strong>failure</strong> is the user noticing. Fault tolerance is about stopping the first from becoming the second.</p>
+<p>A third term gets mixed in. <strong>High availability</strong> means the system is up almost all the time, measured as a percentage like 99.99%. It allows a short blip while a spare takes over. Strict fault tolerance allows no blip at all, and costs a lot more. Most web systems aim for high availability and call it fault tolerance.</p>
+<p>The enemy has a name: a <strong>single point of failure</strong>. That is any one part whose failure takes down everything, because there is no second one.</p>
+<p class="note">One-line version: redundancy is having spares, fault tolerance is carrying on when a part dies, and the spare only helps if it is somewhere the same problem can’t reach, and if the switch to it works.</p>
+
+<!-- section: why -->
+<p>Say your app runs on one server with one database. It works well. Then one of these happens:</p>
+<ul>
+<li>The server’s disk dies. The app is down until someone sets up a new machine and restores last night’s backup. That is hours, and today’s data is gone.</li>
+<li>You deploy a new version. The app is down for a minute, every time.</li>
+<li>The data centre has a network problem. Nothing you can do but wait.</li>
+</ul>
+<p>With one of everything, each of those is an outage. And the more parts a system has, the more often one of them is broken. At a hundred servers, a failure is not an accident. It is a normal week.</p>
+<p>Spares fix this, but they are not free. A spare costs money while it does nothing, and the switch to it is new machinery that can go wrong too. So the real question for a designer is: <strong>which failures must users never notice, how long may the others last, and how much are we willing to pay for that?</strong></p>
+
+<!-- section: realWorld -->
+<p>Think about how a hospital deals with a power cut.</p>
+<p><strong>The backup generator.</strong> The hospital runs on mains power. A diesel generator sits in the basement doing nothing. When the mains fail, the generator starts and takes over. It takes about half a minute to get going. This is a <strong>standby</strong>: one source does the work, a second one waits.</p>
+<p><strong>The battery in the operating theatre.</strong> Half a minute of darkness is fine in a corridor. It is not fine in the middle of an operation. So the theatre also has batteries that are always connected and take over in an instant. That is the difference between high availability (a short gap) and strict fault tolerance (no gap). The hospital only pays for the second one where it matters.</p>
+<p><strong>The nurses.</strong> A ward needs four nurses on a shift. The hospital puts five on the rota. All five work. If one is off sick, the ward still runs. Nobody is “the spare”. There is just one more than needed.</p>
+<p><strong>The patient notes.</strong> In one ward, every note is written on a pad that makes a carbon copy, and the copy is filed before the nurse moves on. Slower, but the two folders always match. In another ward, a clerk copies the day’s notes into the archive each evening. Faster for the nurses, but a folder lost at 4 pm takes that day’s notes with it.</p>
+<p>The costs show up in the story too:</p>
+<ul>
+<li>The generator cost a lot and runs for a few hours a year.</li>
+<li>If nobody starts it once a month to test it, it won’t start on the day it is needed.</li>
+<li>If the generator sits in the same basement as the mains switchboard, one flood takes out both. Two sources, but one failure.</li>
+<li>Something has to notice the power cut and flip the switch. If that switch is broken, the generator is useless.</li>
+</ul>
+
+<!-- section: software -->
+<p>Take a product page in an online shop. It shows two things: the product itself, read from PostgreSQL, and a row of “you may also like” items from a separate recommendations service.</p>
+<p>Without the product there is no page. Without recommendations, the page is still useful. So we protect them in two different ways.</p>
+<ul>
+<li>The product data has a spare. The database has a <strong>primary</strong>, the copy that takes writes, and a <strong>replica</strong>, a second server that receives a copy of every change. If the primary can’t answer, we read from the replica.</li>
+<li>The recommendations have no spare. If that service is slow or down, we show the page without them. Giving a smaller answer when a part is missing is called <strong>graceful degradation</strong>.</li>
+</ul>
+<pre><code>// product-page.service.ts
+import { Injectable } from '@nestjs/common';
+import { Pool } from 'pg';
+
+@Injectable()
+export class ProductPageService {
+  // Two copies of the same data, on servers in different places.
+  private primary = new Pool({
+    host: process.env.DB_PRIMARY_HOST,
+    connectionTimeoutMillis: 500,
+    statement_timeout: 1000,
+  });
+  private replica = new Pool({
+    host: process.env.DB_REPLICA_HOST,
+    connectionTimeoutMillis: 500,
+    statement_timeout: 1000,
+  });
+
+  async getPage(productId: string) {
+    const product = await this.readProduct(productId);          // must work
+    const recommendations = await this.readRecs(productId);     // nice to have
+    return { product, recommendations };
+  }
+
+  // Redundancy: if the first copy can't answer, ask the second.
+  private async readProduct(id: string) {
+    const sql = 'SELECT id, name, price FROM products WHERE id = $1';
+    try {
+      return (await this.primary.query(sql, [id])).rows[0];
+    } catch {
+      return (await this.replica.query(sql, [id])).rows[0];
+    }
+  }
+
+  // Graceful degradation: no spare, so give a smaller answer.
+  private async readRecs(id: string): Promise&lt;string[]&gt; {
+    try {
+      const url = `${process.env.RECS_URL}/products/${id}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(300) });
+      return res.ok ? await res.json() : [];
+    } catch {
+      return [];
+    }
+  }
+}</code></pre>
+<p>The timeouts matter. A dead server refuses the connection at once, but a sick one may hang for a minute. Without a time limit, the spare never gets asked.</p>
+<p>Notice what is now harder:</p>
+<ul>
+<li><strong>The replica may be a moment behind.</strong> Fine for a product page. Maybe not for an account balance.</li>
+<li><strong>This only covers reads.</strong> A replica can’t take writes. To keep writing after the primary dies, the replica has to be turned into the new primary. That is <strong>failover</strong>, and it is the subject of the next section.</li>
+<li><strong>Problems get hidden.</strong> The page keeps working, so nobody notices the primary has been down for two days. Every fallback needs an alert.</li>
+<li><strong>There are two code paths to test.</strong> The fallback runs once a year, on the worst day.</li>
+</ul>
+
+<!-- section: internals -->
+<p>Redundancy has two halves. The first is having the spare. The second is the switch: noticing the failure and moving the work across. Here is that switch for a database with a primary in one zone and a <strong>standby</strong> in another. A standby is a replica kept ready to take over. A <strong>zone</strong> is a separate data centre building in the same city, with its own power and network.</p>
+<ol>
+<li><strong>Normal running.</strong> Clients talk to a proxy, which gives the database one fixed address. The proxy sends everything to the primary. The primary sends a copy of every write to the standby.</li>
+<li><strong>Watching.</strong> A set of monitors sends a small “are you alive?” message to both databases every 2 seconds. This is a <strong>heartbeat</strong>.</li>
+<li><strong>The primary dies.</strong> Its heartbeats stop being answered.</li>
+<li><strong>Deciding.</strong> One missed heartbeat could be a network hiccup. So the monitors wait for three in a row, then vote. With three monitors, two must agree. This majority is called a <strong>quorum</strong>. It stops one confused monitor from starting a failover by itself.</li>
+<li><strong>Fencing.</strong> Before anything else, the old primary is cut off so it can’t accept writes any more. This is <strong>fencing</strong>. Maybe it wasn’t dead, only unreachable. If it comes back while the standby is also taking writes, you have two primaries with different data. That is <strong>split brain</strong>, and it is worse than being down.</li>
+<li><strong>Promoting.</strong> The standby is told it is now the primary and starts accepting writes.</li>
+<li><strong>Redirecting.</strong> The proxy starts sending traffic to the new primary. Clients keep using the same address.</li>
+<li><strong>Catching up.</strong> Requests that failed in the gap are retried by the clients. Later, a fresh standby is built. Until it is ready, there is no spare.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 250" role="img" aria-label="Clients reach the database through a proxy. The primary in zone A has stopped answering heartbeats from three monitors, so the standby in zone B has been promoted and the proxy now sends traffic to it.">
+<defs>
+<marker id="ah-redundancy-fault-tolerance" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+<marker id="ah-redundancy-fault-tolerance-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead-warn"/></marker>
+</defs>
+
+<rect x="15" y="100" width="95" height="50" rx="8" class="box"/><text x="62" y="130" text-anchor="middle" class="lbl">Clients</text>
+<rect x="150" y="100" width="110" height="50" rx="8" class="box"/><text x="205" y="122" text-anchor="middle" class="lbl">Proxy</text><text x="205" y="139" text-anchor="middle" class="sub">one address</text>
+<rect x="320" y="20" width="160" height="50" rx="8" class="box warn"/><text x="400" y="42" text-anchor="middle" class="lbl">Primary</text><text x="400" y="59" text-anchor="middle" class="sub">zone A, no reply</text>
+<rect x="320" y="180" width="160" height="50" rx="8" class="box hi"/><text x="400" y="202" text-anchor="middle" class="lbl">Standby</text><text x="400" y="219" text-anchor="middle" class="sub">zone B, promoted</text>
+<rect x="530" y="100" width="100" height="50" rx="8" class="box"/><text x="580" y="122" text-anchor="middle" class="lbl">3 monitors</text><text x="580" y="139" text-anchor="middle" class="sub">heartbeats</text>
+
+<line x1="110" y1="125" x2="148" y2="125" class="arr" marker-end="url(#ah-redundancy-fault-tolerance)"/>
+<line x1="260" y1="112" x2="318" y2="58" class="arr faint"/>
+<line x1="260" y1="138" x2="318" y2="192" class="arr" marker-end="url(#ah-redundancy-fault-tolerance)"/>
+<line x1="400" y1="70" x2="400" y2="178" class="arr dim" marker-end="url(#ah-redundancy-fault-tolerance)"/>
+<text x="408" y="129" class="sub">copies writes</text>
+<line x1="560" y1="100" x2="483" y2="60" class="arr warnline" marker-end="url(#ah-redundancy-fault-tolerance-warn)"/>
+<line x1="560" y1="150" x2="483" y2="190" class="arr dim" marker-end="url(#ah-redundancy-fault-tolerance)"/>
+</svg>
+</div>
+
+<p>The monitors and the proxy are now critical parts too, so each needs more than one copy. And the gap is not zero: steps 3 to 7 take seconds at best.</p>
+<p>The “Load Balancer” topic shows the same idea for stateless servers, where it is much easier: health checks spot a dead server, and traffic just goes to the others. Data is the hard case, because the spare has to hold the same data as the one that died.</p>
+
+<!-- section: types -->
+<p>There are two questions here. How do the spares share the work? And for data, how does the copy stay up to date?</p>
+
+<h4>1. Active-passive</h4>
+<p><strong>How it works:</strong> one copy does all the work. A second one waits and takes over when the first fails. The waiting one can be <strong>hot</strong> (running and up to date, takes over in seconds), <strong>warm</strong> (running but needs to catch up, takes minutes), or <strong>cold</strong> (switched off, takes much longer).</p>
+<p><strong>When to use it:</strong> when only one copy may be in charge at a time. A database primary is the usual case.</p>
+<p><strong>Good:</strong> there is never a question of who is in charge.</p>
+<p><strong>Bad:</strong> you pay double and half of it sits idle. The switch takes time. And the idle side can be broken without anyone knowing.</p>
+
+<h4>2. Active-active</h4>
+<p><strong>How it works:</strong> every copy does real work all the time. When one dies, the rest pick up its share. You size it as <strong>N+1</strong>: if N copies can carry the peak, run one more. <strong>N+2</strong> lets you lose one during a deploy and another to a crash.</p>
+<p><strong>When to use it:</strong> for parts that keep no data of their own between requests, like API servers and proxies.</p>
+<p><strong>Good:</strong> no idle spare, and every copy is tested all day by real traffic. It is cheaper too: one extra on top of four is 25% more, not 100%.</p>
+<p><strong>Bad:</strong> it only works if the others have room. Two servers each at 80% are not redundant: when one dies, the other is asked for 160%. For data it is hard, because two copies taking writes at once can disagree.</p>
+
+<h4>3. Synchronous replication</h4>
+<p><strong>How it works:</strong> the primary sends each write to the standby and waits for it to say “saved” before telling the client “done”.</p>
+<p><strong>When to use it:</strong> for data you can’t lose even one confirmed write of. Payments, orders.</p>
+<p><strong>Good:</strong> a write the client was told about is on two machines. Failover loses nothing that was confirmed.</p>
+<p><strong>Bad:</strong> every write waits for a network trip. And if the standby is down, the primary must either stop taking writes or quietly stop waiting. The spare can now cause an outage.</p>
+
+<h4>4. Asynchronous replication</h4>
+<p><strong>How it works:</strong> the primary says “done” to the client straight away, and sends the write to the standby a moment later.</p>
+<p><strong>When to use it:</strong> when speed matters more than the last second of data, and for far-away copies.</p>
+<p><strong>Good:</strong> writes are as fast as with no standby, and a dead standby doesn’t hurt the primary.</p>
+<p><strong>Bad:</strong> the standby is always a little behind. If the primary dies, the writes it hadn’t sent yet are lost, even though clients were told they were saved.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Active-passive</th><th>Active-active</th><th>Synchronous copy</th><th>Asynchronous copy</th></tr>
+<tr><td>What it is about</td><td>Who does the work</td><td>Who does the work</td><td>Keeping data in step</td><td>Keeping data in step</td></tr>
+<tr><td>When a copy dies</td><td>A switch, taking seconds to minutes</td><td>The rest carry on</td><td>No confirmed write is lost</td><td>The last moments of writes can be lost</td></tr>
+<tr><td>Cost in normal times</td><td>An idle spare, about double</td><td>One or two extra on top of N</td><td>Slower writes</td><td>Almost none</td></tr>
+<tr><td>Main risk</td><td>The spare was broken all along</td><td>No room left when one dies</td><td>A sick standby blocks writes</td><td>Lost writes after failover</td></tr>
+<tr><td>Typical use</td><td>Database primary and standby</td><td>API servers, proxies</td><td>Money, orders</td><td>Read copies, far-away copies</td></tr>
+</table></div>
+
+<h4>Where the copies live matters as much as how many</h4>
+<p>Two copies only count as two if one problem can’t hit both. A problem that takes out several copies at once is a <strong>correlated failure</strong>. So spread the copies out:</p>
+<ul>
+<li><strong>Different machines</strong> cover a dead disk or a crashed server.</li>
+<li><strong>Different racks</strong> cover a failed power strip or network switch.</li>
+<li><strong>Different zones</strong> cover a building losing power or network.</li>
+<li><strong>Different regions</strong>, meaning cities far apart, cover a flood or a whole cloud region going down. At that distance the copy is usually asynchronous.</li>
+</ul>
+<p>Some shared causes ignore distance. A bad deploy or config change sent to every copy at once breaks every copy at once.</p>
+
+<!-- section: numbers -->
+<p><strong>Assumptions</strong> (made up for this example, not measurements): every single part, on its own, is up 99.9% of the time. Failures of different parts have nothing to do with each other, until we say otherwise.</p>
+
+<h4>What the percentages mean</h4>
+<p>Availability is counted in “nines”. A year has 8,760 hours.</p>
+<div class="table-wrap"><table>
+<tr><th>Availability</th><th>Called</th><th>Down time in a year</th></tr>
+<tr><td>99%</td><td>two nines</td><td>3.65 days</td></tr>
+<tr><td>99.9%</td><td>three nines</td><td>8.76 hours</td></tr>
+<tr><td>99.99%</td><td>four nines</td><td>52.6 minutes</td></tr>
+<tr><td>99.999%</td><td>five nines</td><td>5.3 minutes</td></tr>
+</table></div>
+
+<h4>Parts in a row make it worse</h4>
+<p>A request goes through a load balancer, then an app server, then a database. One of each. If any of the three is down, the request fails. So you multiply:</p>
+<ul>
+<li>0.999 × 0.999 × 0.999 = 0.997, which is <strong>99.7%</strong>.</li>
+<li>Down time: 0.3% of 8,760 hours ≈ <strong>26 hours a year</strong>.</li>
+</ul>
+<p>Three good parts in a row give a system worse than any one of them.</p>
+
+<h4>Parts side by side make it better</h4>
+<p>Now run two app servers, where either one can do the job. The pair is only down when both are down at the same moment. One server is down 0.1% of the time, which is 0.001.</p>
+<ul>
+<li>Both down: 0.001 × 0.001 = 0.000001.</li>
+<li>So the pair is up 1 − 0.000001 = <strong>99.9999%</strong>. That is about <strong>32 seconds a year</strong>, down from 8.76 hours.</li>
+<li>The general rule for n copies: 1 − (1 − a)<sup>n</sup>, where a is how often one copy is up.</li>
+</ul>
+<p>Do that at all three layers and multiply again: 0.999999 × 0.999999 × 0.999999 ≈ <strong>99.9997%</strong>, about <strong>1.6 minutes a year</strong>. From 26 hours to under 2 minutes, on paper.</p>
+
+<h4>Why real systems don’t reach that</h4>
+<p><strong>The switch takes time.</strong> For the database in the last section: 3 missed heartbeats at 2 seconds is 6 seconds. Say fencing and promoting take 20 seconds, and clients reconnecting takes 5.</p>
+<ul>
+<li>One failover: 6 + 20 + 5 = <strong>31 seconds</strong>.</li>
+<li>Four of those a year: 4 × 31 = <strong>124 seconds</strong>. That alone is more than the 1.6 minutes the formula promised for the whole system.</li>
+<li>Still, compare it with no standby: four failures at 2 hours each to restore from backup is <strong>8 hours</strong>.</li>
+</ul>
+<p><strong>Failures are not independent.</strong> Say one tenth of each server’s down time comes from something shared, like a bad deploy that hits both. That is 0.0001 of the time when both are down together, whatever the formula says.</p>
+<ul>
+<li>Both down: 0.0001 (shared) + 0.0009 × 0.0009 (separate) ≈ 0.0001.</li>
+<li>So the pair is up about <strong>99.99%</strong>: <strong>53 minutes a year</strong>, not 32 seconds. That is 100 times worse.</li>
+</ul>
+<p>Once you have two copies, shared causes are almost all of your down time. A third copy on the same deploy changes nearly nothing.</p>
+
+<h4>What the spare costs, and what can be lost</h4>
+<ul>
+<li>Four servers carry the peak. With N+1 you run 5: <strong>25% more cost</strong>, and each runs at 80% at peak. With N+2 you run 6: <strong>50% more</strong>, each at 67%.</li>
+<li>An active-passive pair is <strong>100% more</strong> for the same protection against one failure.</li>
+<li>With an asynchronous standby that is 200 milliseconds behind, at 500 writes a second, a failover loses about 0.2 × 500 = <strong>100 writes</strong> that clients were told were saved.</li>
+</ul>
+<p>Two of these have names. <strong>RTO</strong>, recovery time objective, is how long you may be down: the 31 seconds. <strong>RPO</strong>, recovery point objective, is how much recent data you may lose: the 100 writes.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Availability vs cost.</strong> Every nine costs more than the last. Going from one copy to two removes most of the down time. Going from two zones to two regions can double the bill for a failure that may come once in years.</li>
+<li><strong>Availability vs complexity.</strong> Failover, heartbeats, quorums and fencing are all extra machinery, and machinery breaks. A badly built failover causes more outages than the failures it was meant to cover.</li>
+<li><strong>No lost data vs fast writes.</strong> Synchronous copies never lose a confirmed write, but every write is slower and a sick standby can block the primary. Asynchronous copies are fast and can lose the last moments.</li>
+<li><strong>Fast failover vs false alarms.</strong> Declare a server dead after one missed heartbeat and you fail over on every network hiccup. Wait for ten and users are down for longer on a real failure.</li>
+<li><strong>Automatic vs manual failover.</strong> Automatic is fast, and works at 3 am. But a wrong call can mean split brain. Manual is slower and safer.</li>
+<li><strong>Active-active vs active-passive.</strong> Active-active wastes less and is always tested. It needs parts that can share the work, which is easy without data and hard with it.</li>
+<li><strong>A spare vs doing less.</strong> Not every part needs a second copy. For things users can live without for a while, graceful degradation is cheaper than redundancy.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Signals that you need it</h4>
+<ul>
+<li>Being down costs real money or trust by the minute: payments, checkout, login.</li>
+<li>You have promised customers an uptime number in a contract.</li>
+<li>Deploys cause down time, because there is only one server to restart.</li>
+<li>Losing the data would end the business. Then data needs several copies, in more than one place, before anything else does.</li>
+<li>You run enough machines that one of them is broken most weeks.</li>
+</ul>
+
+<p>To start, draw the path of one request and mark every box there is only one of. Fix the one whose failure costs most. Usually that is the database.</p>
+
+<h4>When you don’t need it</h4>
+<ul>
+<li><strong>An internal tool used in office hours.</strong> An hour of down time a few times a year is fine. Good backups and a tested restore are enough.</li>
+<li><strong>A batch job that can simply run again.</strong> If it fails, start it again. Nothing has to stay up.</li>
+<li><strong>A new product with few users.</strong> One server and one managed database with backups is a fair start. Add spares when down time starts to cost something.</li>
+<li><strong>A part users can do without.</strong> Degrade instead, like the recommendations in the example.</li>
+</ul>
+<p>Even then, keep backups. A spare protects against a part dying. A backup protects against losing the data. They are not the same thing.</p>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Never testing the switch.</strong> A failover that has never run is a guess. It fails on the day you need it, like the generator nobody started. Fix: fail over on purpose, on a normal working day, on a schedule.</li>
+<li><strong>Putting both copies in the same place.</strong> Two servers in one rack, two databases in one zone, every copy on the same deploy at the same moment. One problem takes them all. Fix: spread copies across zones, and roll changes out to one copy first.</li>
+<li><strong>Treating a replica as a backup.</strong> A replica copies everything, mistakes included. Delete a table by accident and it is gone from every replica a moment later. Fix: keep real backups that you can restore to an earlier point in time, and test the restore.</li>
+<li><strong>Spares with no room.</strong> Two servers each at 80% look redundant and are not. When one dies, the other falls over too. Fix: size for the peak with one copy missing.</li>
+<li><strong>Missing the hidden single points.</strong> You doubled the servers and the database. But there is still one DNS provider, one config store, one deploy tool, or one person who knows how failover works. Fix: follow the whole request path, and the path of a deploy too.</li>
+<li><strong>Failover with no fencing.</strong> The old primary was only cut off, not dead. Now two primaries accept writes, and the data splits. Fix: always cut off the old one before promoting the new one.</li>
+<li><strong>Fallbacks that hide the problem.</strong> The system runs on its spare for weeks and nobody knows. The next failure is an outage. Fix: alert every time a spare is in use.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<p><strong>“How would you make this design highly available?”</strong><br>
+Walk the request path and name each single point of failure. For parts with no data, run N+1 behind a load balancer across two or three zones. For the database, a primary and a standby in another zone, with automatic failover. Then say what you are not covering, like a whole region going down, and why.</p>
+<p><strong>“What is the difference between redundancy, fault tolerance and high availability?”</strong><br>
+Redundancy is the means: spare parts. Fault tolerance is the property: the system keeps working when a part fails. High availability is the measured goal: up for some percentage of the time, with short gaps allowed during a switch.</p>
+<p><strong>“What does 99.99% mean, and how would you get there?”</strong><br>
+About 52 minutes of down time a year. Parts in a row multiply, so every layer has to beat the target. That means two of everything in different zones, a tested failover, and careful rollouts, because shared causes like bad deploys become the main source of down time.</p>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>What is split brain, and how do you stop it? (Two primaries at once. Fencing, and a quorum so only a majority can promote.)</li>
+<li>Why three monitors and not two? (With two, a tie can’t be broken. A majority needs an odd number.)</li>
+<li>What are RTO and RPO? (How long you may be down, and how much recent data you may lose.)</li>
+<li>What if the whole region goes down? (A copy in a second region, usually asynchronous, with a slower and often manual switch.)</li>
+<li>How do you know failover works? (You run it on purpose, regularly.)</li>
+<li>Synchronous or asynchronous copies? (It depends on how much data you may lose. No confirmed write: synchronous. A second of data: asynchronous.)</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>In a system design interview, this shows up twice. When you draw the boxes, say once that each box is several copies and where they live. Then in the “what can go wrong” part, go through the boxes and say what the user sees when each one dies. The “Load Balancer” and “Notification Service” designs both do this in a table.</p>
+<p>The strong move is to treat parts differently: which get spares, which degrade, and which failures you have decided to live with.</p>
+
+<!-- section: revision -->
+<ul>
+<li>Redundancy is having spare parts. Fault tolerance is the system carrying on when a part fails. High availability is being up nearly all the time, with short gaps allowed.</li>
+<li>A single point of failure is any part there is only one of, whose failure takes everything down.</li>
+<li>Active-passive keeps a spare waiting and needs a switch. Active-active has every copy working, sized as N+1 or N+2, and needs room for the others to take the load.</li>
+<li>Failover is: notice with heartbeats, decide by majority, cut off the old primary, promote the spare, redirect traffic. Skipping the cut-off risks split brain.</li>
+<li>Synchronous copies lose no confirmed write but slow every write. Asynchronous copies are fast and can lose the last moments.</li>
+<li>Parts in a row multiply, so three 99.9% parts give 99.7%. Parts side by side give 1 − (1 − a)<sup>n</sup>, so two 99.9% copies give 99.9999% on paper.</li>
+<li>Real numbers are worse, because the switch takes time and failures share causes. Copies in the same rack, zone or deploy are not really separate.</li>
+<li>Not everything needs a spare. Graceful degradation gives a smaller answer when a part is missing.</li>
+<li>A replica is not a backup, and a failover that has never been tested is a guess.</li>
+</ul>
