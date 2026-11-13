@@ -48,6 +48,8 @@ const THEME_ICON =
   '<svg class="i-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a.7.7 0 0 0-.9-.9A10 10 0 1 0 21.4 15.500a.7.7 0 0 0-.9-.9z"/></svg>' +
   '<svg class="i-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2.5v2.2M12 19.300v2.2M2.500 12h2.2M19.300 12h2.2M5.300 5.300l1.500 1.500M17.200 17.200l1.500 1.500M5.300 18.700l1.500-1.500M17.200 6.800l1.500-1.500"/></svg>';
 
+const SIDE_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 4.5v15" fill="none" stroke="currentColor" stroke-width="1.8"/><rect class="side-fill" x="5.4" y="6.4" width="2.4" height="11.2" rx=".8" fill="currentColor"/></svg>';
+
 const BOOK_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.800" stroke-linecap="round" stroke-linejoin="round" d="M12 6.500C10.300 5.200 7.800 4.500 4.500 4.500v13c3.300 0 5.800.700 7.500 2 1.700-1.300 4.200-2 7.500-2v-13c-3.300 0-5.800.700-7.500 2zM12 6.500v13"/></svg>';
 
 function page({ root, title, description, bodyAttrs, body, scripts, v }) {
@@ -58,7 +60,7 @@ function page({ root, title, description, bodyAttrs, body, scripts, v }) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(description)}">
-<script>(function(){document.documentElement.className+=" js";if(/^#t-/.test(location.hash))document.documentElement.setAttribute("data-home","list");try{var t=localStorage.getItem("sd-hub-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);var v=localStorage.getItem("sd-hub-view");if(v==="list")document.documentElement.setAttribute("data-view","list");if(localStorage.getItem("sd-hub-reading")==="1"){document.documentElement.setAttribute("data-reading","");var i=parseInt(localStorage.getItem("sd-hub-reading-intensity"),10);if(i>=10&&i<=100)document.documentElement.style.setProperty("--read-intensity",i/100)}}catch(e){}})()</script>
+<script>(function(){document.documentElement.className+=" js";if(/^#t-/.test(location.hash))document.documentElement.setAttribute("data-home","list");try{var t=localStorage.getItem("sd-hub-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);var v=localStorage.getItem("sd-hub-view");if(v==="list")document.documentElement.setAttribute("data-view","list");if(localStorage.getItem("sd-hub-sidebar")==="0")document.documentElement.setAttribute("data-side","off");if(localStorage.getItem("sd-hub-reading")==="1"){document.documentElement.setAttribute("data-reading","");var i=parseInt(localStorage.getItem("sd-hub-reading-intensity"),10);if(i>=10&&i<=100)document.documentElement.style.setProperty("--read-intensity",i/100)}}catch(e){}})()</script>
 <link rel="icon" href="${ICON}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -73,9 +75,10 @@ ${scripts.map(s => `<script src="${root}assets/${s}?v=${v}"></script>`).join('\n
 `;
 }
 
-function topbar(root, hubTitle) {
+function topbar(root, hubTitle, withSidebar) {
   return `<header class="topbar">
   <div class="topbar-in">
+    ${withSidebar ? `<button class="theme-btn side-btn" id="sideBtn" type="button" aria-label="Hide sidebar" title="Hide sidebar" aria-expanded="true" aria-controls="sidebar">${SIDE_ICON}</button>` : ''}
     <a class="brand" href="${root}index.html"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text">${esc(hubTitle)}</span></a>
     <div class="gsearch" role="search">
       <span class="gsearch-field"><svg class="gsearch-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="6.500" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.500 4.500" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -412,9 +415,9 @@ ${trackSections}
     </details>`).join('');
 
     const body = `<div class="readbar" aria-hidden="true"><span id="readbar"></span></div>
-${topbar('../', hubTitle)}
+${topbar('../', hubTitle, true)}
 <div class="wrap topic-layout">
-  <nav class="sidebar" aria-label="Topics and sections">${sideTopics}
+  <nav class="sidebar" id="sidebar" aria-label="Topics and sections">${sideTopics}
     <h4>On this page</h4>
     <ol class="side-secs" id="sideSecs">${sideSecs}</ol>
   </nav>

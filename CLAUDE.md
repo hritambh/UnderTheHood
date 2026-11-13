@@ -17,6 +17,7 @@ A plain static website of engineering topics, grouped into tracks. It started as
 - `site/` — the generated website. Don't edit by hand; it is rewritten on every build.
 - Topic pages — the first two sections start open and the rest are folded. A folded section opens by itself when the reader scrolls to it. A section the reader folds by hand stays folded, and jumping to a section from the sidebar or a link does not open the ones it passes over.
 - Global search — the search box in the top bar of every page suggests topics and section matches as you type. It reads `site/assets/search-index.js`, which the build generates. The home page loads that file up front; other pages load it the first time the search is used.
+- Sidebar toggle — on topic pages, the button at the left of the top bar (or the `[` key) hides or shows the sidebar. Only on screens wide enough to have a sidebar (920px and up). Saved in the reader's browser (`sd-hub-sidebar`).
 - Reading mode — the book button in the top bar puts a warm tint over every page, with a slider for its strength. Saved in the reader's browser (`sd-hub-reading`, `sd-hub-reading-intensity`).
 - `.claude/skills/add-topic` — the skill for every new topic. It decides the track by itself (the user does not have to name one), then applies that track's playbook and format file.
 - `.claude/skills/add-topic/tracks/<track>.md` — one playbook per track: how to scope a topic, the order to work in, the traps, and the checks before finishing.

@@ -118,6 +118,16 @@ kbd{font-family:var(--mono);font-size:.82em;background:var(--code-bg);border:1px
 @media (min-width:920px){
   .sidebar{display:block;position:sticky;top:calc(var(--topbar) + 20px);align-self:start;max-height:calc(100vh - var(--topbar) - 40px);overflow:auto;padding-right:6px}
 }
+/* the top bar button that hides or shows the sidebar; only where the sidebar exists */
+.theme-btn.side-btn{display:none}
+.side-btn .side-fill{opacity:.55}
+:root[data-side="off"] .side-btn .side-fill{display:none}
+@media (min-width:920px){
+  .theme-btn.side-btn{display:grid}
+  :root[data-side="off"] .topic-layout{grid-template-columns:minmax(0,1fr)}
+  :root[data-side="off"] .sidebar{display:none}
+  :root[data-side="off"] #article{margin-inline:auto;width:100%}
+}
 .sidebar h4{font-size:.85rem;color:var(--muted);margin:4px 0 8px;font-weight:600}
 .sidebar ul,.sidebar ol{list-style:none;margin:0 0 22px;padding:0}
 .sidebar a{display:block;padding:6px 8px;border-radius:6px;font-size:.92rem;line-height:1.35;color:var(--ink);text-decoration:none}

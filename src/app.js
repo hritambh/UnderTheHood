@@ -10,6 +10,7 @@
   var LS_VIEW = 'sd-hub-view';
   var LS_READING = 'sd-hub-reading';
   var LS_READ_INT = 'sd-hub-reading-intensity';
+  var LS_SIDEBAR = 'sd-hub-sidebar';
   var LABEL = { not: 'Not started', progress: 'In progress', done: 'Completed' };
 
   function load(key, fallback) {
@@ -522,6 +523,53 @@
     });
     window.addEventListener('hashchange', function () { goTo(location.hash, false); });
     if (location.hash) goTo(location.hash, false);
+
+    /* hide or show the sidebar (wide screens only; saved in the browser) */
+    var sideBtn = $('sideBtn');
+    if (sideBtn) (function () {
+      var root = document.documentElement;
+      function paintSide() {
+        var off = root.getAttribute('data-side') === 'off';
+        var label = off ? 'Show sidebar' : 'Hide sidebar';
+        sideBtn.setAttribute('aria-expanded', String(!off));
+        sideBtn.setAttribute('aria-label', label);
+        sideBtn.title = label + ' ( [ )';
+      }
+      function setSide(off, keep) {
+        // the text re-flows when the column changes width, so hold on to the block being read
+        var mark = null, was = 0;
+        if (keep && window.scrollY > 0) {
+          var blocks = all('.sec-body > *, details.sec > summary', article);
+          for (var i = 0; i < blocks.length; i++) {
+            var r = blocks[i].getBoundingClientRect();
+            if (r.height && r.bottom > 70) { mark = blocks[i]; was = r.top; break; }
+          }
+        }
+        if (off) root.setAttribute('data-side', 'off'); else root.removeAttribute('data-side');
+        paintSide();
+        if (mark) {
+          var moved = mark.getBoundingClientRect().top - was;
+          if (Math.abs(moved) > 1) { pauseAuto(); window.scrollBy({ top: moved, behavior: 'instant' }); }
+        }
+      }
+      function toggleSide() {
+        var off = root.getAttribute('data-side') !== 'off';
+        try { localStorage.setItem(LS_SIDEBAR, off ? '0' : '1'); } catch (e) {}
+        setSide(off, true);
+      }
+      paintSide();
+      sideBtn.addEventListener('click', toggleSide);
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== '[' || e.metaKey || e.ctrlKey || e.altKey) return;
+        var t = e.target;
+        if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+        if (!sideBtn.offsetParent) return;   // narrow screen: there is no sidebar to toggle
+        toggleSide();
+      });
+      window.addEventListener('storage', function (e) {
+        if (e.key === LS_SIDEBAR) setSide(e.newValue === '0', false);
+      });
+    })();
 
     /* reading bar + highlight the section being read */
     var bar = $('readbar');
