@@ -1,6 +1,6 @@
 # UnderTheHood (static website)
 
-The site was called "My System Design Learning Hub" until 2026-11-13. The project folder, the Vercel project and the live URL still use the old name `system-design-hub`.
+The site was called "My System Design Learning Hub" until 2026-11-13. The project folder and the Vercel project still use the old name `system-design-hub`.
 
 A plain static website of engineering topics, grouped into tracks. It started as a copy of a Claude artifact, but the artifact is no longer used. The files in `content/` are the only source.
 
@@ -54,7 +54,8 @@ Only when the user asks for it.
 
 ## Hosting
 
-- Live at https://system-design-hub-rho.vercel.app (Vercel project `system-design-hub`, public).
+- Live at https://underthehood-hub.vercel.app (Vercel project `system-design-hub`, public). The older address https://system-design-hub-rho.vercel.app still serves the same site.
+- Reading progress is saved per address, so progress saved on one address does not show on the other.
 - Vercel runs `node scripts/build.mjs` and serves `site/` (see `vercel.json`).
 - The Vercel project is connected to the GitHub repo. **Every push to `main` deploys to the live site automatically.** Other branches get a preview link.
 - So a push to `main` is a deploy. Commit locally as needed, but push to `main` only when the user asks to push or deploy.
