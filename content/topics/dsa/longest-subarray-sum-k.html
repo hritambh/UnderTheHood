@@ -1,0 +1,256 @@
+<!--
+title: Longest Subarray With Sum K
+summary: Find the longest stretch of neighbouring numbers in an array that adds up to exactly k. Solved with a running sum and a map, which also works when the numbers are negative.
+category: Prefix Sum
+order: 10
+related:
+-->
+
+<!-- section: problem -->
+<p>You get an array of whole numbers, <code>nums</code>, and a target number, <code>k</code>.</p>
+<p>Find the longest <strong>contiguous subarray</strong> whose numbers add up to exactly <code>k</code>. Return its length. If no subarray adds up to <code>k</code>, return 0.</p>
+<p>A contiguous subarray is a stretch of neighbours. You pick a start and an end, and take everything in between. You can’t skip a number.</p>
+<p>The numbers can be positive, negative, or zero. That one detail decides which technique works, as you’ll see.</p>
+<p>Limits on the input:</p>
+<ul>
+<li>The array has between 0 and 1,000,000 numbers.</li>
+<li>Each number is between −10,000 and 10,000.</li>
+<li><code>k</code> is between −1,000,000,000 and 1,000,000,000.</li>
+</ul>
+<p>This is a well-known interview problem. You may see it listed as “Maximum Size Subarray Sum Equals k”.</p>
+<p class="note">One-line version: keep a running sum as you walk the array, and remember the first place you saw each running sum. If “running sum − k” was seen before, the stretch since then adds up to k.</p>
+
+<!-- section: examples -->
+<div class="table-wrap"><table>
+<tr><th><code>nums</code></th><th><code>k</code></th><th>Answer</th><th>Why</th></tr>
+<tr><td><code>[1, 2, 3, 1, 1, 1, 1]</code></td><td>3</td><td>3</td><td>Three kinds of stretch add up to 3: <code>[1, 2]</code>, <code>[3]</code>, and <code>[1, 1, 1]</code>. The longest has 3 numbers.</td></tr>
+<tr><td><code>[2, 3, 5]</code></td><td>5</td><td>2</td><td>Both <code>[2, 3]</code> and <code>[5]</code> add up to 5. We want the longer one.</td></tr>
+<tr><td><code>[1, -1, 5, -2, 3]</code></td><td>3</td><td>4</td><td><code>[1, -1, 5, -2]</code> adds up to 3. So do <code>[5, -2]</code> and <code>[3]</code>, but they are shorter.</td></tr>
+</table></div>
+<p>The third one is the tricky one. Because of the negative numbers, the sum goes up and down as the stretch grows. The longest answer starts at the very first number, and it passes through sums that are too big on the way.</p>
+
+<!-- section: think -->
+<h4>Questions to ask the interviewer</h4>
+<ul>
+<li><strong>Can the numbers be negative or zero?</strong> This is the most important question. If every number is positive, there is a simpler solution. Here the answer is yes, they can.</li>
+<li><strong>Do you want the length, or the subarray itself?</strong> Here, the length.</li>
+<li><strong>What if nothing adds up to k?</strong> Return 0.</li>
+<li><strong>Can the array be empty?</strong> Yes. The answer is then 0.</li>
+</ul>
+
+<h4>What the limits tell you</h4>
+<ul>
+<li>Up to 1,000,000 numbers. Checking every pair of start and end is about 500 billion checks. That is too slow, so we need to pass over the array once, or close to it.</li>
+<li>The biggest possible sum is 1,000,000 × 10,000 = 10,000,000,000. A JavaScript number holds that exactly, so we don’t need anything special for big numbers.</li>
+</ul>
+
+<h4>What the examples have in common</h4>
+<ul>
+<li>The words “contiguous” and “sum” together are a strong hint. They usually mean: keep a <strong>running sum</strong>, the total of everything from the start up to where you are.</li>
+<li>In every example, more than one stretch works. So finding <em>a</em> stretch is not enough. We need the one that starts earliest for a given end.</li>
+</ul>
+
+<!-- section: brute -->
+<p>The obvious way is to try every start. From each start, walk right, add as you go, and check the sum after each step.</p>
+<pre><code>// longest-subarray-slow.ts
+function longestSubarrayWithSumSlow(nums: number[], k: number): number {
+  let best = 0;
+  for (let i = 0; i &lt; nums.length; i++) {       // every start
+    let sum = 0;
+    for (let j = i; j &lt; nums.length; j++) {     // every end from there
+      sum += nums[j];
+      if (sum === k) best = Math.max(best, j - i + 1);
+    }
+  }
+  return best;
+}</code></pre>
+<p>This is correct, and it works with negative numbers. It is a good first answer to say out loud.</p>
+
+<h4>What it costs</h4>
+<ul>
+<li><strong>Time: O(n²).</strong> For an array of n numbers, the inner step runs n + (n − 1) + … + 1 times. That is n × (n + 1) ÷ 2. “O(n²)” means the work grows with the square of n: 10 times more numbers means 100 times more work.</li>
+<li><strong>Space: O(1).</strong> It only keeps a few variables, no matter how big the array is.</li>
+</ul>
+
+<h4>Why it is too slow here</h4>
+<ul>
+<li>With n = 1,000,000, the inner step runs 1,000,000 × 1,000,001 ÷ 2 ≈ <strong>500 billion times</strong>.</li>
+<li>Say a computer does a billion of these a second. That is a generous round number, not a measurement. It would still take 500 seconds, which is more than <strong>8 minutes</strong>.</li>
+<li>A solution that looks at each number once does 1,000,000 steps. That is 500,000 times less work.</li>
+</ul>
+
+<!-- section: idea -->
+<p>The slow way adds the same numbers again and again. The fix is to stop adding stretches, and compare <strong>running sums</strong> instead.</p>
+<p>Say the running sum at position <code>j</code> is <code>S</code>. That is everything from the start of the array up to <code>j</code>.</p>
+<p>Now say that somewhere earlier, at position <code>i</code>, the running sum was <code>S − k</code>. Then the numbers <em>after</em> <code>i</code>, up to <code>j</code>, must add up to exactly <code>k</code>. They are the difference between the two running sums.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 175" role="img" aria-label="The running sum at position j is S. It is made of an earlier running sum of S minus k, followed by a stretch that adds up to k.">
+<rect x="20" y="20" width="600" height="42" rx="8" class="box"/>
+<text x="320" y="46" text-anchor="middle" class="lbl">running sum at j  =  S</text>
+<rect x="20" y="86" width="330" height="42" rx="8" class="box"/>
+<text x="185" y="112" text-anchor="middle" class="lbl">running sum at i  =  S − k</text>
+<rect x="350" y="86" width="270" height="42" rx="8" class="box hi"/>
+<text x="485" y="112" text-anchor="middle" class="lbl">this stretch adds up to k</text>
+<text x="320" y="158" text-anchor="middle" class="sub">If the sum S − k was seen earlier, the stretch after it adds up to k. Its length is j − i.</text>
+</svg>
+</div>
+
+<p>So at each position we ask one question: <em>“Have I seen the running sum <code>S − k</code> before, and where?”</em></p>
+<p>To answer that fast, we keep a <strong>map</strong>: a lookup table from a running sum to the position where it showed up. Looking something up in a map takes about the same time no matter how big the map is.</p>
+<p>Two details make it correct:</p>
+<ul>
+<li><strong>Keep only the first position for each sum.</strong> We want the longest stretch. The earlier the start, the longer the stretch. So if a running sum shows up again later, we don’t replace the position we already stored.</li>
+<li><strong>Start the map with sum 0 at position −1.</strong> Before the array starts, the running sum is 0. Without this entry, we would miss every answer that begins at the first number.</li>
+</ul>
+<p>Now each number is looked at once. No stretch is ever added up twice.</p>
+
+<!-- section: walkthrough -->
+<p>Let’s run it on the tricky example: <code>nums = [1, -1, 5, -2, 3]</code> and <code>k = 3</code>.</p>
+<p>The map is called <code>firstSeen</code>. It starts with one entry: sum 0 at position −1. In the table, “0 → −1” means “sum 0 was first seen at position −1”.</p>
+
+<div class="table-wrap"><table>
+<tr><th><code>j</code></th><th><code>nums[j]</code></th><th><code>sum</code></th><th><code>need</code> (sum − k)</th><th>Is <code>need</code> in the map?</th><th><code>best</code></th><th><code>firstSeen</code> after this step</th></tr>
+<tr><td>0</td><td>1</td><td>1</td><td>−2</td><td>No</td><td>0</td><td>0 → −1, 1 → 0</td></tr>
+<tr><td>1</td><td>−1</td><td>0</td><td>−3</td><td>No</td><td>0</td><td>0 → −1, 1 → 0</td></tr>
+<tr><td>2</td><td>5</td><td>5</td><td>2</td><td>No</td><td>0</td><td>0 → −1, 1 → 0, 5 → 2</td></tr>
+<tr><td>3</td><td>−2</td><td>3</td><td>0</td><td>Yes, at −1. Length is 3 − (−1) = 4</td><td>4</td><td>0 → −1, 1 → 0, 5 → 2, 3 → 3</td></tr>
+<tr><td>4</td><td>3</td><td>6</td><td>3</td><td>Yes, at 3. Length is 4 − 3 = 1</td><td>4</td><td>0 → −1, 1 → 0, 5 → 2, 3 → 3, 6 → 4</td></tr>
+</table></div>
+
+<p>The answer is <strong>4</strong>.</p>
+<p>Two rows are worth a second look:</p>
+<ul>
+<li><strong>Row <code>j = 1</code>.</strong> The running sum is 0 again. Sum 0 is already in the map at position −1, so we leave it alone. If we had replaced it with position 1, row 3 would have found a length of 3 − 1 = 2, and the final answer would be wrong.</li>
+<li><strong>Row <code>j = 3</code>.</strong> We need sum 0, and the only place it was stored is the starting entry at −1. That is how the stretch from the very first number is found.</li>
+</ul>
+
+<!-- section: code -->
+<pre><code>// longest-subarray.ts
+function longestSubarrayWithSum(nums: number[], k: number): number {
+  // running sum -&gt; first position where it appeared
+  const firstSeen = new Map&lt;number, number&gt;();
+  firstSeen.set(0, -1);          // sum 0, before the array starts
+
+  let sum = 0;
+  let best = 0;
+
+  for (let j = 0; j &lt; nums.length; j++) {
+    sum += nums[j];
+
+    const need = sum - k;        // the earlier sum we are looking for
+    if (firstSeen.has(need)) {
+      const i = firstSeen.get(need)!;
+      best = Math.max(best, j - i);
+    }
+
+    // keep only the first position: an earlier start gives a longer stretch
+    if (!firstSeen.has(sum)) firstSeen.set(sum, j);
+  }
+  return best;
+}</code></pre>
+<p>A few things to notice:</p>
+<ul>
+<li><strong>The length is <code>j - i</code>, not <code>j - i + 1</code>.</strong> The stretch starts one step <em>after</em> <code>i</code>. It runs from <code>i + 1</code> to <code>j</code>, which is <code>j − i</code> numbers.</li>
+<li><strong>We look up <code>need</code> before we store <code>sum</code>.</strong> When <code>k</code> is 0, <code>need</code> and <code>sum</code> are the same number, so storing first lets a position match itself. Here that only gives a length of 0, which changes nothing. But in the “how many stretches” version of this problem, it would count an empty stretch. Looking up first is the habit that is always safe.</li>
+<li><strong>If the array is empty, the loop never runs</strong> and the function returns 0.</li>
+</ul>
+
+<!-- section: complexity -->
+<div class="table-wrap"><table>
+<tr><th></th><th>Time</th><th>Space</th></tr>
+<tr><td>The simple way</td><td>O(n²)</td><td>O(1)</td></tr>
+<tr><td>Running sum with a map</td><td>O(n)</td><td>O(n)</td></tr>
+</table></div>
+<ul>
+<li><strong>Time O(n).</strong> The loop runs once per number. Inside it there are a few map lookups, and each takes about the same time whatever the size of the map. “O(n)” means the work grows in step with n: 10 times more numbers, 10 times more work.</li>
+<li><strong>Space O(n).</strong> In the worst case every running sum is different, so the map ends up with one entry per number, plus the starting one.</li>
+</ul>
+<p>So we trade memory for speed. For 1,000,000 numbers, that is up to about a million map entries in return for doing 1,000,000 steps and not 500 billion.</p>
+
+<!-- section: edgeCases -->
+<div class="table-wrap"><table>
+<tr><th>Input</th><th>Should return</th><th>Why it is easy to get wrong</th></tr>
+<tr><td><code>[]</code>, k = 5</td><td>0</td><td>The loop never runs. Make sure the function returns 0, not −1 or an error.</td></tr>
+<tr><td><code>[7]</code>, k = 7</td><td>1</td><td>The sum is 7 and we need 0. It is only found because of the starting entry, sum 0 at −1.</td></tr>
+<tr><td><code>[7]</code>, k = 3</td><td>0</td><td>Nothing adds up to 3. The answer is 0, not the length of the array.</td></tr>
+<tr><td><code>[0, 0, 0, 0]</code>, k = 0</td><td>4</td><td>Every running sum is 0. If you replace the stored position each time, you get 1.</td></tr>
+<tr><td><code>[2, 2, 2, 2]</code>, k = 4</td><td>2</td><td>Three different stretches work. All have length 2, so the answer is 2, not 3.</td></tr>
+<tr><td><code>[3, -1, 4]</code>, k = 6</td><td>3</td><td>The whole array is the answer. Again it needs the starting entry.</td></tr>
+<tr><td><code>[1, -1]</code>, k = 0</td><td>2</td><td>With k = 0, an empty stretch must not count. The answer comes from the two numbers cancelling out.</td></tr>
+<tr><td><code>[-2, -1, 2, 1]</code>, k = −3</td><td>2</td><td>k can be negative. Nothing in the code should assume sums only grow.</td></tr>
+<tr><td>1,000,000 zeros, k = 0</td><td>1,000,000</td><td>The largest input. The simple way would take minutes. The map holds a single entry the whole time.</td></tr>
+</table></div>
+<p>Both solutions on this page were run on every row above and on the three examples, and they agree.</p>
+
+<!-- section: pattern -->
+<p>The technique is called <strong>prefix sum with a map</strong>. “Prefix sum” is another name for the running sum: the sum of the first part, or prefix, of the array.</p>
+<p>The move is always the same. A question about a <em>stretch</em> is turned into a question about <em>two running sums</em>. Then a map answers “have I seen the other one?” in one step.</p>
+
+<h4>Signals that point to it</h4>
+<ul>
+<li>The problem says “contiguous subarray” or “substring”, and asks about a sum or a count.</li>
+<li>It asks for the longest, the shortest, how many, or whether one exists.</li>
+<li>The numbers can be negative. This is the big one, because it rules out the sliding window.</li>
+<li>The input is too big for checking every pair.</li>
+</ul>
+
+<h4>What changes from problem to problem</h4>
+<ul>
+<li><strong>Longest stretch:</strong> store the <em>first</em> position of each running sum. That is this problem.</li>
+<li><strong>Shortest stretch:</strong> store the <em>latest</em> position.</li>
+<li><strong>How many stretches:</strong> store how many times each running sum has been seen, and add that count each time.</li>
+</ul>
+
+<h4>When a sliding window is enough</h4>
+<p>If every number is positive, growing a stretch always makes its sum bigger. So you can keep a window with a left and a right edge. Move the right edge to grow the sum, and move the left edge when the sum gets too big. That needs no map, so it uses O(1) space.</p>
+<p>With negative numbers this breaks. Adding a number can make the sum smaller, so “too big, shrink from the left” is no longer a safe rule. On the third example, a sliding window throws away the first numbers as soon as the sum passes 3. It never sees that the −2 later brings the sum back down.</p>
+
+<h4>Other well-known problems that use it</h4>
+<ul>
+<li>Subarray Sum Equals K</li>
+<li>Contiguous Array</li>
+<li>Subarray Sums Divisible by K</li>
+</ul>
+
+<!-- section: interview -->
+<h4>How to talk through it</h4>
+<ol>
+<li><strong>Ask about negative numbers first.</strong> It shows you know the answer depends on it.</li>
+<li><strong>Say the simple solution.</strong> Two loops, O(n²). Say it is correct but too slow for a million numbers. Don’t spend long writing it out unless asked.</li>
+<li><strong>Explain the idea before the code.</strong> “If the running sum now is S, and I saw S − k earlier, the stretch in between adds up to k.” Draw the two bars.</li>
+<li><strong>Name the two details out loud.</strong> Keep the first position only, and start with sum 0 at −1.</li>
+<li><strong>Write the code,</strong> then walk one small example through it by hand.</li>
+<li><strong>Give the cost,</strong> and say what you traded: O(n) memory for O(n) time.</li>
+</ol>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>What if all the numbers are positive?</strong> Use a sliding window. It is O(n) time and O(1) space, so it saves the map.</li>
+<li><strong>Return the subarray, not only its length.</strong> When you find a better length, also save the start, <code>i + 1</code>, and the end, <code>j</code>.</li>
+<li><strong>Count how many subarrays add up to k.</strong> Store how many times each running sum has appeared. At each position, add the count for <code>sum − k</code>.</li>
+<li><strong>Find the shortest one.</strong> Store the latest position of each running sum, not the first.</li>
+<li><strong>What if the sums could get too big for a number?</strong> In JavaScript, switch to <code>BigInt</code>. In Java or C++, use a 64-bit type. With these limits it isn’t needed.</li>
+</ul>
+
+<h4>Mistakes people make</h4>
+<ul>
+<li><strong>Forgetting the starting entry.</strong> Every answer that begins at the first number is then missed.</li>
+<li><strong>Replacing the stored position.</strong> You then get a shorter stretch than the longest.</li>
+<li><strong>Using a sliding window when numbers can be negative.</strong> It looks right on simple examples and fails on mixed ones.</li>
+<li><strong>Off by one on the length.</strong> It is <code>j − i</code>, because the stretch starts after <code>i</code>.</li>
+<li><strong>Storing the sum before looking up.</strong> It is harmless here, but in the counting version it counts an empty stretch when k is 0.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>The problem asks for the longest stretch of neighbouring numbers that adds up to exactly k, and the numbers can be negative.</li>
+<li>Trying every start and end is correct but takes O(n²) time, which is about 500 billion steps for a million numbers.</li>
+<li>A running sum is the total from the start of the array up to the current position.</li>
+<li>If the running sum now is S and the running sum S − k was seen earlier, the stretch between those two positions adds up to k.</li>
+<li>A map from running sum to position answers “have I seen S − k, and where?” in one step.</li>
+<li>Storing only the first position of each running sum gives the longest stretch.</li>
+<li>Starting the map with sum 0 at position −1 lets a stretch begin at the first number.</li>
+<li>The fast solution takes O(n) time and O(n) space, because it trades memory for speed.</li>
+<li>A sliding window only works when every number is positive, because only then does a longer stretch always have a bigger sum.</li>
+</ul>
