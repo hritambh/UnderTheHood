@@ -144,7 +144,7 @@ export function build() {
   /* ---- load content ---- */
   let hub = {};
   try { hub = JSON.parse(fs.readFileSync(path.join(CONTENT, 'hub.json'), 'utf8')); } catch (e) {}
-  const hubTitle = hub.title || 'System Design Learning Hub';
+  const hubTitle = hub.title || 'UnderTheHood';
   const hubIntro = hub.intro || '';
 
   /* A track is one group on the home page (Core Concepts, System Design, ...).

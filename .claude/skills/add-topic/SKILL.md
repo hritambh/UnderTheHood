@@ -1,6 +1,6 @@
 ---
 name: add-topic
-description: Write and add a new topic to the System Design Learning Hub site. This skill decides by itself which track the topic belongs in (Core Concepts, System Design, Internals & Deep Dives, Incidents & Production Learnings, Engineering Patterns & Practices, Database Engineering, Problem Solving & DSA, Security Engineering, Engineering Decisions & Trade-offs), then applies that track's own playbook and format guide. Use whenever the user asks to add, create, write or draft a topic, a design, an incident write-up, a pattern, a DSA problem or an "X vs Y" comparison for the hub, with or without naming a track, or whenever a new file is about to be created in content/topics/.
+description: Write and add a new topic to the UnderTheHood site (formerly the System Design Learning Hub). This skill decides by itself which track the topic belongs in (Core Concepts, System Design, Internals & Deep Dives, Incidents & Production Learnings, Engineering Patterns & Practices, Database Engineering, Problem Solving & DSA, Security Engineering, Engineering Decisions & Trade-offs), then applies that track's own playbook and format guide. Use whenever the user asks to add, create, write or draft a topic, a design, an incident write-up, a pattern, a DSA problem or an "X vs Y" comparison for the hub, with or without naming a track, or whenever a new file is about to be created in content/topics/.
 ---
 
 # Add a topic to the hub

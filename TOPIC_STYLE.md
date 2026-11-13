@@ -1,6 +1,6 @@
 # Topic style guide
 
-How to write a topic for the System Design Learning Hub.
+How to write a topic for UnderTheHood.
 
 This file holds the rules that are the same for every topic.
 Each track also has its own format file in `formats/`, which lists the 12 sections for that track.

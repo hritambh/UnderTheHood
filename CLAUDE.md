@@ -1,4 +1,6 @@
-# System Design Hub (static website)
+# UnderTheHood (static website)
+
+The site was called "My System Design Learning Hub" until 2026-11-13. The project folder, the Vercel project and the live URL still use the old name `system-design-hub`.
 
 A plain static website of engineering topics, grouped into tracks. It started as a copy of a Claude artifact, but the artifact is no longer used. The files in `content/` are the only source.
 

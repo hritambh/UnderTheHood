@@ -1,6 +1,6 @@
 ---
 name: review-topic
-description: Check a topic file of the System Design Learning Hub against the style guide and its track's format. Use after any file in content/topics/ is added, edited or moved between tracks (by the user or by Claude), before a deploy that includes new or changed topics, and when the user asks to review, check, validate or proofread a topic.
+description: Check a topic file of the UnderTheHood site (formerly the System Design Learning Hub) against the style guide and its track's format. Use after any file in content/topics/ is added, edited or moved between tracks (by the user or by Claude), before a deploy that includes new or changed topics, and when the user asks to review, check, validate or proofread a topic.
 ---
 
 # Review a topic
