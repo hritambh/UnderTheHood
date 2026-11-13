@@ -1,0 +1,422 @@
+<!--
+title: Notification Service
+summary: One service that every other team calls to reach a user by push, email, SMS or in-app message. It respects user settings, never sends the same thing twice, and keeps urgent messages fast.
+category: Messaging
+order: 10
+related: realtime-communication, pagination
+-->
+
+<!-- section: problem -->
+<p>Almost every app needs to tell users things. “Your order has shipped.” “Your login code is 481920.” “Someone replied to your comment.”</p>
+<p>Without a shared service, every team builds this alone. The orders team talks to the email provider. The payments team talks to the SMS provider. Each one handles retries, user settings and duplicates in its own way, and each gets some of it wrong.</p>
+<p>A <strong>notification service</strong> fixes that. Other services just say, “tell user 42 that order 8812 has shipped.” The notification service decides which channels to use, writes the message, sends it, retries if needed, and records what happened.</p>
+<p>Every large product has one. It is what sends you a shipping update from a shopping app, or a one-time login code (an <strong>OTP</strong>) from your bank.</p>
+<p>We’ll cover four channels:</p>
+<ul>
+<li><strong>Push</strong>: the pop-up on a phone. These go through Apple’s service (<strong>APNs</strong>) for iPhones and Google’s (<strong>FCM</strong>) for Android. You can’t reach the phone any other way.</li>
+<li><strong>Email</strong> and <strong>SMS</strong>: sent through outside companies, called <strong>providers</strong>.</li>
+<li><strong>In-app</strong>: the list behind the bell icon inside the app.</li>
+</ul>
+<p class="note">One-line version: other services say what happened and to whom. The notification service works out how to tell them, exactly once, on the right channels.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Accept a “send this” request from any internal service.</li>
+<li>Deliver it by push, email, SMS and in-app.</li>
+<li>Respect each user’s settings. If they turned off offer emails, they get no offer emails.</li>
+<li>Never send the same notification twice, and retry the ones that fail.</li>
+<li>Show a user their recent notifications in the app, and let services check if a notification went out.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Fast for urgent messages.</strong> Login codes and security alerts should leave our system within 5 seconds.</li>
+<li><strong>Patient for the rest.</strong> Offers and digests can take a few minutes.</li>
+<li><strong>Hard to lose.</strong> Once we answer “accepted”, the notification must not vanish, even if a server crashes right after.</li>
+<li><strong>Available.</strong> Accepting requests should work 99.9% of the time. Other services should never have to wait on us.</li>
+<li><strong>Fair under load.</strong> A big marketing send must not slow down login codes.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Deciding what to send, or to whom.</strong> A marketing tool picks the audience and the wording. We only deliver.</li>
+<li><strong>Running our own email or SMS delivery.</strong> We use providers. Getting email into inboxes and SMS onto phone networks is a business of its own.</li>
+<li><strong>Chat messages between users.</strong> That is a different system with different needs.</li>
+<li><strong>The live connection to the app.</strong> Getting a new in-app notification onto an open screen at once uses SSE or WebSockets. The topic “WebSockets vs Polling vs SSE” covers that. Here we store the notification and hand it over.</li>
+<li><strong>Reports on opens and clicks.</strong> We record sent, delivered and failed. Nothing more.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong> (made up for this design, not real figures):</p>
+<ul>
+<li>10 million users use the app each day.</li>
+<li>Each user gets 5 notifications a day on average.</li>
+<li>At the busiest moment, traffic is 5 times the average.</li>
+<li>One stored notification record takes about 500 bytes.</li>
+<li>We keep records for 90 days.</li>
+</ul>
+
+<h4>How many notifications?</h4>
+<ul>
+<li>Per day: 10,000,000 users × 5 = <strong>50 million notifications/day</strong>.</li>
+<li>On average: 50,000,000 ÷ 86,400 seconds ≈ <strong>580 per second</strong>.</li>
+<li>At the peak: 580 × 5 ≈ <strong>2,900 per second</strong>.</li>
+</ul>
+
+<h4>A marketing send on top</h4>
+<p>Say marketing wants to reach 2 million users within 10 minutes.</p>
+<ul>
+<li>2,000,000 ÷ 600 seconds ≈ <strong>3,300 per second</strong>, for those 10 minutes.</li>
+<li>That is more than our normal peak. So one campaign can double the load. Keep this number in mind for the deep dives.</li>
+</ul>
+
+<h4>How much storage?</h4>
+<ul>
+<li>Per day: 50,000,000 × 500 bytes = <strong>25 GB/day</strong>.</li>
+<li>For 90 days: 25 GB × 90 = <strong>2.25 TB</strong>.</li>
+</ul>
+
+<h4>Reads or writes?</h4>
+<ul>
+<li>Writes: each notification is written once, then its status changes about twice (sent, then delivered). That is 50 million + 100 million = <strong>150 million writes/day</strong>, or about 1,700 per second on average.</li>
+<li>Reads: say each user opens the bell icon 3 times a day. 10,000,000 × 3 = <strong>30 million reads/day</strong>, or about 350 per second.</li>
+<li>So there are about <strong>5 writes for every read</strong>. Most systems are the other way round. This one is write-heavy.</li>
+</ul>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Value</th></tr>
+<tr><td>Notifications per day</td><td>50 million</td></tr>
+<tr><td>Average rate</td><td>580 per second</td></tr>
+<tr><td>Peak rate</td><td>2,900 per second</td></tr>
+<tr><td>Campaign rate (2 million in 10 minutes)</td><td>3,300 per second</td></tr>
+<tr><td>Storage for 90 days</td><td>2.25 TB</td></tr>
+<tr><td>Writes to reads</td><td>5 to 1</td></tr>
+</table></div>
+
+<!-- section: api -->
+<p>The API has two kinds of callers. Other services send notifications. The app reads the user’s list and settings.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>POST /v1/notifications</code></td><td>User ID, type, data, priority, idempotency key</td><td><code>202</code> with a notification ID</td></tr>
+<tr><td><code>POST /v1/notifications/batch</code></td><td>A list of user IDs, type, data</td><td><code>202</code> with a batch ID</td></tr>
+<tr><td><code>GET /v1/notifications/{id}</code></td><td>Notification ID</td><td>Status for each channel</td></tr>
+<tr><td><code>GET /v1/users/{id}/inbox</code></td><td>Cursor, limit</td><td>A page of in-app notifications</td></tr>
+<tr><td><code>POST /v1/users/{id}/inbox/{notificationId}/read</code></td><td>Nothing</td><td><code>204</code></td></tr>
+<tr><td><code>GET</code> and <code>PUT /v1/users/{id}/settings</code></td><td>Category, channel, on or off</td><td>The user’s settings</td></tr>
+<tr><td><code>PUT /v1/users/{id}/devices/{deviceId}</code></td><td>Platform, push token</td><td><code>204</code></td></tr>
+</table></div>
+
+<pre><code>// POST /v1/notifications
+{
+  "idempotencyKey": "order-8812-shipped",
+  "userId": 42,
+  "type": "order_shipped",
+  "priority": "normal",
+  "data": { "orderId": "8812", "eta": "Friday" }
+}
+
+// 202 Accepted
+{ "notificationId": "0b9f6c1e-52d3-4c1a-9d0e-7a1c2b3d4e5f", "status": "queued" }</code></pre>
+
+<p>Three things to notice:</p>
+<ul>
+<li><strong>The caller sends a type and data, not the text.</strong> The words live in a template inside the notification service. So wording and translations can change without touching the orders service.</li>
+<li><strong>The answer is <code>202 Accepted</code>, not <code>200 OK</code>.</strong> It means “we have it and will send it”, not “it has been sent”. The caller doesn’t wait for the email provider.</li>
+<li><strong>The idempotency key.</strong> This is a name the caller makes up for this one notification. If the caller sends the same key twice, because of a timeout and a retry, we send only once. <strong>Idempotent</strong> means doing it twice has the same result as doing it once.</li>
+</ul>
+<p>The inbox uses cursor pagination, so new notifications arriving while the user scrolls don’t cause repeats. The Pagination topic explains why.</p>
+
+<!-- section: data -->
+<p>There are two very different kinds of data here, so we use two databases.</p>
+
+<h4>Small data that changes rarely: PostgreSQL</h4>
+<pre><code>-- PostgreSQL: settings, devices and templates
+CREATE TABLE settings (
+  user_id   BIGINT  NOT NULL,
+  category  TEXT    NOT NULL,   -- 'orders', 'security', 'offers'
+  channel   TEXT    NOT NULL,   -- 'push', 'email', 'sms', 'in_app'
+  enabled   BOOLEAN NOT NULL,
+  PRIMARY KEY (user_id, category, channel)
+);
+
+CREATE TABLE devices (
+  user_id     BIGINT NOT NULL,
+  device_id   TEXT   NOT NULL,
+  platform    TEXT   NOT NULL,  -- 'ios', 'android', 'web'
+  push_token  TEXT   NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (user_id, device_id)
+);
+
+CREATE TABLE templates (
+  type      TEXT NOT NULL,      -- 'order_shipped'
+  channel   TEXT NOT NULL,
+  locale    TEXT NOT NULL,      -- 'en', 'hi'
+  category  TEXT NOT NULL,
+  title     TEXT,
+  body      TEXT NOT NULL,      -- 'Order {{orderId}} arrives {{eta}}'
+  PRIMARY KEY (type, channel, locale)
+);</code></pre>
+<p>A <strong>push token</strong> is the address of one app on one phone. Apple or Google hands it to the app, and the app sends it to us. One user can have several devices, so several tokens.</p>
+<p>These tables are small and are read by their primary key. PostgreSQL handles that easily, and we get normal transactions when a user changes their settings.</p>
+
+<h4>Big, write-heavy data: Cassandra</h4>
+<pre><code>-- Cassandra: what the bell icon shows
+CREATE TABLE inbox_by_user (
+  user_id          BIGINT,
+  created_at       TIMESTAMP,
+  notification_id  UUID,
+  type             TEXT,
+  title            TEXT,
+  body             TEXT,
+  read             BOOLEAN,
+  PRIMARY KEY ((user_id), created_at, notification_id)
+) WITH CLUSTERING ORDER BY (created_at DESC, notification_id DESC)
+  AND default_time_to_live = 7776000;   -- 90 days, in seconds
+
+-- Cassandra: what happened on each channel
+CREATE TABLE deliveries (
+  notification_id  UUID,
+  channel          TEXT,
+  user_id          BIGINT,
+  status           TEXT,       -- queued, sent, delivered, failed
+  attempts         INT,
+  updated_at       TIMESTAMP,
+  PRIMARY KEY ((notification_id), channel)
+) WITH default_time_to_live = 7776000;</code></pre>
+
+<p>Why Cassandra for these two?</p>
+<ul>
+<li>From the estimates, this data takes 150 million writes a day and grows by 25 GB a day. Cassandra is built for heavy writes and grows by adding servers.</li>
+<li>We only ever read it two ways: “the newest notifications for this user” and “the status of this notification”. Each table is laid out for exactly one of those, so each read touches one group of rows on one server.</li>
+<li>Rows delete themselves after 90 days. That is the <code>default_time_to_live</code> setting, so no clean-up job is needed.</li>
+</ul>
+<p>The first part of the primary key, in double brackets, is the <strong>partition key</strong>. All rows with the same partition key are stored together. So one user’s inbox sits in one place, already sorted newest first.</p>
+<p>We store the finished text in the inbox, not the template name. If the template changes next month, the user still sees what they were really sent.</p>
+
+<h4>Short-lived data: Redis</h4>
+<p>Redis, a fast in-memory store, holds things that only matter for a short time: idempotency keys (for 24 hours), counters for rate limits, and a cached copy of each user’s settings. A <strong>rate limit</strong> is a cap on how many calls are allowed per second.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 390" role="img" aria-label="A request goes from a calling service to the API, into a queue, to a processor that checks settings and fills in the template, then into one queue per channel, to senders, and out to the push, email and SMS providers. Redis, PostgreSQL and Cassandra sit beside the flow.">
+<defs><marker id="ah-notification-service" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="400" y="20" width="110" height="50" rx="8" class="box"/><text x="455" y="42" text-anchor="middle" class="lbl">PostgreSQL</text><text x="455" y="59" text-anchor="middle" class="sub">settings, tokens</text>
+
+<rect x="15" y="120" width="100" height="50" rx="8" class="box"/><text x="65" y="142" text-anchor="middle" class="lbl">Services</text><text x="65" y="159" text-anchor="middle" class="sub">orders, payments</text>
+<rect x="140" y="120" width="110" height="50" rx="8" class="box"/><text x="195" y="142" text-anchor="middle" class="lbl">API</text><text x="195" y="159" text-anchor="middle" class="sub">accepts requests</text>
+<rect x="275" y="120" width="100" height="50" rx="8" class="box"/><text x="325" y="142" text-anchor="middle" class="lbl">Queue</text><text x="325" y="159" text-anchor="middle" class="sub">by priority</text>
+<rect x="400" y="120" width="110" height="50" rx="8" class="box hi"/><text x="455" y="142" text-anchor="middle" class="lbl">Processor</text><text x="455" y="159" text-anchor="middle" class="sub">settings, template</text>
+<rect x="525" y="120" width="105" height="50" rx="8" class="box"/><text x="577" y="142" text-anchor="middle" class="lbl">Queues</text><text x="577" y="159" text-anchor="middle" class="sub">one per channel</text>
+
+<rect x="140" y="220" width="110" height="50" rx="8" class="box"/><text x="195" y="242" text-anchor="middle" class="lbl">Redis</text><text x="195" y="259" text-anchor="middle" class="sub">seen this key?</text>
+<rect x="400" y="220" width="110" height="50" rx="8" class="box"/><text x="455" y="242" text-anchor="middle" class="lbl">Cassandra</text><text x="455" y="259" text-anchor="middle" class="sub">inbox, deliveries</text>
+<rect x="525" y="220" width="105" height="50" rx="8" class="box hi"/><text x="577" y="242" text-anchor="middle" class="lbl">Senders</text><text x="577" y="259" text-anchor="middle" class="sub">retry, rate limit</text>
+
+<rect x="525" y="320" width="105" height="50" rx="8" class="box"/><text x="577" y="342" text-anchor="middle" class="lbl">Providers</text><text x="577" y="359" text-anchor="middle" class="sub">push, email, SMS</text>
+
+<line x1="115" y1="145" x2="138" y2="145" class="arr" marker-end="url(#ah-notification-service)"/>
+<line x1="250" y1="145" x2="273" y2="145" class="arr" marker-end="url(#ah-notification-service)"/>
+<line x1="375" y1="145" x2="398" y2="145" class="arr" marker-end="url(#ah-notification-service)"/>
+<line x1="510" y1="145" x2="523" y2="145" class="arr" marker-end="url(#ah-notification-service)"/>
+<line x1="577" y1="170" x2="577" y2="218" class="arr" marker-end="url(#ah-notification-service)"/>
+<line x1="577" y1="270" x2="577" y2="318" class="arr" marker-end="url(#ah-notification-service)"/>
+<line x1="195" y1="170" x2="195" y2="218" class="arr dim" marker-end="url(#ah-notification-service)"/>
+<line x1="455" y1="120" x2="455" y2="72" class="arr dim" marker-end="url(#ah-notification-service)"/>
+<line x1="455" y1="170" x2="455" y2="218" class="arr dim" marker-end="url(#ah-notification-service)"/>
+<line x1="525" y1="245" x2="512" y2="245" class="arr dim" marker-end="url(#ah-notification-service)"/>
+</svg>
+</div>
+
+<p>A <strong>queue</strong> is a waiting line for messages. One program puts messages in, and other programs, called <strong>workers</strong>, take them out and do the work. If the workers are slow or down, messages wait in line. They are not lost. Kafka and Amazon SQS are common choices.</p>
+
+<h4>Request 1: “order 8812 has shipped”</h4>
+<ol>
+<li>The orders <strong>service</strong> calls <code>POST /v1/notifications</code> with type <code>order_shipped</code>, user 42, and an idempotency key.</li>
+<li>The <strong>API</strong> asks <strong>Redis</strong> if it has seen that key. If yes, it returns the same notification ID as before and stops. If no, it saves the key and goes on.</li>
+<li>The API puts the request on the <strong>queue</strong> for its priority and answers <code>202</code>. The orders service is done.</li>
+<li>A <strong>processor</strong> takes the request off the queue. It loads user 42’s settings and devices from <strong>PostgreSQL</strong> (usually from the cached copy in Redis). It drops any channel the user turned off.</li>
+<li>For each channel that is left, the processor fills in the template: “Order 8812 arrives Friday.” It writes a row to <code>deliveries</code> in <strong>Cassandra</strong> with status <code>queued</code>. For in-app, it also writes the inbox row.</li>
+<li>The processor puts one message on <strong>each channel’s queue</strong>: one for push, one for email.</li>
+<li>A <strong>sender</strong> for that channel takes the message, checks it is within the provider’s rate limit, and calls the <strong>provider</strong>.</li>
+<li>The provider answers. On success, the sender sets the status to <code>sent</code>. On a short-term error, it tries again later. On a permanent error, like a push token that no longer exists, it sets <code>failed</code> and deletes the token.</li>
+<li>Later, email and SMS providers call us back to say “delivered” or “bounced” (the address rejected it), and we update the status. Push providers only tell us they accepted the message. They don’t confirm that the phone showed it.</li>
+</ol>
+
+<h4>Request 2: the user taps the bell icon</h4>
+<ol>
+<li>The app calls <code>GET /v1/users/42/inbox?limit=20</code>.</li>
+<li>The <strong>API</strong> reads the newest 20 rows for user 42 from <code>inbox_by_user</code> in <strong>Cassandra</strong>. They are already stored together and sorted, so this is one quick read.</li>
+<li>The API returns the rows with a cursor for the next page.</li>
+</ol>
+
+<!-- section: deepDives -->
+<h4>1. How do we avoid sending the same thing twice?</h4>
+<p>Duplicates come from two places.</p>
+<p><strong>The caller retries.</strong> The orders service times out and sends the request again. The idempotency key handles this:</p>
+<pre><code>// notifications.service.ts
+async accept(req: SendRequest) {
+  const key = `idem:${req.source}:${req.idempotencyKey}`;
+  const id = randomUUID();
+  // NX = only write if the key is not there yet. EX = forget it in 24 hours.
+  const isNew = await this.redis.set(key, id, 'EX', 86400, 'NX');
+  if (!isNew) return { notificationId: await this.redis.get(key) };
+
+  try {
+    await this.queue.publish(queueFor(req.priority), { id, ...req });
+  } catch (err) {
+    await this.redis.del(key);   // let the caller's retry start clean
+    throw err;
+  }
+  return { notificationId: id };
+}</code></pre>
+<p><strong>Our own queue delivers a message twice.</strong> Queues promise <strong>at-least-once</strong> delivery: every message is handed out one or more times. If a sender crashes after calling the provider but before telling the queue “done”, the queue hands the message to another sender.</p>
+<p>The options:</p>
+<ul>
+<li><strong>Exactly-once.</strong> Not possible here. We can’t make “call the email provider” and “mark the message done” happen as one step.</li>
+<li><strong>At-most-once.</strong> Mark it done first, then send. No duplicates, but a crash loses the notification. That breaks “hard to lose”.</li>
+<li><strong>At-least-once, plus a check before sending.</strong> Before calling the provider, the sender writes a key like <code>sent:{notificationId}:{channel}</code> to Redis with <code>NX</code>. If the key is already there, it skips the send.</li>
+</ul>
+<p><strong>The pick:</strong> the third one. A tiny gap is left: a crash after writing the key but before the provider call means that one send is skipped. So the key is written with a short expiry, and the retry goes through after it runs out. For push, we also pass the notification ID as the provider’s collapse key, so two copies show as one on the phone.</p>
+
+<h4>2. How do login codes stay fast during a marketing send?</h4>
+<p>From the estimates, one campaign adds 3,300 per second on top of a 2,900 per second peak. If everything shares one line, a login code waits behind two million offers.</p>
+<p>The options:</p>
+<ul>
+<li><strong>One queue, more workers.</strong> Simple, but the login code still waits its turn.</li>
+<li><strong>One queue per priority.</strong> Three queues: high (login codes, security), normal (order updates), low (offers). Each has its own workers.</li>
+<li><strong>A separate service for urgent messages.</strong> Full isolation, but two systems to build and run.</li>
+</ul>
+<p><strong>The pick:</strong> one queue per priority, and the high queue has workers that never do anything else. Offers can pile up in the low queue for minutes. The high queue stays nearly empty, so a login code is picked up at once.</p>
+<p>The same split happens again after the processor: each channel has its own queue. If the SMS provider is slow, push and email keep moving.</p>
+
+<h4>3. What happens when a provider is slow or down?</h4>
+<p>The options:</p>
+<ul>
+<li><strong>Retry at once, forever.</strong> A provider that is struggling gets hit even harder, and one bad message blocks the line.</li>
+<li><strong>Give up on the first error.</strong> Simple, but most errors pass in a few seconds. We would lose notifications for no reason.</li>
+<li><strong>Retry a few times with growing waits, then set the message aside.</strong></li>
+</ul>
+<p><strong>The pick:</strong> the third one. It also needs us to tell two kinds of failure apart.</p>
+<ul>
+<li><strong>Short-term errors</strong> (a timeout, “try again later”, “too many requests”). Retry, but not right away. Wait 1 second, then 2, then 4, then 8. This is <strong>exponential backoff</strong>. Add a small random extra wait, called <strong>jitter</strong>, so thousands of failed sends don’t all retry in the same instant.</li>
+<li><strong>Permanent errors</strong> (the push token is gone, the email address doesn’t exist). Retrying can never work. Mark it failed and remove the bad address.</li>
+</ul>
+<p>After 5 failed tries, the message goes to a <strong>dead-letter queue</strong>. That is a separate queue for messages that could not be handled. They sit there for a person to look at, and they stop blocking the line.</p>
+<p>If a provider keeps failing, the sender stops calling it for a short while and lets messages wait in the queue. This is the circuit breaker pattern. For email and SMS, we can also switch to a second provider. For push there is no second choice: only Apple can reach an iPhone.</p>
+
+<h4>4. How do we send to 2 million users at once?</h4>
+<p>The marketing tool calls <code>POST /v1/notifications/batch</code> with 2 million user IDs. We can’t do all of that inside one request. It would take minutes, and one crash would lose the whole send. So we cut it into small pieces that can each be retried alone.</p>
+<ol>
+<li>The API saves the list, answers <code>202</code> with a batch ID, and puts one “start batch” message on the low queue.</li>
+<li>A <strong>splitter</strong> worker reads the list and cuts it into chunks of 1,000 users. That makes 2,000 chunk messages. Turning one request into many is called <strong>fan-out</strong>.</li>
+<li>Processors take chunks and create the single notifications, at a capped rate. The cap is the 3,300 per second from the estimates.</li>
+</ol>
+<p>Two more protections for users:</p>
+<ul>
+<li><strong>A daily cap.</strong> A counter in Redis allows, say, 3 offers per user per day. More than that are dropped.</li>
+<li><strong>Quiet hours.</strong> Low-priority messages due between 10 pm and 8 am in the user’s time zone are held until morning.</li>
+</ul>
+
+<!-- section: scaling -->
+<p>The design holds for today’s peak of 2,900 per second. Here is what breaks as that number grows. The worker numbers assume one sender can do 200 sends per second. That is made up for the example.</p>
+
+<h4>Today: 2,900 per second</h4>
+<ul>
+<li>Senders needed: 2,900 ÷ 200 = 14.5, so <strong>15 senders</strong>. With a campaign running: (2,900 + 3,300) ÷ 200 = <strong>31 senders</strong>.</li>
+<li>Senders keep nothing in memory between messages. So we add more when the queue grows and remove them when it is empty.</li>
+</ul>
+
+<h4>10 times: 29,000 per second</h4>
+<div class="table-wrap"><table>
+<tr><th>What breaks first</th><th>How we’d notice</th><th>The fix</th></tr>
+<tr><td>Provider rate limits. We can run 145 senders, but the SMS or email provider won’t accept that much.</td><td>Many “too many requests” answers. The oldest message in the channel queue gets older.</td><td>Ask the provider for a higher limit, spread sends across several providers, and slow the low queue first.</td></tr>
+<tr><td>Settings lookups. Every notification needs the user’s settings.</td><td>PostgreSQL gets slow and its CPU climbs.</td><td>Read settings from the Redis copy, and only go to PostgreSQL on a miss. Clear the copy when a user changes a setting.</td></tr>
+<tr><td>Storage. 25 GB a day becomes 250 GB a day, so 22.5 TB for 90 days.</td><td>Disks fill up on the Cassandra servers.</td><td>Add servers. Keep offers for 30 days instead of 90.</td></tr>
+<tr><td>Idempotency keys. 500 million keys a day, each kept for 24 hours.</td><td>Redis memory fills up.</td><td>Split Redis across several servers, or keep keys for a shorter time.</td></tr>
+</table></div>
+
+<h4>100 times: 290,000 per second</h4>
+<ul>
+<li>One queue cluster in one place is no longer enough. Run the whole pipeline in each region, close to the users and to the providers’ servers.</li>
+<li>Campaigns become the main risk. A send to 200 million users has to be spread over hours, not minutes.</li>
+<li>The inbox for very active users gets long. Cap it at the newest few hundred rows per user.</li>
+</ul>
+
+<p>The one number to watch at every size is <strong>queue lag</strong>: how old the oldest waiting message is. For the high queue it should stay under a second. If it grows, something further along is too slow.</p>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>How the system handles it</th></tr>
+<tr><td>A sender crashes in the middle of a send</td><td>Usually nothing. Rarely, a short delay.</td><td>The queue never got “done”, so it hands the message to another sender. The Redis check stops a second send.</td></tr>
+<tr><td>An API server crashes</td><td>Nothing.</td><td>Other API servers take the requests. A caller that got no answer sends again, and the idempotency key makes that safe.</td></tr>
+<tr><td>A processor crashes halfway through</td><td>Nothing.</td><td>The queue hands the request to another processor. It writes the same rows again, which changes nothing, and the senders’ check stops a second send.</td></tr>
+<tr><td>A provider is down</td><td>The notification arrives late.</td><td>Retries with backoff. The sender stops calling the provider for a while. Email and SMS switch to a second provider. After 5 tries, the dead-letter queue.</td></tr>
+<tr><td>A push token is no longer valid</td><td>Nothing on that device.</td><td>The provider says so. We mark it failed and delete the token, so we stop trying.</td></tr>
+<tr><td>A queue server dies</td><td>Nothing.</td><td>We set the queue up to keep each message on three servers. Another one takes over.</td></tr>
+<tr><td>Redis is down</td><td>Possibly a duplicate.</td><td>We keep accepting requests without the duplicate check. A repeated login code is better than a missing one.</td></tr>
+<tr><td>PostgreSQL is down</td><td>Offers are late. Urgent messages still arrive.</td><td>Use the cached settings. If there is no cached copy, still send security and login messages, because those can’t be turned off. Hold the rest until it is back.</td></tr>
+<tr><td>Cassandra is down or slow</td><td>The bell icon list doesn’t load. Push, email and SMS still arrive.</td><td>Senders keep sending. Status updates wait in a queue and are written when it is back.</td></tr>
+<tr><td>A huge campaign starts</td><td>Offers take longer. Login codes are on time.</td><td>Separate queues per priority. The low queue absorbs the load.</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Answer at once vs wait for the send.</strong> We reply <code>202</code> and send later. Callers are never slowed down by a provider. In return, they don’t know if it worked unless they check the status.</li>
+<li><strong>At-least-once vs at-most-once.</strong> We chose never to lose a notification. The price is a duplicate check on every send, and a rare duplicate when that check is down.</li>
+<li><strong>Cassandra vs PostgreSQL for the big tables.</strong> Cassandra takes the write load and deletes old rows by itself. But it can only answer the two questions the tables were built for. A new question like “all failed emails yesterday” needs a new table or another tool. At a tenth of this size, PostgreSQL with one table per day would be simpler and enough.</li>
+<li><strong>Many queues vs one queue.</strong> Queues per priority and per channel keep problems apart. They also mean more things to watch and more worker groups to size.</li>
+<li><strong>Providers vs doing it ourselves.</strong> Providers save us years of work. We pay per message, and their limits and outages become ours.</li>
+<li><strong>Keep going vs stop when Redis is down.</strong> We keep sending and risk duplicates. A bank might choose the opposite for payment alerts.</li>
+<li><strong>Storing the finished text vs the template name.</strong> The inbox shows what was really sent. It costs more storage per row.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<p>For a 45-minute interview:</p>
+<ol>
+<li><strong>Ask questions and fix the scope (5 minutes).</strong> Channels, urgent vs marketing, rough size.</li>
+<li><strong>Numbers (5 minutes).</strong> Notifications per day, per second at peak, storage. Say out loud that it is write-heavy.</li>
+<li><strong>API and data (8 minutes).</strong> The send endpoint with its idempotency key, then the tables.</li>
+<li><strong>High-level design (10 minutes).</strong> Draw the boxes, then walk one notification through them.</li>
+<li><strong>Deep dives (12 minutes).</strong> Duplicates, priorities, and provider failures. Let the interviewer pick, or start with duplicates.</li>
+<li><strong>Wrap up (5 minutes).</strong> What breaks first as it grows, and what you’d watch.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>Which channels do we need? Push, email, SMS, in-app?</li>
+<li>Are there urgent messages, like login codes, mixed with marketing?</li>
+<li>How many users, and how many notifications each per day?</li>
+<li>Is it fine if a notification is late? Is it fine if one is lost?</li>
+<li>Do we send through providers, or run our own?</li>
+<li>Do users need a list of past notifications?</li>
+<li>Can users turn notifications off, and at what level?</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>A user has three devices. What happens?</strong> There are three rows in <code>devices</code>, so the push sender sends three times. When the user reads it on one device, the inbox row is marked read for all.</li>
+<li><strong>How do you handle time zones for quiet hours?</strong> Store the user’s time zone with their settings. The processor works out their local time and delays low-priority messages.</li>
+<li><strong>How do you know an email was opened?</strong> The provider can report it. We left it out of scope, but it would arrive the same way “delivered” does.</li>
+<li><strong>Must notifications arrive in order?</strong> Usually not. If “delivered” must never show before “shipped”, send both through the same queue partition for that user, so they are handled in order.</li>
+<li><strong>How would you add a new channel, like WhatsApp?</strong> Add a queue, a sender, and templates for it. Nothing before the processor changes.</li>
+<li><strong>What if a team sends too much?</strong> Give each calling service its own rate limit at the API.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A notification service lets every team reach users through one API, across push, email, SMS and in-app.</li>
+<li>Callers send a type and data, and get <code>202 Accepted</code> back at once. The real send happens later, from a queue.</li>
+<li>An idempotency key from the caller, checked in Redis, stops a retried request from being sent twice.</li>
+<li>Queues deliver at least once, so senders check a key before calling a provider to avoid duplicates.</li>
+<li>Separate queues per priority keep login codes fast while a marketing send is running.</li>
+<li>Separate queues per channel mean a slow SMS provider doesn’t hold up push or email.</li>
+<li>Short-term provider errors are retried with growing waits and jitter. Permanent errors are marked failed and the bad address is removed.</li>
+<li>Messages that fail 5 times go to a dead-letter queue so they stop blocking the others.</li>
+<li>The workload is write-heavy, about 5 writes for each read, so the big tables live in Cassandra and the small ones in PostgreSQL.</li>
+<li>Queue lag, the age of the oldest waiting message, is the first thing to watch as traffic grows.</li>
+</ul>
