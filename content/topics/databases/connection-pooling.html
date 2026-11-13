@@ -1,0 +1,410 @@
+<!--
+title: Connection Pooling
+summary: Keeping a small set of database connections open and sharing them between requests, because opening one is slow and a database can only hold so many.
+category: Connections
+order: 30
+related: postgresql-mvcc, database-sharding, load-balancer
+-->
+
+<!-- section: what -->
+<p>Before your app can run a query, it needs a <strong>connection</strong> to the database: an open line that both sides have set up and agreed on. Setting one up takes far longer than a simple query does. And the database can only hold a limited number of them at once.</p>
+<p>A <strong>connection pool</strong> is a small set of connections that are opened once and then kept. When a request needs the database, it borrows a connection, runs its queries, and gives it back. The next request uses the same one. Nobody pays the setup cost again.</p>
+<p>The pool also acts as a cap. If it holds 10 connections, your app can never run more than 10 queries at the same moment. The eleventh request waits its turn. That is the point: it protects the database from being flooded.</p>
+<p>The examples here use <strong>PostgreSQL</strong>, and were run on version 14. MySQL differs in one way that matters: it runs a thread per connection, not a whole process, so each connection is lighter. Pooling still helps there.</p>
+<p class="note">One-line version: open a few connections once, lend them out, take them back. It is faster for every request, and it stops your app from asking the database for more than it can give.</p>
+
+<!-- section: why -->
+<p>Without a pool, two things go wrong. One is slow. The other is an outage.</p>
+<p><strong>Every request pays the setup cost.</strong> A query that takes a fraction of a millisecond sits behind several milliseconds of connecting. Most of the time spent on the database is spent saying hello.</p>
+<p><strong>The database runs out of connections.</strong> PostgreSQL allows 100 connections by default. Here is how a normal day turns into an incident:</p>
+<ol>
+<li>The app opens a new connection for each request. Traffic is low, so only a few are open at once. Everything works.</li>
+<li>A sale starts. Now 300 requests are in flight together, and the app asks for 300 connections.</li>
+<li>PostgreSQL refuses everything past its limit with <code>FATAL: sorry, too many clients already</code>.</li>
+<li>Those requests fail. Users retry, which adds more requests.</li>
+</ol>
+<p>The database was not slow and the queries were fine. The app asked for more connections than existed. With a pool, extra requests wait inside your app for a few milliseconds, and the database never sees more than the pool allows.</p>
+
+<!-- section: example -->
+<p>Run this in <code>psql</code> on a scratch database. Here it is called <code>pool_demo</code>. The results shown are from one run on a laptop with PostgreSQL 14.</p>
+<pre><code>-- A small table, and a login for our pretend app
+CREATE TABLE accounts (
+  id       INT PRIMARY KEY,
+  owner    TEXT NOT NULL,
+  balance  NUMERIC(12,2) NOT NULL
+);
+
+INSERT INTO accounts VALUES
+  (1, 'Asha',  500.00),
+  (2, 'Ravi',  120.50),
+  (3, 'Meera', 980.00);
+
+CREATE ROLE shop_app LOGIN CONNECTION LIMIT 3;
+GRANT SELECT, UPDATE ON accounts TO shop_app;
+
+SHOW max_connections;
+--  max_connections
+-- -----------------
+--  100</code></pre>
+<p>The role <code>shop_app</code> may hold only 3 connections. That gives us a tiny limit we can hit safely, without filling up the whole server.</p>
+
+<h4>Each connection is a real process</h4>
+<p>Open three more terminal windows. In each, connect with <code>psql -U shop_app pool_demo</code> and run <code>SELECT 1;</code>. Leave them open. Back in the first window:</p>
+<pre><code>-- Who is connected to this database right now?
+SELECT pid, usename, state
+FROM pg_stat_activity
+WHERE backend_type = 'client backend'
+  AND datname = 'pool_demo'
+ORDER BY pid;
+
+--   pid  | usename  | state
+-- -------+----------+--------
+--  43505 | shop_app | idle
+--  43506 | shop_app | idle
+--  43507 | shop_app | idle
+--  43509 | demo     | active</code></pre>
+<p>Four rows: the three idle windows, and the one running this query (<code>demo</code> is the login I used). Now look at the machine itself, from a shell:</p>
+<pre><code># List the server processes that belong to shop_app
+$ ps -ax -o pid,command | grep 'postgres: shop_app'
+43505 postgres: shop_app pool_demo 127.0.0.1(61272) idle
+43506 postgres: shop_app pool_demo 127.0.0.1(61273) idle
+43507 postgres: shop_app pool_demo 127.0.0.1(61274) idle</code></pre>
+<p>The <code>pid</code> numbers match. Each connection is a whole operating-system process on the server. It stays alive while the connection is open, even when idle.</p>
+
+<h4>What running out looks like</h4>
+<p>Open a fourth window as <code>shop_app</code>. The connection fails, and the error that <code>psql</code> prints ends with this:</p>
+<pre><code># A fourth connection for a role that is allowed three
+$ psql -U shop_app pool_demo
+... FATAL:  too many connections for role "shop_app"</code></pre>
+<p>It is refused at the door. When the whole server is full, the message is <code>sorry, too many clients already</code>, and it hits every app on that server.</p>
+
+<h4>What reusing a connection saves</h4>
+<p>PostgreSQL ships with a load tool called <code>pgbench</code>. We run one tiny query for 3 seconds, twice. The second run, with <code>-C</code>, opens a new connection for every query.</p>
+<pre><code># one-query.sql holds: SELECT balance FROM accounts WHERE id = 1;
+
+# One connection, kept open
+$ pgbench -n -f one-query.sql -c 1 -T 3 pool_demo
+latency average = 0.076 ms
+tps = 13123.392807 (without initial connection time)
+
+# A new connection for every query
+$ pgbench -n -f one-query.sql -c 1 -T 3 -C pool_demo
+latency average = 2.818 ms
+average connection time = 2.333 ms
+tps = 354.868692 (including reconnection times)</code></pre>
+<p>Only the lines that matter are shown. <code>tps</code> is queries finished per second, and <code>latency average</code> is the time for one.</p>
+<ul>
+<li>With the connection kept open, one query took 0.076 ms.</li>
+<li>With a new connection each time, it took 2.818 ms, and 2.333 ms of that was connecting. That is 2.333 ÷ 2.818 ≈ 83% of the time.</li>
+<li>13,123 ÷ 355 ≈ 37 times fewer queries per second, for the same query.</li>
+</ul>
+<p>This is one run on one laptop, so your numbers will differ. It is also the kindest case: same machine, no encryption, no password. Over a network with both, connecting costs much more.</p>
+
+<!-- section: internals -->
+<p>Here is what PostgreSQL does each time a client connects.</p>
+<ol>
+<li>The client opens a network connection to the <strong>postmaster</strong>. That is the main PostgreSQL process, the one listening on the port.</li>
+<li>The postmaster starts a brand-new process just for this client. It is called a <strong>backend</strong>. This is the process we saw in <code>ps</code>.</li>
+<li>If encryption is on, the backend and the client do a TLS handshake: several messages back and forth to agree on keys.</li>
+<li>The backend checks who the client is, usually with a password.</li>
+<li>The backend gets ready for work. It attaches to the database and sets up its own memory. As queries run, it fills its own caches with facts about tables and indexes.</li>
+<li>Now it can run queries. It stays alive, holding its memory, until the client disconnects. Then the process exits, and its warm caches are thrown away.</li>
+</ol>
+<p>Steps 1 to 5 are the cost we measured. A pool does them once per connection, then skips them for every later request:</p>
+<ol>
+<li>At start-up, or on first use, the pool opens a few connections and keeps them.</li>
+<li>A request asks the pool for a connection. If one is free, it gets it at once.</li>
+<li>If none is free and the pool is below its maximum, the pool opens one more.</li>
+<li>If the pool is at its maximum, the request waits in a queue until a connection comes back or a timeout passes.</li>
+<li>The request runs its queries and gives the connection back. The backend process on the server never noticed that its user changed.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 240" role="img" aria-label="Three app instances, each with its own small pool, connect to PgBouncer. PgBouncer holds many client connections and passes their queries over 20 real connections to PostgreSQL, where each real connection is one backend process.">
+<defs><marker id="ah-connection-pooling" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="15" y="25" width="135" height="46" rx="8" class="box"/><text x="82" y="45" text-anchor="middle" class="lbl">App instance 1</text><text x="82" y="61" text-anchor="middle" class="sub">pool of 7</text>
+<rect x="15" y="97" width="135" height="46" rx="8" class="box"/><text x="82" y="117" text-anchor="middle" class="lbl">App instance 2</text><text x="82" y="133" text-anchor="middle" class="sub">pool of 7</text>
+<rect x="15" y="169" width="135" height="46" rx="8" class="box"/><text x="82" y="189" text-anchor="middle" class="lbl">App instance 3</text><text x="82" y="205" text-anchor="middle" class="sub">pool of 7</text>
+
+<rect x="248" y="90" width="150" height="60" rx="8" class="box hi"/><text x="323" y="116" text-anchor="middle" class="lbl">PgBouncer</text><text x="323" y="134" text-anchor="middle" class="sub">shares 20 between all</text>
+
+<rect x="490" y="90" width="140" height="60" rx="8" class="box"/><text x="560" y="116" text-anchor="middle" class="lbl">PostgreSQL</text><text x="560" y="134" text-anchor="middle" class="sub">20 backend processes</text>
+
+<line x1="150" y1="48" x2="246" y2="103" class="arr dim" marker-end="url(#ah-connection-pooling)"/>
+<line x1="150" y1="120" x2="246" y2="120" class="arr dim" marker-end="url(#ah-connection-pooling)"/>
+<line x1="150" y1="192" x2="246" y2="137" class="arr dim" marker-end="url(#ah-connection-pooling)"/>
+<line x1="398" y1="120" x2="488" y2="120" class="arr" marker-end="url(#ah-connection-pooling)"/>
+
+<text x="323" y="62" text-anchor="middle" class="sub">many client connections in</text>
+<text x="443" y="108" text-anchor="middle" class="sub">20 real</text>
+<text x="443" y="140" text-anchor="middle" class="sub">connections</text>
+</svg>
+</div>
+
+<p>The diagram shows the two places a pool can live. Each app instance has its own small pool. When there are many instances, a separate program called a <strong>pooler</strong> sits in front of the database and shares a few real connections between them. <strong>PgBouncer</strong> is the common one for PostgreSQL.</p>
+<p>Why not just raise the limit to 5,000? Each backend takes memory. And the server has a fixed number of CPU cores. Once more queries are running than the cores can serve, they take turns, and every one of them gets slower.</p>
+
+<!-- section: types -->
+<h4>A pool inside the app</h4>
+<p><strong>How it works:</strong> a library in your app holds the connections. In Node.js it is <code>Pool</code> from the <code>pg</code> package. In Java, HikariCP is a common one. Each running copy of your app has its own pool.</p>
+<p><strong>When to use it:</strong> always. This is the starting point for any server app.</p>
+<p><strong>Good:</strong> nothing extra to run. Requests wait inside your app, where you can time and log them.</p>
+<p><strong>Bad:</strong> the pools don’t know about each other. Ten instances with a pool of 20 can ask for 200 connections. Every new instance adds more.</p>
+
+<h4>An external pooler in session mode</h4>
+<p><strong>How it works:</strong> apps connect to PgBouncer, not to PostgreSQL. A client gets one real connection for as long as it stays connected.</p>
+<p><strong>When to use it:</strong> for clients that connect and disconnect all the time, like scripts or old apps with no pool of their own.</p>
+<p><strong>Good:</strong> everything behaves as if you were talking to PostgreSQL directly.</p>
+<p><strong>Bad:</strong> a client that stays connected keeps its real connection, busy or not. So long-lived apps hold just as many as before.</p>
+
+<h4>An external pooler in transaction mode</h4>
+<p><strong>How it works:</strong> a client gets a real connection only while a transaction is open. At <code>COMMIT</code> or <code>ROLLBACK</code> it goes straight back, and that client’s next transaction may land on a different one.</p>
+<p><strong>When to use it:</strong> when many app instances, or short-lived serverless functions, would together hold more connections than the database allows.</p>
+<p><strong>Good:</strong> a thousand client connections can share twenty real ones, because most clients are idle between transactions.</p>
+<p><strong>Bad:</strong> anything that lives on the connection past the end of a transaction breaks. That includes:</p>
+<ul>
+<li><code>SET</code> for a session setting. Use <code>SET LOCAL</code> inside a transaction.</li>
+<li><code>LISTEN</code>, which waits for notifications on one connection.</li>
+<li>Advisory locks held for the session, and temporary tables that outlive a transaction.</li>
+<li>Prepared statements made with SQL <code>PREPARE</code>. The kind that drivers create through the wire protocol works in PgBouncer 1.21 and later, when it is switched on.</li>
+</ul>
+
+<h4>An external pooler in statement mode</h4>
+<p><strong>How it works:</strong> the real connection goes back after every single statement.</p>
+<p><strong>When to use it:</strong> rarely. Only when every query stands alone.</p>
+<p><strong>Good:</strong> the most sharing of all.</p>
+<p><strong>Bad:</strong> transactions with more than one statement are not allowed at all.</p>
+
+<p>The usual large setup is the first and third together: a small pool in each app instance, pointed at a pooler in transaction mode.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Type</th><th>Where it runs</th><th>A real connection is held for</th><th>What breaks</th><th>Use it when</th></tr>
+<tr><td>Pool inside the app</td><td>In each app instance</td><td>One borrow: a query or a transaction</td><td>Nothing</td><td>Always</td></tr>
+<tr><td>Pooler, session mode</td><td>A separate program</td><td>As long as the client is connected</td><td>Nothing</td><td>Clients connect and disconnect a lot</td></tr>
+<tr><td>Pooler, transaction mode</td><td>A separate program</td><td>One transaction</td><td>Session settings, <code>LISTEN</code>, session locks</td><td>Many instances share one database</td></tr>
+<tr><td>Pooler, statement mode</td><td>A separate program</td><td>One statement</td><td>Multi-statement transactions</td><td>Every query stands alone</td></tr>
+</table></div>
+
+<!-- section: numbers -->
+<p><strong>Assumptions</strong> (made up for this example, not measurements):</p>
+<ul>
+<li>One PostgreSQL server with 8 CPU cores and <code>max_connections = 100</code>.</li>
+<li>12 app instances. Each has a pool with a maximum of 20.</li>
+<li>1,000 requests a second in total. Each request runs 3 queries of 5 ms each.</li>
+<li>Each backend process uses about 10 MB of memory of its own.</li>
+</ul>
+
+<h4>How many connections does the work need?</h4>
+<ul>
+<li>Query time per second: 1,000 requests × 3 queries × 5 ms = 15,000 ms.</li>
+<li>One connection can do 1,000 ms of work per second. So 15,000 ÷ 1,000 = <strong>15 connections busy on average</strong>.</li>
+</ul>
+
+<h4>How many can the pools ask for?</h4>
+<ul>
+<li>12 instances × 20 = <strong>240</strong>.</li>
+<li>PostgreSQL keeps 3 of its 100 for superusers, so apps get 97.</li>
+<li>240 is far more than 97. On a quiet day nobody notices, because a pool only opens what it needs. On a busy day the pools grow, and instances start to get “too many clients”.</li>
+</ul>
+
+<h4>The right size</h4>
+<ul>
+<li>Keep 7 back for migrations, monitoring and a person with <code>psql</code>: 97 − 7 = 90 for the app.</li>
+<li>90 ÷ 12 instances = 7.5, so <strong>a pool of 7 each</strong>. In total 12 × 7 = 84.</li>
+<li>Each instance needs 15 ÷ 12 = 1.25 connections on average. So 7 leaves room for bursts.</li>
+<li>Memory for backends: 240 × 10 MB = 2.4 GB before, 84 × 10 MB = <strong>840 MB</strong> after.</li>
+</ul>
+<p>Would a bigger limit help? Not here. A common starting rule is twice the cores plus one, so 8 × 2 + 1 = <strong>17 queries</strong> at once is about what this server does well. Our work needs 15. More connections would not finish more queries. They would take turns on the same cores.</p>
+
+<h4>When the instances multiply</h4>
+<p>Say the team moves to 40 small instances for the same traffic.</p>
+<ul>
+<li>40 × 7 = 280. That is over 90 again.</li>
+<li>Shrinking to fit gives 90 ÷ 40 = 2 each. Then two slow queries block a whole instance.</li>
+<li>With PgBouncer in transaction mode: 280 client connections in, <strong>20 real ones</strong> out.</li>
+<li>Is 20 enough? A transaction is 15 ms, so one real connection serves 1,000 ÷ 15 ≈ 66 requests a second. 20 × 66 = <strong>1,320 requests a second</strong>, above our 1,000.</li>
+</ul>
+
+<h4>One slow call inside the borrow</h4>
+<p>A handler borrows a connection, then calls a payment API that takes 300 ms, then runs its queries.</p>
+<ul>
+<li>It now holds the connection for 300 + 15 = 315 ms, not 15 ms.</li>
+<li>A pool of 7 serves 7 ÷ 0.315 ≈ <strong>22 requests a second</strong>. Before, it was 7 ÷ 0.015 ≈ 466.</li>
+<li>Each instance gets 1,000 ÷ 12 ≈ 83 requests a second. So requests queue up and time out, while the database sits nearly idle.</li>
+</ul>
+
+<!-- section: commands -->
+<h4>See what the connections are doing</h4>
+<p>Keep the three <code>shop_app</code> windows from the example open. In one of them, start a transaction and don’t finish it:</p>
+<pre><code>-- In one shop_app window: a transaction left open
+BEGIN;
+UPDATE accounts SET balance = balance - 50 WHERE id = 1;</code></pre>
+<p>Then, in your own window:</p>
+<pre><code>-- Count connections by what they are doing
+SELECT state, count(*)
+FROM pg_stat_activity
+WHERE backend_type = 'client backend'
+  AND datname = 'pool_demo'
+GROUP BY state
+ORDER BY count(*) DESC;
+
+--         state        | count
+-- ---------------------+-------
+--  idle                |     2
+--  active              |     1
+--  idle in transaction |     1</code></pre>
+<p>How to read it:</p>
+<ul>
+<li><code>idle</code>: open and waiting for work. Normal for pooled connections.</li>
+<li><code>active</code>: running a query right now. If this stays close to your pool total, the pool is too small or the queries are too slow.</li>
+<li><code>idle in transaction</code>: a <code>BEGIN</code> was sent and never finished. The connection does nothing, but it can’t be lent to anyone else, and it still holds its locks. If these stay around, the app has a bug.</li>
+</ul>
+
+<h4>Find the stuck one, and end it</h4>
+<pre><code>-- Transactions left open, oldest first
+SELECT pid,
+       date_trunc('second', now() - xact_start) AS open_for,
+       left(query, 40) AS last_query
+FROM pg_stat_activity
+WHERE state = 'idle in transaction'
+ORDER BY xact_start;
+
+--   pid  | open_for |                last_query
+-- -------+----------+------------------------------------------
+--  43506 | 00:00:40 | UPDATE accounts SET balance = balance -
+
+-- Close that connection. Its open transaction is rolled back.
+SELECT pg_terminate_backend(43506);</code></pre>
+<p><code>open_for</code> is how long the transaction has been open. <code>last_query</code> is the last thing it ran, which tells you which code to look at. While it sat there, any other update to that row had to wait. After the terminate, Asha’s balance is 500.00 again, because the update was never committed.</p>
+
+<h4>Let the database clean up after the app</h4>
+<pre><code>-- End any transaction that sits idle for more than 30 seconds
+ALTER ROLE shop_app SET idle_in_transaction_session_timeout = '30s';
+
+-- Stop any single query that runs for more than 5 seconds
+ALTER ROLE shop_app SET statement_timeout = '5s';</code></pre>
+<p>New connections for that role pick these up. A connection that breaks the first rule is closed with <code>FATAL: terminating connection due to idle-in-transaction timeout</code>. A query that breaks the second gets <code>ERROR: canceling statement due to statement timeout</code>, and the connection stays usable.</p>
+
+<h4>The pool in app code</h4>
+<pre><code>// db.provider.ts
+import { Pool } from 'pg';
+
+export const pool = new Pool({
+  host: process.env.DB_HOST,
+  database: 'shop',
+  max: 7,                          // never more than 7 connections
+  idleTimeoutMillis: 30_000,       // close one left unused for 30 s
+  connectionTimeoutMillis: 2_000,  // wait at most 2 s for a free one
+});</code></pre>
+<pre><code>// transfers.service.ts
+async transfer(from: number, to: number, amount: number) {
+  const client = await this.pool.connect();    // borrow
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'UPDATE accounts SET balance = balance - $1 WHERE id = $2',
+      [amount, from],
+    );
+    await client.query(
+      'UPDATE accounts SET balance = balance + $1 WHERE id = $2',
+      [amount, to],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();                           // always give it back
+  }
+}</code></pre>
+<p>The <code>release()</code> is in <code>finally</code>, so the connection goes back even when a query throws. For a single query, <code>pool.query(...)</code> borrows and returns by itself. To watch the pool, log <code>pool.waitingCount</code>. Above zero for long means requests are queuing.</p>
+
+<h4>PgBouncer</h4>
+<pre><code>; pgbouncer.ini (login settings left out)
+[databases]
+shop = host=10.0.0.5 port=5432 dbname=shop
+
+[pgbouncer]
+listen_port = 6432
+pool_mode = transaction
+max_client_conn = 1000
+default_pool_size = 20</code></pre>
+<ul>
+<li><code>max_client_conn</code>: how many app connections PgBouncer accepts.</li>
+<li><code>default_pool_size</code>: how many real connections it opens, for each pair of database and user.</li>
+</ul>
+<p>The app then connects to port 6432 and changes nothing else. To check on it, run <code>SHOW POOLS;</code> in its admin console. Read <code>cl_waiting</code> (clients waiting for a real connection), <code>sv_active</code> and <code>sv_idle</code> (real connections in use and free), and <code>maxwait</code> (seconds the oldest waiting client has waited). If <code>cl_waiting</code> and <code>maxwait</code> stay above zero, the real pool is too small or transactions are too long.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Small pool vs big pool.</strong> A small pool keeps the database fast and makes requests wait in your app. A big pool lets every request in at once, and then they all slow each other down inside the database.</li>
+<li><strong>Waiting vs failing fast.</strong> A long wait for a free connection hides short bursts. It also lets requests pile up until everything times out together. A short wait fails some requests early and keeps the rest healthy.</li>
+<li><strong>App pool vs external pooler.</strong> The app pool is free and simple, but each instance only knows about itself. A pooler gives one shared cap for all instances. It is also one more program to run, one more network hop, and one more thing that can fail.</li>
+<li><strong>Transaction mode vs session mode.</strong> Transaction mode shares connections far better. It takes away session features, and bugs from that show up as odd behaviour, not clear errors.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Use a pool inside the app when</h4>
+<ul>
+<li>The app is a long-running server that handles many requests. That is nearly every backend.</li>
+<li>You see connection setup in your traces, or “too many clients” in your logs.</li>
+</ul>
+
+<h4>Add an external pooler when</h4>
+<ul>
+<li>Instances × pool size is getting close to <code>max_connections</code>.</li>
+<li>The number of instances goes up and down by itself with traffic.</li>
+<li>The code runs as short-lived serverless functions, where each copy would open its own connection.</li>
+<li>Many different apps share one database server.</li>
+</ul>
+
+<h4>You don’t need it when</h4>
+<ul>
+<li><strong>It is a one-off script or a nightly job.</strong> One connection, opened once and closed at the end, is fine.</li>
+<li><strong>You have a few instances and the sum fits easily.</strong> Three instances with a pool of 10 against a limit of 100 need no PgBouncer. Don’t add a moving part to fix a problem you don’t have.</li>
+<li><strong>The real problem is slow queries.</strong> A pool shares connections. It does not make a 2-second query faster.</li>
+</ul>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Forgetting to multiply by instances.</strong> A pool of 20 looks small until there are 12 copies of the app. Fix: work out instances × pool size, and keep it under the limit with some to spare.</li>
+<li><strong>Making the pool bigger when things are slow.</strong> If the database is already busy, more connections add more queries fighting for the same cores. Fix: find the slow queries first. Grow the pool only when the database has room and requests are still waiting.</li>
+<li><strong>Not giving the connection back.</strong> One code path that throws before <code>release()</code> loses a connection for good. After a few hours the pool is empty and every request times out. Fix: release in <code>finally</code>, every time.</li>
+<li><strong>Holding a connection while doing something else.</strong> Calling another service in the middle of a transaction keeps a connection busy for nothing, as the numbers showed. Fix: do the slow work first, then borrow.</li>
+<li><strong>Creating a pool per request.</strong> That is the same as having no pool. Fix: one pool for the whole app, made at start-up.</li>
+<li><strong>No timeout on waiting.</strong> If requests wait for ever, a full pool looks like a frozen app. Fix: set a wait limit of a second or two, and return a clear error.</li>
+<li><strong>Leaving transactions open.</strong> A <code>BEGIN</code> with no <code>COMMIT</code> holds a connection and its locks. Fix: set <code>idle_in_transaction_session_timeout</code>, and treat every hit as a bug.</li>
+<li><strong>Using session features through transaction mode.</strong> A <code>SET</code> on one query quietly applies to some other client’s connection later. Fix: use <code>SET LOCAL</code> inside the transaction, or keep a direct connection for the code that needs session features.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<ul>
+<li><strong>What is a connection pool, and why use one?</strong> A set of open database connections that requests borrow and return. Opening a connection costs far more than a small query, and the database has a hard limit on connections. A pool removes the setup cost and caps how many the app can use.</li>
+<li><strong>How do you size it?</strong> From two sides. From the database: the connection limit, minus some kept back, divided by the number of instances. From the work: requests per second × the time each holds a connection gives the number busy on average. If the first is smaller than the second, add a pooler or cut the hold time.</li>
+<li><strong>What happens when the pool is empty?</strong> The request waits in a queue. If a connection comes back in time, it carries on. If the wait limit passes first, it gets an error.</li>
+<li><strong>Session pooling or transaction pooling?</strong> Session mode holds a real connection for as long as the client is connected. Transaction mode holds it for one transaction, so many more clients can share. The price is losing features that live on the connection.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>Why can a bigger pool make things slower? More queries running than there are cores, all taking turns.</li>
+<li>How would you find a connection leak? Watch the waiting count in the pool, and look for old <code>idle in transaction</code> rows in <code>pg_stat_activity</code>.</li>
+<li>What about serverless functions? Each copy opens its own connection, so put a pooler in transaction mode in front.</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>In a design diagram, the pool is the arrow between your service and the database. Each time you add app instances, check instances × pool size against the database limit. With sharding, each instance keeps a pool per shard, so the sum multiplies again. The same idea shows up outside databases: the proxies in the “Load Balancer” topic keep connections to the backends open and reuse them.</p>
+
+<!-- section: revision -->
+<ul>
+<li>A connection pool keeps a few database connections open and lends them to requests, so no request pays the setup cost.</li>
+<li>In PostgreSQL every connection is its own server process, and the server allows 100 by default. Ask for more and the connection is refused.</li>
+<li>The pool is also a cap. When it is empty, requests wait in the app, up to a time limit, and the database is not flooded.</li>
+<li>Size it from the database side: the limit, minus some kept back, divided by the number of instances. Small pools usually finish more work than big ones.</li>
+<li>When many instances add up to more than the limit, put PgBouncer in front. In transaction mode, a real connection is held only for one transaction.</li>
+<li>Transaction mode breaks things that live on the connection: session <code>SET</code>, <code>LISTEN</code>, session locks.</li>
+<li>Always give the connection back in <code>finally</code>, and never hold one while doing slow work that isn’t a query.</li>
+<li><code>idle in transaction</code> in <code>pg_stat_activity</code> means a transaction was left open. Set a timeout so the database ends those itself.</li>
+</ul>
