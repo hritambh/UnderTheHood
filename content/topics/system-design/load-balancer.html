@@ -1,0 +1,432 @@
+<!--
+title: Load Balancer
+summary: One address in front of many servers. It spreads requests across them, stops sending to the ones that are down, and must never become the single thing that takes the whole site offline.
+category: Networking
+order: 20
+related: database-sharding, realtime-communication, authentication-authorisation
+-->
+
+<!-- section: problem -->
+<p>One server can only handle so many requests. So you run many copies of your app. Now you have a new problem: users know one address, like <code>shop.example.com</code>, but there are 600 servers behind it. Which one gets the next request? And what happens when one of them dies?</p>
+<p>A <strong>load balancer</strong> answers both. It sits between the users and the servers. Every request arrives at the load balancer, and it passes each one to a server that is alive and not too busy. Users never see the servers. They see one address that always works.</p>
+<p>The servers behind it are called <strong>backends</strong>. A group of backends that run the same app is a <strong>pool</strong>.</p>
+<p>Nginx, HAProxy and Envoy are load balancers you run yourself. AWS Elastic Load Balancing is one you rent. Here we design the thing itself: the box that every other design diagram draws and then skips over.</p>
+<p class="note">One-line version: a load balancer takes traffic on one address, hands each request to a healthy server, and is built so that no single machine dying, including its own, takes the site down.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Accept requests on one public address and forward each one to a backend.</li>
+<li>Spread the load across a pool with a chosen method, like round robin or least connections.</li>
+<li>Notice when a backend is down, stop sending to it, and bring it back when it recovers.</li>
+<li>Let teams add and remove backends, and change settings, without dropping requests that are in flight.</li>
+<li>Handle HTTPS for the backends, and send requests to different pools by host name and path. So <code>/orders</code> goes to the orders servers and <code>/search</code> goes to the search servers.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Nearly invisible.</strong> It should add less than 1 millisecond to a typical request.</li>
+<li><strong>More available than anything behind it.</strong> Target 99.99% uptime. If the load balancer is down, everything is down, however healthy the backends are.</li>
+<li><strong>Quick to spot a dead backend.</strong> Stop sending to it within about 6 seconds, and hide most of the failed requests from users before that.</li>
+<li><strong>Able to grow by adding machines.</strong> No single machine should carry all the traffic.</li>
+<li><strong>Safe to change.</strong> A config change or a deploy must not cut connections.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Choosing between data centres or regions.</strong> Sending a user in Mumbai to the Mumbai site is a layer above this, usually done with DNS. We design the load balancer for one site.</li>
+<li><strong>Starting and stopping backends.</strong> Something else decides how many servers to run. We are told the list and work with it.</li>
+<li><strong>Blocking attacks.</strong> Filtering bad requests and absorbing floods of junk traffic is a separate product.</li>
+<li><strong>Caching responses.</strong> That is a CDN or a cache.</li>
+<li><strong>Login checks and per-user limits.</strong> Checking tokens and capping calls per user is the job of an API gateway. The topic “Authentication and Authorisation” covers the checks themselves.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong> (made up for this design, not real figures):</p>
+<ul>
+<li>The site gets 1.7 billion requests a day.</li>
+<li>At the busiest moment, traffic is 5 times the average.</li>
+<li>A request is about 2 KB coming in. A response is about 10 KB going out.</li>
+<li>There are 600 backends behind the load balancer.</li>
+<li>One load balancer machine that reads HTTP and handles HTTPS can do 20,000 requests per second.</li>
+<li>Teams make about 500 config changes a day, mostly servers added and removed during deploys.</li>
+</ul>
+
+<h4>How many requests?</h4>
+<ul>
+<li>On average: 1,700,000,000 ÷ 86,400 seconds ≈ <strong>20,000 per second</strong>.</li>
+<li>At the peak: 20,000 × 5 = <strong>100,000 per second</strong>.</li>
+<li>Per backend at the peak: 100,000 ÷ 600 ≈ <strong>167 per second</strong>.</li>
+</ul>
+
+<h4>How much data on the wire?</h4>
+<ul>
+<li>Coming in: 100,000 × 2 KB = 200 MB per second. Times 8 bits = <strong>1.6 Gbit/s</strong>.</li>
+<li>Going out: 100,000 × 10 KB = 1 GB per second. Times 8 bits = <strong>8 Gbit/s</strong>.</li>
+<li>So five sixths of the bytes are responses. That shapes the design later.</li>
+</ul>
+
+<h4>How many load balancer machines?</h4>
+<ul>
+<li>To carry the peak: 100,000 ÷ 20,000 = <strong>5 machines</strong>.</li>
+<li>We run <strong>7</strong>. One can be down for a deploy and another can crash, and the 5 that are left still carry the peak.</li>
+</ul>
+
+<h4>How many health checks?</h4>
+<p>A <strong>health check</strong> is a small request the load balancer sends to a backend to ask “are you alive?”. Say each of the 7 machines checks each backend every 2 seconds.</p>
+<ul>
+<li>In total: 7 × 600 ÷ 2 = <strong>2,100 checks per second</strong>.</li>
+<li>Per backend: 7 ÷ 2 = <strong>3.5 checks per second</strong>. Next to 167 real requests, that is nothing. For now.</li>
+</ul>
+
+<h4>How much storage?</h4>
+<ul>
+<li><strong>Config:</strong> 600 backends × about 200 bytes = 120 KB. Tiny.</li>
+<li><strong>Logs:</strong> about 300 bytes per request. 1,700,000,000 × 300 bytes = <strong>510 GB a day</strong>, or about 186 TB a year. So we keep 30 days: 510 GB × 30 = <strong>15.3 TB</strong>.</li>
+</ul>
+
+<h4>Reads or writes?</h4>
+<ul>
+<li>Every request looks up the config: which pool, which backends. That is 1.7 billion lookups a day, against 500 changes.</li>
+<li>1,700,000,000 ÷ 500 = <strong>3.4 million lookups for every change</strong>. So the config must sit in memory on every machine, not in a database we ask on each request.</li>
+</ul>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Value</th></tr>
+<tr><td>Average rate</td><td>20,000 requests per second</td></tr>
+<tr><td>Peak rate</td><td>100,000 requests per second</td></tr>
+<tr><td>Traffic in / out at peak</td><td>1.6 Gbit/s / 8 Gbit/s</td></tr>
+<tr><td>Load balancer machines that read HTTP</td><td>5 needed, 7 running</td></tr>
+<tr><td>Backends</td><td>600, each about 167 requests per second at peak</td></tr>
+<tr><td>Health checks</td><td>2,100 per second</td></tr>
+<tr><td>Logs</td><td>510 GB a day, 15.3 TB for 30 days</td></tr>
+<tr><td>Config lookups to config changes</td><td>3.4 million to 1</td></tr>
+</table></div>
+
+<!-- section: api -->
+<p>A load balancer has two sides, and it helps to name them now.</p>
+<ul>
+<li>The <strong>data plane</strong> is the part that carries user traffic. It has no API of its own. It takes whatever HTTP requests arrive and forwards them.</li>
+<li>The <strong>control plane</strong> is the part that teams and deploy tools talk to. It holds the settings and tells the data plane what to do. This is where the API lives.</li>
+</ul>
+
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>POST /v1/load-balancers</code></td><td>Name, ports to listen on, HTTPS certificate</td><td><code>201</code> with an ID and the public address</td></tr>
+<tr><td><code>PUT /v1/load-balancers/{id}/rules</code></td><td>An ordered list of rules: host, path prefix, pool</td><td><code>200</code> with the new config version</td></tr>
+<tr><td><code>POST /v1/pools</code></td><td>Name, balancing method, health check settings, drain time</td><td><code>201</code> with a pool ID</td></tr>
+<tr><td><code>PUT /v1/pools/{id}/backends/{backendId}</code></td><td>Address, port, weight</td><td><code>200</code> with the new config version</td></tr>
+<tr><td><code>DELETE /v1/pools/{id}/backends/{backendId}</code></td><td>Nothing</td><td><code>202</code>. The backend starts draining.</td></tr>
+<tr><td><code>GET /v1/pools/{id}/health</code></td><td>Nothing</td><td>Each backend with its state: healthy, unhealthy or draining</td></tr>
+</table></div>
+
+<pre><code>// POST /v1/pools
+{
+  "name": "orders-api",
+  "method": "least_connections",
+  "healthCheck": {
+    "path": "/healthz",
+    "intervalSeconds": 2,
+    "timeoutSeconds": 1,
+    "failAfter": 3,
+    "passAfter": 2
+  },
+  "drainSeconds": 30
+}
+
+// 201 Created
+{ "poolId": "orders-api", "configVersion": 4182 }
+
+// PUT /v1/pools/orders-api/backends/orders-7
+{ "address": "10.0.4.17", "port": 8080, "weight": 1 }
+
+// 200 OK
+{ "backendId": "orders-7", "state": "active", "configVersion": 4183 }</code></pre>
+
+<p>Two things to notice:</p>
+<ul>
+<li><strong>Every change returns a config version.</strong> The whole config has one number that goes up by one on each change. A deploy tool can wait until every machine is on version 4183 before it moves on.</li>
+<li><strong><code>DELETE</code> answers <code>202</code>, not <code>204</code>.</strong> The backend is not gone yet. It stops getting new requests, and the ones in flight get time to finish. That is <strong>draining</strong>, and deep dive 4 covers it.</li>
+</ul>
+
+<!-- section: data -->
+<p>There are three kinds of data here. They live in three different places, for three different reasons.</p>
+
+<h4>The config: PostgreSQL</h4>
+<pre><code>-- PostgreSQL: the settings, owned by the control plane
+CREATE TABLE pools (
+  pool_id            TEXT PRIMARY KEY,
+  method             TEXT NOT NULL,   -- 'round_robin', 'least_connections'
+  health_path        TEXT NOT NULL,   -- '/healthz'
+  health_interval_s  INT  NOT NULL,
+  fail_after         INT  NOT NULL,
+  pass_after         INT  NOT NULL,
+  drain_seconds      INT  NOT NULL
+);
+
+CREATE TABLE backends (
+  pool_id     TEXT NOT NULL REFERENCES pools (pool_id),
+  backend_id  TEXT NOT NULL,
+  address     INET NOT NULL,
+  port        INT  NOT NULL,
+  weight      INT  NOT NULL DEFAULT 1,
+  state       TEXT NOT NULL,          -- 'active', 'draining'
+  PRIMARY KEY (pool_id, backend_id)
+);
+
+CREATE TABLE rules (
+  lb_id        TEXT NOT NULL,
+  priority     INT  NOT NULL,         -- lower number is checked first
+  host         TEXT,                  -- 'shop.example.com'
+  path_prefix  TEXT,                  -- '/orders'
+  pool_id      TEXT NOT NULL REFERENCES pools (pool_id),
+  PRIMARY KEY (lb_id, priority)
+);
+
+CREATE TABLE config_versions (
+  version     BIGINT PRIMARY KEY,
+  created_at  TIMESTAMPTZ NOT NULL,
+  created_by  TEXT  NOT NULL,
+  snapshot    JSONB NOT NULL          -- the full config at this version
+);</code></pre>
+
+<p>Why PostgreSQL?</p>
+<ul>
+<li>From the estimates, the config is 120 KB and changes 500 times a day. Any database can hold that. So we pick for safety, not speed.</li>
+<li>The tables point at each other. A rule names a pool, and a pool has backends. A relational database stops us from saving a rule that points at a pool that doesn’t exist.</li>
+<li>A change and its new row in <code>config_versions</code> are saved in one transaction. So there is never a version number without a matching config.</li>
+</ul>
+<p>The primary keys are the only indexes we need. <code>backends</code> is read by <code>pool_id</code> and <code>rules</code> by <code>lb_id</code>, and each is the first part of its key.</p>
+<p><code>config_versions</code> keeps every old config in full. That is how we undo a bad change in one step: push the previous snapshot again.</p>
+
+<h4>The live state: memory, on each machine</h4>
+<p>Each load balancer machine keeps a full copy of the config in memory, because of that 3.4 million to 1 ratio. Next to it, the machine keeps things that change every second:</p>
+<ul>
+<li>For each backend: is it healthy, how many requests are open on it right now, and how many of its last few requests failed.</li>
+<li>The open connections to clients and to backends.</li>
+</ul>
+<p>None of this goes into the database. It changes far too fast, and it is one machine’s own view. After a restart, the machine just counts again from zero.</p>
+
+<h4>The logs: a log pipeline, then cheap file storage</h4>
+<p>510 GB a day of log lines doesn’t belong in a database either. Each machine sends its lines to a log pipeline, which writes them as files to object storage (cheap storage for large files, like Amazon S3). Files older than 30 days are deleted.</p>
+
+<!-- section: highLevel -->
+<p>The data plane is split into two layers. They are named after the level of the network they work at.</p>
+<ul>
+<li><strong>Layer 4 (L4)</strong> balancers only look at addresses and ports. They move packets without reading what is in them. That makes them simple and very fast.</li>
+<li><strong>Layer 7 (L7)</strong> balancers read the whole HTTP request. So they can handle HTTPS, look at the path, and retry a failed request. They do much more work per request. We’ll call these the <strong>proxies</strong>. A proxy is a program that takes a request and makes it again on your behalf.</li>
+</ul>
+<p>The 7 machines from the estimates are the L7 proxies. Three L4 machines in front spread connections across them. Deep dive 3 explains why.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 280" role="img" aria-label="Traffic goes from clients to a router, then to layer 4 balancers, then to layer 7 proxies, then to backends. The proxies also send health checks to the backends, and logs to a log pipeline. A control plane, backed by PostgreSQL, pushes config to the layer 4 balancers and the layer 7 proxies.">
+<defs><marker id="ah-load-balancer" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="10" y="60" width="100" height="50" rx="8" class="box"/><text x="60" y="82" text-anchor="middle" class="lbl">Clients</text><text x="60" y="99" text-anchor="middle" class="sub">browsers, apps</text>
+<rect x="135" y="60" width="100" height="50" rx="8" class="box"/><text x="185" y="82" text-anchor="middle" class="lbl">Router</text><text x="185" y="99" text-anchor="middle" class="sub">one public IP</text>
+<rect x="260" y="60" width="110" height="50" rx="8" class="box hi"/><text x="315" y="82" text-anchor="middle" class="lbl">L4 balancers</text><text x="315" y="99" text-anchor="middle" class="sub">pick a proxy</text>
+<rect x="395" y="60" width="110" height="50" rx="8" class="box hi"/><text x="450" y="82" text-anchor="middle" class="lbl">L7 proxies</text><text x="450" y="99" text-anchor="middle" class="sub">HTTPS, rules</text>
+<rect x="530" y="60" width="100" height="50" rx="8" class="box"/><text x="580" y="82" text-anchor="middle" class="lbl">Backends</text><text x="580" y="99" text-anchor="middle" class="sub">app servers</text>
+
+<rect x="150" y="205" width="110" height="50" rx="8" class="box"/><text x="205" y="227" text-anchor="middle" class="lbl">PostgreSQL</text><text x="205" y="244" text-anchor="middle" class="sub">config, versions</text>
+<rect x="325" y="205" width="115" height="50" rx="8" class="box"/><text x="382" y="227" text-anchor="middle" class="lbl">Control plane</text><text x="382" y="244" text-anchor="middle" class="sub">API, pushes config</text>
+<rect x="530" y="205" width="100" height="50" rx="8" class="box"/><text x="580" y="227" text-anchor="middle" class="lbl">Logs</text><text x="580" y="244" text-anchor="middle" class="sub">and metrics</text>
+
+<line x1="110" y1="85" x2="133" y2="85" class="arr" marker-end="url(#ah-load-balancer)"/>
+<line x1="235" y1="85" x2="258" y2="85" class="arr" marker-end="url(#ah-load-balancer)"/>
+<line x1="370" y1="85" x2="393" y2="85" class="arr" marker-end="url(#ah-load-balancer)"/>
+<line x1="505" y1="85" x2="528" y2="85" class="arr" marker-end="url(#ah-load-balancer)"/>
+
+<path d="M 462 60 Q 518 20 570 57" class="arr dim" marker-end="url(#ah-load-balancer)"/>
+<text x="516" y="27" text-anchor="middle" class="sub">health checks</text>
+
+<line x1="362" y1="205" x2="326" y2="113" class="arr dim" marker-end="url(#ah-load-balancer)"/>
+<line x1="402" y1="205" x2="438" y2="113" class="arr dim" marker-end="url(#ah-load-balancer)"/>
+<line x1="325" y1="230" x2="263" y2="230" class="arr dim" marker-end="url(#ah-load-balancer)"/>
+<line x1="482" y1="110" x2="555" y2="203" class="arr dim" marker-end="url(#ah-load-balancer)"/>
+</svg>
+</div>
+
+<h4>Request 1: a user opens <code>shop.example.com/orders/8812</code></h4>
+<ol>
+<li>The <strong>client</strong> looks up the name and gets one public IP address. It opens a connection to that address.</li>
+<li>The connection reaches the <strong>router</strong> at the edge of our network. The router knows three machines that all accept traffic for that IP: the three L4 balancers. It picks one from the connection’s addresses and ports, so every packet of one connection goes to the same machine.</li>
+<li>The <strong>L4 balancer</strong> picks one of the 7 proxies for this connection, remembers the choice, and forwards the packets. It never reads them.</li>
+<li>The <strong>L7 proxy</strong> does the HTTPS handshake with the client and reads the request. It goes through its rules in order. Host <code>shop.example.com</code> with path <code>/orders</code> matches the pool <code>orders-api</code>.</li>
+<li>The proxy picks one healthy <strong>backend</strong> from that pool, using the pool’s method. It sends the request over a connection it already has open to that backend. It adds an <code>X-Forwarded-For</code> header holding the client’s real IP address. Without it, the backend would only see the proxy’s address.</li>
+<li>The backend answers. The proxy sends the response back to the client.</li>
+<li>The proxy writes one line to <strong>logs</strong> and updates its counters: one more request for this pool, how long it took, and whether it worked.</li>
+</ol>
+<p>Each proxy also sends a <strong>health check</strong> to every backend every 2 seconds. That is the curved arrow, and deep dive 2 covers it.</p>
+
+<h4>Request 2: a deploy takes backend <code>orders-7</code> out</h4>
+<ol>
+<li>The deploy tool calls <code>DELETE /v1/pools/orders-api/backends/orders-7</code> on the <strong>control plane</strong>.</li>
+<li>The control plane sets that backend’s state to <code>draining</code> in <strong>PostgreSQL</strong> and saves config version 4184, in one transaction. It answers <code>202</code>.</li>
+<li>The control plane pushes version 4184 to every <strong>L7 proxy</strong>. Each proxy keeps a connection open to the control plane just for this. The <strong>L4 balancers</strong> get a push only when the list of proxies changes.</li>
+<li>Each proxy swaps to the new config in memory. From that moment, no new request goes to <code>orders-7</code>. Requests already running on it carry on.</li>
+<li>After 30 seconds, the proxies close whatever is left. The control plane deletes the row and saves another version. The deploy tool can now stop the server.</li>
+</ol>
+
+<!-- section: deepDives -->
+<h4>1. Which backend gets the next request?</h4>
+<p>The options:</p>
+<ul>
+<li><strong>Round robin.</strong> Take turns: server 1, 2, 3, then 1 again. Fair when every request costs the same. But a slow report and a quick lookup count the same, so one backend can get five slow ones in a row.</li>
+<li><strong>Least connections.</strong> Send the request to the backend with the fewest requests open right now. A backend stuck on slow work has many open, so it gets fewer new ones.</li>
+<li><strong>Hash.</strong> Hash a key, like the user ID, and let the result pick the backend. The same user always lands on the same server. It spreads load badly when a few keys are very busy.</li>
+</ul>
+<p><strong>The pick:</strong> least connections. But the plain version has two problems here. Each of our 7 proxies only sees its own connections, so a backend that looks idle to one may be busy with the other six. And a new backend starts at zero, so every proxy picks it at the same moment and floods it.</p>
+<p>So we use a small twist called <strong>power of two choices</strong>. Pick two backends at random, then send the request to the less busy of the two.</p>
+<pre><code>// pick-backend.ts
+// Look at two random backends and take the less busy one.
+function pickBackend(healthy: Backend[]): Backend {
+  if (healthy.length === 0) throw new NoHealthyBackendError();
+  if (healthy.length === 1) return healthy[0];
+
+  const i = Math.floor(Math.random() * healthy.length);
+  let j = Math.floor(Math.random() * (healthy.length - 1));
+  if (j &gt;= i) j += 1;              // makes sure the two are different
+
+  const a = healthy[i];
+  const b = healthy[j];
+  // Divide by weight, so a server with weight 2 may hold twice as many.
+  return a.active / a.weight &lt;= b.active / b.weight ? a : b;
+}</code></pre>
+<p>The random step stops the proxies all jumping on the same backend. The compare step still steers traffic away from busy ones. For a new backend we also add <strong>slow start</strong>: its weight begins low and climbs to normal over about 30 seconds.</p>
+
+<h4>2. How do we know a backend is dead?</h4>
+<p>The options:</p>
+<ul>
+<li><strong>Active checks.</strong> The proxy calls <code>GET /healthz</code> on each backend every 2 seconds and waits up to 1 second. Three failures in a row and the backend is out. Two passes in a row and it is back in.</li>
+<li><strong>Passive checks.</strong> The proxy watches real traffic. If 5 requests in a row to one backend fail to connect or time out, that backend is put aside for 30 seconds.</li>
+<li><strong>Both.</strong></li>
+</ul>
+<p><strong>The pick:</strong> both, because each one covers the other’s gap.</p>
+<p>Active checks alone are too slow. A backend that dies just after passing a check fails the next three, at 2, 4 and 6 seconds. From the estimates, that is 6 × 167 ≈ 1,000 failed requests.</p>
+<p>Passive checks catch it after 5 failures on each proxy, so about 7 × 5 = 35 in total. But they can’t tell when a backend is healthy again, because nothing is being sent to it. The active check does that.</p>
+<p>Two more pieces hide failures from most users:</p>
+<ul>
+<li><strong>Retry on another backend.</strong> If a request fails before the backend sent any answer, the proxy tries once more on a different one. Only when a repeat is safe: a <code>GET</code>, or a request that never left the proxy. A <code>POST</code> that may have reached the backend is not retried. It could charge a card twice.</li>
+<li><strong>A retry budget.</strong> Retries are capped at 10% of normal traffic. Without a cap, a struggling pool gets double the load and falls over completely.</li>
+</ul>
+<p>And two traps:</p>
+<ul>
+<li><strong>Keep <code>/healthz</code> shallow.</strong> It should only answer “is this process up?”. If it also checks the database, one short database blip fails every backend at once, and we remove the whole pool.</li>
+<li><strong>Don’t trust the checks when most of the pool looks dead.</strong> If more than half the backends fail, the checks are more likely wrong than the servers. The proxy then sends to all of them. Some requests fail, but that beats crushing the few that are left.</li>
+</ul>
+
+<h4>3. What stops the load balancer from being the one thing that takes us down?</h4>
+<p>We need 7 proxies to carry the traffic, but users have one address. Something has to spread connections across the 7, and it must not be a single machine.</p>
+<p>The options:</p>
+<ul>
+<li><strong>Give DNS seven addresses.</strong> Simple, but clients remember DNS answers for minutes or hours. When a proxy dies, some users keep trying the dead address.</li>
+<li><strong>Two machines, one address.</strong> One does all the work. The second watches it and takes over the address if the first dies. Simple to run, but only one machine works at a time. That caps us at 20,000 requests per second, and we need 100,000.</li>
+<li><strong>A thin L4 layer in front of the proxies.</strong> Several L4 machines all tell the router, “send traffic for this IP to me.” The router sees several equally good paths and spreads connections across them. This is <strong>ECMP</strong>, equal-cost multi-path routing.</li>
+</ul>
+<p><strong>The pick:</strong> the L4 layer. Every machine works, and any one of them can die. Google’s Maglev and Meta’s Katran are built this way. Two details make it work.</p>
+<p><strong>Every L4 machine picks the same proxy for the same connection.</strong> When an L4 machine dies, the router moves its connections to the others, which have never seen them. If they pick a different proxy, the connection breaks. So all L4 machines hash the connection’s addresses and ports the same way, over the same list of proxies. They use <strong>consistent hashing</strong>, where removing one proxy only moves that proxy’s connections. The topic “Database Sharding” explains why a plain “hash mod N” moves nearly everything.</p>
+<p><strong>Responses skip the L4 layer.</strong> The proxy answers the client straight through the router. This is <strong>direct server return</strong>. From the estimates, 8 of every 9.6 Gbit/s is responses, so the L4 machines only carry the 1.6 Gbit/s coming in. Say one L4 machine can forward 10 Gbit/s (made up). One is enough, and we run three so two can fail.</p>
+<p class="note">At a tenth of this size, one machine can carry the peak. Then the pair of machines with one address is the right design.</p>
+
+<h4>4. How do we change things without cutting connections?</h4>
+<p>Something changes 500 times a day. Each change is a chance to drop requests, or to break everything at once.</p>
+<p><strong>Taking a backend out.</strong> We could cut it off at once, but that fails every request in flight. So we <strong>drain</strong> it, as in request 2 above: no new requests, and 30 seconds for the running ones to finish. Long-lived connections like WebSockets never finish by themselves. They are closed at the 30-second mark, and the client connects again and lands on another backend. The topic “WebSockets vs Polling vs SSE” covers reconnecting.</p>
+<p><strong>Changing the config.</strong> We could restart the proxy, but that cuts every connection on it. So the proxy builds the new config next to the old one in memory, then switches over in one step.</p>
+<p><strong>Pushing a bad config.</strong> This is the dangerous one. A broken rule pushed to all 7 proxies at once takes the whole site down in a second, and no health check on the backends will save us. So every push goes in stages:</p>
+<ol>
+<li>The control plane checks the new config: every rule points at a real pool, and no pool is left empty.</li>
+<li>It pushes to one proxy and waits a minute.</li>
+<li>If that proxy’s error rate stays normal, it pushes to the rest.</li>
+<li>If the error rate jumps, it pushes the previous snapshot from <code>config_versions</code> back out.</li>
+</ol>
+<p>New versions of the proxy software go out the same way: drain one proxy, update it, put it back, then do the next. This is why we run 7 when 5 carry the peak.</p>
+
+<!-- section: scaling -->
+<p>The design holds for today’s peak of 100,000 requests per second. As that grows, the request path is not what breaks first. Proxies share nothing with each other, so we just add more. The things around the request path break first.</p>
+
+<h4>10 times: 1,000,000 requests per second, 6,000 backends</h4>
+<p>Proxies needed: 1,000,000 ÷ 20,000 = 50, plus 2 spare = <strong>52 proxies</strong>.</p>
+<div class="table-wrap"><table>
+<tr><th>What breaks first</th><th>How we’d notice</th><th>The fix</th></tr>
+<tr><td>Health checks. 52 × 6,000 ÷ 2 = 156,000 checks per second. Each backend gets 52 ÷ 2 = 26 a second, up from 3.5.</td><td>Backends show steady CPU use with no real traffic. Their logs are mostly <code>/healthz</code>.</td><td>Stop every proxy checking every backend. A small group of checker machines does the active checks and tells the proxies the result. Proxies keep their passive checks.</td></tr>
+<tr><td>Logs. 510 GB a day becomes 5.1 TB a day.</td><td>The log pipeline falls behind. The storage bill.</td><td>Keep every failed request, and 1 in 10 of the ones that worked.</td></tr>
+<tr><td>The L4 layer. Traffic coming in is now 16 Gbit/s.</td><td>L4 machines near their 10 Gbit/s limit. Packets get dropped.</td><td>2 are needed, so run 4. Because responses skip this layer, we don’t need to carry the other 80 Gbit/s here.</td></tr>
+</table></div>
+
+<h4>100 times: 10,000,000 requests per second, 60,000 backends</h4>
+<ul>
+<li><strong>Health checks</strong> done the old way would be 502 × 60,000 ÷ 2 ≈ 15 million a second. By now the checker machines are a must.</li>
+<li><strong>Config pushes.</strong> Changes go from 500 a day to 50,000. That is one every 86,400 ÷ 50,000 ≈ 1.7 seconds. The config is now 60,000 × 200 bytes = 12 MB. Pushing all of it to 502 proxies every 1.7 seconds is too much. Send only what changed.</li>
+<li><strong>One site is not enough.</strong> This much traffic is spread over several regions. Each region gets its own full copy of this design, and a layer above picks the region. That is the part we left under “Not doing”.</li>
+</ul>
+
+<p>The numbers to watch at every size: the time the proxy adds to a request, proxy CPU, and the count of “no healthy backend” answers. That last one should be zero.</p>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>How the system handles it</th></tr>
+<tr><td>A backend crashes</td><td>Usually nothing. A few non-repeatable requests, like a <code>POST</code> in flight, fail.</td><td>Passive checks put it aside after 5 failures per proxy. Safe requests are retried on another backend. The active check removes it at about 6 seconds and brings it back when it passes twice.</td></tr>
+<tr><td>A backend is slow but not dead</td><td>Some slow pages.</td><td>Its open requests pile up, so least connections sends it fewer. If requests start timing out, the passive check puts it aside.</td></tr>
+<tr><td>An L7 proxy crashes</td><td>One failed request or a short reconnect, for the users who were on it.</td><td>The L4 balancers health-check the proxies too, and stop sending to it within seconds. New connections land on the other six. We still have one spare.</td></tr>
+<tr><td>An L4 balancer crashes</td><td>Nothing, in most cases.</td><td>The router stops hearing from it and moves its connections to the other two. They pick the same proxy for each connection, because they share the same hash. The connections survive.</td></tr>
+<tr><td>The router fails</td><td>The site is down.</td><td>This is outside our design. Networks run routers in pairs for this reason. It is the one place where we depend on someone else’s spare.</td></tr>
+<tr><td>The control plane or PostgreSQL is down</td><td>Nothing.</td><td>Proxies keep running on the last config they have. Nobody can add backends or deploy until it is back. Traffic never depends on the control plane being up.</td></tr>
+<tr><td>A bad config is pushed</td><td>If caught: a minute of errors for about one user in seven.</td><td>The push goes to one proxy first. Its error rate jumps, so the control plane pushes the previous version back.</td></tr>
+<tr><td>The log pipeline is down</td><td>Nothing.</td><td>Proxies hold a small buffer of log lines in memory, then throw new ones away. Logging must never slow down traffic.</td></tr>
+<tr><td>A traffic spike past what the backends can take</td><td>Some users get a quick error. The rest get normal speed.</td><td>Each backend has a cap on open requests. Past the cap, the proxy answers <code>503</code> at once. A fast “try again” is better than every request hanging for 30 seconds.</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>L4 vs L7.</strong> We use both. L4 is fast but knows nothing about HTTP. L7 can route by path and retry, but costs much more per request. The price is two layers to build, run and understand.</li>
+<li><strong>Building it vs renting it.</strong> We designed our own. For most teams, the cloud provider’s load balancer is the right call. You give up some control and pay per hour and per GB. You skip everything on this page.</li>
+<li><strong>Least connections with two choices vs round robin.</strong> Ours reacts to slow backends. It needs slow start to protect new servers, and it is harder to reason about than “take turns”.</li>
+<li><strong>Ending HTTPS at the proxy vs passing it through.</strong> The proxy decrypts, so it can read the path and reuse backend connections. In return, the proxy holds the site’s private key, and traffic to the backends is plain text unless we encrypt it a second time.</li>
+<li><strong>No pinning vs sticky sessions.</strong> Any request can go to any backend. That keeps load even and makes a dead backend harmless. It means backends can’t keep a user’s login session in their own memory. The session goes in a shared store, or in a token the client sends each time.</li>
+<li><strong>PostgreSQL vs a key-value store with watches.</strong> Stores like etcd can tell every proxy the moment a key changes, so there is no push system to build. We chose PostgreSQL for checked links between tables and plain transactions, and built the push ourselves.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<p>For a 45-minute interview:</p>
+<ol>
+<li><strong>Ask questions and fix the scope (5 minutes).</strong> One site or many? L4, L7 or both? Build or rent?</li>
+<li><strong>Numbers (5 minutes).</strong> Requests per second at peak, traffic in and out, how many machines. Say out loud that config is read millions of times for each change.</li>
+<li><strong>API and data (6 minutes).</strong> Split data plane from control plane first. Then pools, backends and rules, and where live state is kept.</li>
+<li><strong>High-level design (10 minutes).</strong> Draw router, L4, L7, backends and the control plane. Walk one request through, then one backend removal.</li>
+<li><strong>Deep dives (14 minutes).</strong> Start with “what if the load balancer itself dies?”, because the interviewer is waiting for it. Then the balancing method and health checks.</li>
+<li><strong>Wrap up (5 minutes).</strong> What breaks first as it grows, and what you’d watch.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>How much traffic, and how spiky is it?</li>
+<li>Is it HTTP only, or any TCP traffic?</li>
+<li>Do we need routing by host and path, and HTTPS handled here?</li>
+<li>Do backends keep per-user state in memory, so the same user must reach the same server?</li>
+<li>One data centre, or several regions?</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>What is the difference between L4 and L7?</strong> L4 sees addresses and ports and forwards packets. L7 reads the HTTP request, so it can route by path, handle HTTPS and retry.</li>
+<li><strong>How would you do sticky sessions?</strong> The proxy sets a cookie that names the backend, and sends later requests with that cookie to the same one. The cost: load gets uneven, and when that backend dies its users lose their session.</li>
+<li><strong>How does the backend learn the client’s IP?</strong> The proxy adds it in the <code>X-Forwarded-For</code> header. The backend should only trust that header when the request comes from the proxy.</li>
+<li><strong>Why not just use DNS with several addresses?</strong> DNS answers are remembered for a long time, and DNS doesn’t know which servers are healthy or busy.</li>
+<li><strong>What changes for WebSockets?</strong> Connections last hours, so counting open connections matters more than counting requests. Draining must close them at the time limit.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A load balancer gives many backends one address, sends each request to a healthy one, and must be more reliable than anything behind it.</li>
+<li>The data plane carries traffic. The control plane holds the settings and pushes them out. Traffic keeps flowing when the control plane is down.</li>
+<li>Config is read millions of times for each change, so every machine keeps a full copy in memory.</li>
+<li>L4 balancers forward packets by address and port without reading them. L7 proxies read the HTTP request, so they handle HTTPS, route by host and path, and retry.</li>
+<li>To pick a backend, look at two at random and take the less busy one. It reacts to slow backends and stops many proxies from flooding the same server.</li>
+<li>Active health checks take about 6 seconds to remove a dead backend. Passive checks watch real traffic and react after a few failures. We use both.</li>
+<li>Safe requests are retried once on another backend, with a cap on total retries.</li>
+<li>Several L4 machines share one IP through the router, and all use the same consistent hash, so a connection survives when one of them dies.</li>
+<li>Backends are drained, not cut off. Config changes go to one proxy first, and are rolled back to the previous saved version if errors jump.</li>
+<li>As traffic grows, the request path scales by adding proxies. Health checks, logs and config pushes are what break first.</li>
+</ul>
