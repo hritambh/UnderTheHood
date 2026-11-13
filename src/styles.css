@@ -310,3 +310,11 @@ a.track-tile:hover,a.track-tile:focus-visible{transform:translateY(-3px);border-
 :root[data-home="list"] #home .home-head{display:none}
 :root[data-home="list"] #home .track-nav{margin-top:0}
 @media (max-width:640px){.track-tile{min-height:0}}
+
+/* ---------- A section that opened by itself while scrolling fades in ---------- */
+@keyframes sec-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+details.sec.auto-open > .sec-body{animation:sec-in .25s ease}
+@media (prefers-reduced-motion:reduce){details.sec.auto-open > .sec-body{animation:none}}
+/* Topic pages place the page themselves when a section opens above the reader,
+   so the browser's own correction is turned off to stop the two adding up. */
+body[data-page="topic"]{overflow-anchor:none}

@@ -348,7 +348,7 @@ export function build() {
       <summary>How to use this hub</summary>
       <ul>
         <li>This page shows the tracks, like Core Concepts and System Design. Click a track to see its topics. Every topic in a track follows the same fixed steps.</li>
-        <li>Open a topic and read one section at a time. Sections are folded, so you can stop and come back.</li>
+        <li>Open a topic and just scroll. Each section opens by itself as you reach it. You can still fold or unfold any section by clicking its title, and a section you fold stays folded.</li>
         <li>Mark each topic as Not started, In progress, or Completed. Your progress is saved in this browser.</li>
         <li>Inside a track, switch between grid and list view with the two buttons next to the filters. Your choice is remembered.</li>
         <li>The book button at the top turns on reading mode: a warm tint that is easier on the eyes. Use its slider to make the tint lighter or stronger.</li>

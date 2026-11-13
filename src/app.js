@@ -433,10 +433,71 @@
       finish.textContent = s === 'done' ? '✓ ' + LABEL.done : 'Mark as completed';
     });
 
+    /* Folded sections open by themselves as the reader scrolls to them.
+       A section the reader folded by hand stays folded until they open it again. */
+    var closedByHand = {};
+    var autoPausedUntil = 0;    // set while a jump to a section is still scrolling
+    var scrolled = false;
+    var lastY = window.scrollY;
+    function pauseAuto() { autoPausedUntil = Date.now() + 2000; }
+    function resumeAuto() { autoPausedUntil = 0; }
+    function autoOpen() {
+      var y = window.scrollY, dy = y - lastY;
+      lastY = y;
+      if (!dy || Date.now() < autoPausedUntil) return;
+      var d, r, n;
+      if (dy > 0) {
+        // Scrolling down. A folded section whose title is on screen, or about to come up from
+        // below, opens downwards. Nothing above it moves. Measured one at a time, in page
+        // order, because opening one pushes the next ones down and out of range.
+        for (n = 0; n < secs.length; n++) {
+          d = secs[n];
+          if (d.open || closedByHand[d.id]) continue;
+          r = d.getBoundingClientRect();
+          if (r.top >= -5 && r.top < window.innerHeight + 120) {
+            d.classList.add('auto-open');
+            d.open = true;
+          }
+        }
+      } else {
+        // Scrolling up. A folded section just above the screen, or in its upper part, opens
+        // upwards: the page is moved by the height it gained, so what the reader is looking at
+        // stays where it is and they scroll up into the end of that section, as on a page that
+        // was never folded. Bottom-most first, so only the nearest one opens.
+        for (n = secs.length - 1; n >= 0; n--) {
+          d = secs[n];
+          if (d.open || closedByHand[d.id]) continue;
+          r = d.getBoundingClientRect();
+          if (r.bottom > -150 && r.top < window.innerHeight * 0.6) {
+            d.classList.add('auto-open');
+            d.open = true;
+            window.scrollBy({ top: d.getBoundingClientRect().height - r.height, left: 0, behavior: 'instant' });
+            lastY = window.scrollY;   // that move was ours, not the reader's
+          }
+        }
+      }
+    }
+    secs.forEach(function (d) {
+      d.querySelector('summary').addEventListener('click', function () {
+        // the click toggles the section first; then we note what the reader chose
+        setTimeout(function () {
+          if (d.open) delete closedByHand[d.id]; else closedByHand[d.id] = true;
+        }, 0);
+      });
+    });
+    // any real input from the reader ends the pause straight away
+    ['wheel', 'touchmove', 'keydown'].forEach(function (type) {
+      window.addEventListener(type, resumeAuto, { passive: true });
+    });
+    window.addEventListener('scrollend', resumeAuto);
+
     all('[data-all]', article).forEach(function (b) {
       b.addEventListener('click', function () {
         var open = b.getAttribute('data-all') === 'open';
-        secs.forEach(function (d) { d.open = open; });
+        secs.forEach(function (d) {
+          d.open = open;
+          if (open) delete closedByHand[d.id]; else closedByHand[d.id] = true;
+        });
       });
     });
 
@@ -445,6 +506,8 @@
       var target = hash && document.getElementById(hash.slice(1));
       if (!target || target.tagName !== 'DETAILS') return false;
       target.open = true;
+      delete closedByHand[target.id];
+      pauseAuto();   // don't open the sections the jump passes over, or the target would move
       target.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
       return true;
     }
@@ -467,6 +530,7 @@
     var ticking = false;
     function onScroll() {
       ticking = false;
+      if (scrolled) { scrolled = false; autoOpen(); }
       var max = document.documentElement.scrollHeight - window.innerHeight;
       bar.style.width = (max > 0 ? Math.min(100, window.scrollY / max * 100) : 0) + '%';
       var current = null;
@@ -477,7 +541,7 @@
       });
     }
     function requestTick() { if (!ticking) { ticking = true; requestAnimationFrame(onScroll); } }
-    window.addEventListener('scroll', requestTick, { passive: true });
+    window.addEventListener('scroll', function () { scrolled = true; requestTick(); }, { passive: true });
     window.addEventListener('resize', requestTick);
     secs.forEach(function (d) { d.addEventListener('toggle', requestTick); });
     onScroll();
