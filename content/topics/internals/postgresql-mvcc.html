@@ -1,0 +1,293 @@
+<!--
+title: PostgreSQL MVCC
+summary: How PostgreSQL lets readers and writers work on the same row without waiting for each other. It keeps several versions of a row and shows each transaction the one it is allowed to see.
+category: PostgreSQL
+order: 10
+related: indexing-strategies, table-partitioning, sql-vs-nosql
+-->
+
+<!-- section: what -->
+<p>PostgreSQL is a relational database. Many programs talk to it at once, each inside a <strong>transaction</strong>: a group of statements that all happen or all don’t.</p>
+<p>That creates a problem. One transaction is changing a row while another is reading it. What should the reader see? The simple answer is a lock: the reader waits until the writer is done. That is safe, and slow. One long report would freeze every write to the table.</p>
+<p>PostgreSQL does something else, called <strong>MVCC</strong>: multi-version concurrency control. An update never changes a row where it sits. It writes a new copy of the row and leaves the old one in place. Each transaction is then shown the copy that was current when it looked. Nobody waits.</p>
+<p>This topic looks inside that one mechanism: how the copies are stored, how PostgreSQL decides who sees which, and who cleans up the old ones.</p>
+<p>Everything here describes <strong>PostgreSQL 14</strong>, and every command was run on it. The core design (row versions, <code>xmin</code> and <code>xmax</code>, snapshots, vacuum) is the same in later versions. Exact output text and default values can differ, so check yours.</p>
+<p class="note">One-line version: an update writes a new version of the row instead of changing the old one, and every transaction reads the versions that were committed when it took its look.</p>
+
+<!-- section: why -->
+<p>Most PostgreSQL surprises in production come back to this one design. Once you know it, these make sense:</p>
+<ul>
+<li><strong>The table keeps growing but the row count is flat.</strong> Old versions are piling up faster than they are cleaned.</li>
+<li><strong>A report shows numbers that are a few seconds old</strong>, or two queries in one transaction disagree with each other.</li>
+<li><strong>One forgotten open transaction slows the whole database down</strong> hours later.</li>
+<li><strong><code>SELECT count(*)</code> is slow</strong> on a big table, even with an index.</li>
+<li><strong>An update-heavy table gets slower with every index you add.</strong></li>
+</ul>
+<p>It also tells you which settings matter. Autovacuum, the isolation level and the idle-transaction timeout all control parts of this mechanism.</p>
+<p>And it answers a set of common interview questions: how do readers and writers avoid blocking each other, what is vacuum for, and what is the difference between Read Committed and Repeatable Read.</p>
+
+<!-- section: bigPicture -->
+<p>Six parts work together. Details come in the next section.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 275" role="img" aria-label="A table page holds an old version and a new version of one row. An index points at the old version, which points on to the new one. A reader and a writer both reach the page. The versions are checked against the commit log, changes are recorded in the WAL, and vacuum removes dead versions.">
+<defs><marker id="ah-postgresql-mvcc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="250" y="12" width="130" height="46" rx="8" class="box"/><text x="315" y="32" text-anchor="middle" class="lbl">Index on id</text><text x="315" y="48" text-anchor="middle" class="sub">id 1 is in slot 1</text>
+
+<rect x="215" y="82" width="200" height="180" rx="8" class="box faintbox"/><text x="315" y="100" text-anchor="middle" class="sub">Table page</text>
+<rect x="235" y="110" width="160" height="52" rx="8" class="box"/><text x="315" y="132" text-anchor="middle" class="lbl">Old version: 500</text><text x="315" y="149" text-anchor="middle" class="sub">xmin 100 · xmax 101</text>
+<rect x="235" y="194" width="160" height="52" rx="8" class="box hi"/><text x="315" y="216" text-anchor="middle" class="lbl">New version: 400</text><text x="315" y="233" text-anchor="middle" class="sub">xmin 101 · xmax 0</text>
+
+<rect x="15" y="110" width="140" height="52" rx="8" class="box"/><text x="85" y="132" text-anchor="middle" class="lbl">Reader</text><text x="85" y="149" text-anchor="middle" class="sub">snapshot before 101</text>
+<rect x="15" y="194" width="140" height="52" rx="8" class="box"/><text x="85" y="216" text-anchor="middle" class="lbl">Writer</text><text x="85" y="233" text-anchor="middle" class="sub">transaction 101</text>
+
+<rect x="475" y="12" width="150" height="46" rx="8" class="box"/><text x="550" y="32" text-anchor="middle" class="lbl">Vacuum</text><text x="550" y="48" text-anchor="middle" class="sub">removes dead versions</text>
+<rect x="475" y="110" width="150" height="52" rx="8" class="box"/><text x="550" y="132" text-anchor="middle" class="lbl">Commit log</text><text x="550" y="149" text-anchor="middle" class="sub">did 101 commit?</text>
+<rect x="475" y="194" width="150" height="52" rx="8" class="box"/><text x="550" y="216" text-anchor="middle" class="lbl">WAL</text><text x="550" y="233" text-anchor="middle" class="sub">every change, on disk</text>
+
+<line x1="315" y1="58" x2="315" y2="108" class="arr" marker-end="url(#ah-postgresql-mvcc)"/>
+<line x1="315" y1="162" x2="315" y2="192" class="arr" marker-end="url(#ah-postgresql-mvcc)"/>
+<line x1="155" y1="136" x2="233" y2="136" class="arr" marker-end="url(#ah-postgresql-mvcc)"/>
+<line x1="155" y1="220" x2="233" y2="220" class="arr" marker-end="url(#ah-postgresql-mvcc)"/>
+<line x1="395" y1="136" x2="473" y2="136" class="arr dim" marker-end="url(#ah-postgresql-mvcc)"/>
+<line x1="395" y1="220" x2="473" y2="220" class="arr dim" marker-end="url(#ah-postgresql-mvcc)"/>
+<line x1="490" y1="58" x2="398" y2="112" class="arr dim" marker-end="url(#ah-postgresql-mvcc)"/>
+</svg>
+</div>
+
+<ul>
+<li><strong>Transaction ID.</strong> A number PostgreSQL gives to each transaction that changes data. They go up by one: 100, 101, 102. A higher number started later.</li>
+<li><strong>Row versions, on a table page.</strong> A table is stored in 8 KB blocks called <strong>pages</strong>. One row can be on a page several times, once for each version. Every version is stamped with the transaction that created it and the one that replaced it.</li>
+<li><strong>Snapshot.</strong> A small note a transaction takes that says “these transactions were finished when I looked”. It decides which versions that transaction can see.</li>
+<li><strong>Commit log.</strong> A compact record of how every transaction ended: committed, rolled back, or still running.</li>
+<li><strong>WAL</strong> (write-ahead log). A file that records every change before the change is trusted. It is what makes a commit survive a crash.</li>
+<li><strong>Vacuum.</strong> The cleaner. It removes old versions that no one can see any more. <strong>Autovacuum</strong> is the background process that runs it for you.</li>
+</ul>
+<p>The <strong>index</strong> in the diagram is an ordinary index. It matters here because it points at row versions, and it knows nothing about who can see them.</p>
+
+<!-- section: walkthrough -->
+<p>We’ll follow one statement. The table has a row for Asha with a balance of 500. Transaction 100 created that row and committed long ago.</p>
+<pre><code>-- the writer, which will become transaction 101
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;</code></pre>
+<p>At the same time, a <strong>reader</strong> is running a report that reads the same row. The transaction numbers below are made up to keep the story simple.</p>
+
+<h4>Before the update</h4>
+<p>Every row version carries three hidden fields. You can select them like normal columns.</p>
+<ul>
+<li><code>xmin</code>: the ID of the transaction that created this version.</li>
+<li><code>xmax</code>: the ID of the transaction that deleted or replaced it. Zero means nobody has.</li>
+<li><code>ctid</code>: where this version sits, as (page, slot). When a version is replaced, its <code>ctid</code> points to the newer one.</li>
+</ul>
+<p>Asha’s row is one version in slot 1 of page 0: <code>xmin = 100</code>, <code>xmax = 0</code>, balance 500.</p>
+
+<h4>The steps</h4>
+<ol>
+<li><strong>The reader takes a snapshot.</strong> It notes: everything below 101 is finished, and 101 and above have not happened as far as I’m concerned. The reader only reads, so it never gets a transaction ID of its own.</li>
+<li><strong>The writer starts and gets ID 101.</strong> PostgreSQL hands out the ID when the transaction first changes something.</li>
+<li><strong>The writer finds the row.</strong> The <strong>index</strong> on <code>id</code> says the row is in page 0, slot 1. The writer reads that version and checks it is current: <code>xmin</code> 100 is committed and <code>xmax</code> is 0.</li>
+<li><strong>The writer stamps the old version.</strong> It sets <code>xmax = 101</code> on the version in slot 1. This also works as the row lock. Any other writer that wants this row sees an <code>xmax</code> from a running transaction and waits for 101 to finish.</li>
+<li><strong>The writer adds a new version.</strong> It writes a full copy of the row into a free slot on the same page, slot 3, with balance 400, <code>xmin = 101</code> and <code>xmax = 0</code>. The old version’s <code>ctid</code> now points to slot 3. The old version is not touched in any other way. The balance of 500 is still there.</li>
+<li><strong>The change goes into the WAL.</strong> A record describing the change is added to the <strong>WAL</strong>. The page itself is changed in memory and written to the table file some time later.</li>
+<li><strong>The index is left alone, if possible.</strong> <code>balance</code> is not in any index, and the new version fits on the same page. So PostgreSQL adds no index entry. The index still points to slot 1, and slot 1 leads to slot 3. This shortcut is called a <strong>HOT update</strong>. If an indexed column had changed, or the page were full, every index on the table would get a new entry.</li>
+<li><strong>The reader reads the row, while 101 is still running.</strong> It follows the index to slot 1. Created by 100: finished before my snapshot, good. Replaced by 101: not finished in my snapshot, so for me the replacement hasn’t happened. This version is mine. The reader returns <strong>500</strong>. It looks at slot 3 too: created by 101, not visible, skip. The reader never waited.</li>
+<li><strong>The writer commits.</strong> PostgreSQL writes a commit record to the WAL and forces it to disk. Then it marks 101 as committed in the <strong>commit log</strong>. No row is touched. That is why a commit takes about the same time whether the transaction changed one row or a million.</li>
+<li><strong>A new transaction reads the row.</strong> Slot 1: replaced by 101, and the commit log says 101 committed, so this version is dead to me. Slot 3: created by 101, committed, not replaced. It returns <strong>400</strong>.</li>
+<li><strong>The old version waits for vacuum.</strong> Slot 1 is now a <strong>dead row</strong>, but only once no running snapshot can still see it. Our reader’s snapshot can. When the reader finishes, <strong>vacuum</strong> is free to remove slot 1 and reuse the space.</li>
+</ol>
+
+<h4>What does the reader see next?</h4>
+<p>That depends on its <strong>isolation level</strong>, the setting that says how often a transaction takes a new snapshot.</p>
+<ul>
+<li><strong>Read Committed</strong>, the default: a new snapshot for every statement. The reader’s next query sees 400.</li>
+<li><strong>Repeatable Read</strong>: one snapshot for the whole transaction. The reader keeps seeing 500 until it ends.</li>
+</ul>
+
+<!-- section: storage -->
+<div class="table-wrap"><table>
+<tr><th>Name</th><th>Where it lives</th><th>What it holds</th></tr>
+<tr><td>Table file</td><td>Disk, as 8 KB pages. Recently used pages are also kept in memory.</td><td>Every version of every row, live and dead, each with its <code>xmin</code>, <code>xmax</code> and <code>ctid</code>.</td></tr>
+<tr><td>Index files</td><td>Disk</td><td>Pointers from a value to row versions. Nothing about who can see them, so a query usually has to visit the table to check.</td></tr>
+<tr><td>Commit log</td><td>Disk, in the <code>pg_xact</code> folder. Recent parts are cached in memory.</td><td>The outcome of each transaction: running, committed or rolled back.</td></tr>
+<tr><td>WAL</td><td>Disk, in the <code>pg_wal</code> folder</td><td>Every change, in order. Written before the table file is.</td></tr>
+<tr><td>Snapshot</td><td>Memory, one per statement or per transaction</td><td>Which transactions had finished at the moment it was taken.</td></tr>
+<tr><td>Hint bits</td><td>Inside each row version</td><td>A cached answer: “the transaction in <code>xmin</code> committed”. The first reader to look it up in the commit log saves it here, so later readers skip the lookup.</td></tr>
+<tr><td>Visibility map</td><td>Disk, a small file beside the table, ending in <code>_vm</code></td><td>For each page: are all rows here visible to everyone? Vacuum sets it. It lets vacuum skip clean pages, and lets some index queries skip the table.</td></tr>
+<tr><td>Free space map</td><td>Disk, a small file ending in <code>_fsm</code></td><td>How much room each page has, so new versions can go into space that vacuum freed.</td></tr>
+</table></div>
+
+<!-- section: guarantees -->
+<h4>What you can rely on</h4>
+<ul>
+<li><strong>A plain <code>SELECT</code> never waits for a writer, and never makes a writer wait.</strong> Step 8 shows why: the reader just picks another version.</li>
+<li><strong>You never see uncommitted changes.</strong> A version whose <code>xmin</code> has not committed is skipped, at every isolation level. PostgreSQL accepts <code>READ UNCOMMITTED</code> but runs it as Read Committed.</li>
+<li><strong>One statement sees one moment in time.</strong> It never sees half of another transaction’s changes.</li>
+<li><strong>Two writers never both change the same version.</strong> The second one waits at step 4. In Read Committed it then re-reads the newest version and applies its change to that. So two <code>balance = balance - 10</code> statements take off 20 in total.</li>
+<li><strong>A rolled-back transaction leaves nothing visible.</strong> Its versions stay on the page for a while, but nobody can see them.</li>
+</ul>
+
+<h4>What people wrongly rely on</h4>
+<ul>
+<li><strong>“Two queries in one transaction see the same data.”</strong> Not at the default level. Read Committed takes a new snapshot per statement. Use Repeatable Read if a report needs one fixed view.</li>
+<li><strong>“MVCC stops lost updates.”</strong> Only when the change is one statement. If your code reads the balance, does the sum itself, then writes the result, two transactions can both read 500 and both write 400. Do the sum in the <code>UPDATE</code>, or lock the row with <code>SELECT ... FOR UPDATE</code>.</li>
+<li><strong>“Repeatable Read never fails.”</strong> If a row you try to update was changed after your snapshot, PostgreSQL stops you with <code>could not serialize access due to concurrent update</code>. Your code has to retry the transaction.</li>
+<li><strong>“Nothing ever blocks.”</strong> Writers block writers on the same row. And commands that change the table’s structure, like most forms of <code>ALTER TABLE</code>, take a lock that blocks readers too.</li>
+<li><strong>“Deleted rows are gone.”</strong> A <code>DELETE</code> only sets <code>xmax</code>. The space comes back after vacuum, and only for reuse inside the same table.</li>
+</ul>
+
+<!-- section: performance -->
+<h4>Cheap</h4>
+<ul>
+<li><strong>Reading while others write.</strong> No waiting, from step 8.</li>
+<li><strong>Commit.</strong> One WAL write and one mark in the commit log, from step 9.</li>
+<li><strong>Rollback.</strong> The transaction is marked as rolled back in the commit log, and that is all. Nothing is undone, because nothing was overwritten.</li>
+</ul>
+
+<h4>Costly</h4>
+<ul>
+<li><strong>Every update writes the whole row again</strong>, even when one small column changed (step 5). Say a row is 200 bytes and the table has 5 indexes (made-up numbers). Changing one indexed column writes a new 200-byte version plus 5 new index entries.</li>
+<li><strong>Updates make the table bigger.</strong> In one run on a laptop, a table of 100,000 small rows took 3,544 kB. Updating every row once took it to 7,080 kB: each row was there twice. Extra space held by dead versions is called <strong>bloat</strong>.</li>
+<li><strong>Vacuum frees space but rarely shrinks the file.</strong> After a vacuum, that table was still 7,080 kB. The next full update reused the freed half, and the size stayed the same. Only <code>VACUUM FULL</code> took it back to 3,544 kB, and that command locks the table while it rewrites it.</li>
+<li><strong>Counting rows.</strong> There is no stored row count, because each transaction may see a different number. <code>count(*)</code> has to check rows for visibility.</li>
+<li><strong>A long-open transaction.</strong> Its snapshot keeps dead versions alive (step 11), in every table in the database. Queries on busy tables then wade through more and more dead versions.</li>
+<li><strong>The first read after a big load.</strong> Readers save hint bits as they go, so a <code>SELECT</code> can cause disk writes.</li>
+</ul>
+
+<!-- section: failure -->
+<p>Let’s crash the same <code>UPDATE</code>. The server dies after step 7 and before the commit in step 9. We ran this on a test server, and here is what happens.</p>
+<ol>
+<li><strong>At the moment of the crash</strong>, the page holds both versions: the old one with <code>xmax = 101</code>, and the new one with <code>xmin = 101</code>. Some or all of this may already be on disk.</li>
+<li><strong>The server starts again.</strong> The log says <code>database system was not properly shut down; automatic recovery in progress</code>.</li>
+<li><strong>It replays the WAL</strong> from the last safe point, so the table files match everything that was logged. This can even put back the uncommitted new version.</li>
+<li><strong>Transaction 101 has no commit record.</strong> So the commit log never says “committed”. Asking for its status returns <code>aborted</code>.</li>
+<li><strong>Readers apply the normal rules.</strong> Old version: replaced by 101, which did not commit, so the replacement never happened. It is live, and the balance is <strong>500</strong>. New version: created by 101, which did not commit. Nobody will ever see it.</li>
+<li><strong>Nothing is undone.</strong> Both versions are still on the page. The useless one is removed by a later vacuum.</li>
+</ol>
+<p><strong>What can be lost:</strong> work that was not committed. That is the correct result.</p>
+<p><strong>What can’t be lost:</strong> a transaction whose commit record reached the disk. With default settings, PostgreSQL only answers “committed” after that.</p>
+<p>One gap is left for your code. If the crash comes after the commit record is on disk but before the answer reaches your app, the change is saved and your app doesn’t know. It has to check before trying again.</p>
+
+<!-- section: settings -->
+<p>The defaults below were read from a PostgreSQL 14 server with <code>SHOW</code>. The table default for <code>fillfactor</code> is from the documentation.</p>
+<div class="table-wrap"><table>
+<tr><th>Setting</th><th>Default</th><th>What it changes</th><th>When you’d touch it</th></tr>
+<tr><td><code>default_transaction_isolation</code></td><td><code>read committed</code></td><td>How often a transaction takes a new snapshot.</td><td>Rarely for the whole server. Set Repeatable Read on the one transaction that needs a fixed view.</td></tr>
+<tr><td><code>autovacuum_vacuum_threshold</code> and <code>autovacuum_vacuum_scale_factor</code></td><td><code>50</code> and <code>0.2</code></td><td>Autovacuum cleans a table when its dead rows pass 50 + 20% of its rows.</td><td>On big, busy tables. With 100 million rows, 20% means waiting for 20 million dead rows. Lower the scale factor for that table.</td></tr>
+<tr><td><code>idle_in_transaction_session_timeout</code></td><td><code>0</code> (off)</td><td>Ends a session that sits inside an open transaction, doing nothing, for longer than this.</td><td>Turn it on for app connections. It stops a forgotten transaction from holding vacuum back.</td></tr>
+<tr><td><code>fillfactor</code> (per table)</td><td><code>100</code></td><td>How full PostgreSQL packs each page on insert.</td><td>On update-heavy tables. A value like 85 leaves room on each page, so more updates can use the HOT shortcut from step 7.</td></tr>
+<tr><td><code>autovacuum_freeze_max_age</code></td><td><code>200000000</code></td><td>How old a table’s oldest transaction IDs may get before autovacuum is forced to run on it.</td><td>Almost never. Know that it exists. See below.</td></tr>
+</table></div>
+<pre><code>-- per-table settings, both checked on PostgreSQL 14
+ALTER TABLE accounts SET (autovacuum_vacuum_scale_factor = 0.02);
+ALTER TABLE accounts SET (fillfactor = 85);</code></pre>
+
+<h4>Why the last setting exists</h4>
+<p>A transaction ID is a 32-bit number, so there are about 4 billion of them, and the counter goes round in a circle. PostgreSQL treats about 2 billion as “the past” and the rest as “the future”. A very old row would one day look like it came from the future, and vanish.</p>
+<p>To stop that, vacuum <strong>freezes</strong> old rows. It marks them as “visible to everyone, always”, so their <code>xmin</code> no longer matters. When a table’s oldest IDs pass the age in this setting, autovacuum runs on it for this reason, even if autovacuum is turned off. If freezing still can’t keep up, PostgreSQL in the end refuses new writes until the table is vacuumed. This is called <strong>transaction ID wraparound</strong>. Vacuum is not optional.</p>
+
+<!-- section: tryIt -->
+<p>You need a PostgreSQL you can play with. Your transaction IDs will be different numbers from the ones here.</p>
+
+<h4>1. Watch an update create a new version</h4>
+<pre><code>-- see the hidden fields before and after an update
+CREATE TABLE accounts (
+  id       INT  PRIMARY KEY,
+  owner    TEXT NOT NULL,
+  balance  INT  NOT NULL
+);
+INSERT INTO accounts VALUES (1, 'Asha', 500), (2, 'Ravi', 300);
+
+SELECT xmin, xmax, ctid, * FROM accounts;
+ xmin | xmax | ctid  | id | owner | balance
+------+------+-------+----+-------+---------
+ 2945 |    0 | (0,1) |  1 | Asha  |     500
+ 2945 |    0 | (0,2) |  2 | Ravi  |     300
+
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+
+SELECT xmin, xmax, ctid, * FROM accounts;
+ xmin | xmax | ctid  | id | owner | balance
+------+------+-------+----+-------+---------
+ 2945 |    0 | (0,2) |  2 | Ravi  |     300
+ 2946 |    0 | (0,3) |  1 | Asha  |     400</code></pre>
+<p><strong>What to look for:</strong> Asha’s row moved from slot 1 to slot 3 and got a new <code>xmin</code>. Ravi’s row didn’t change.</p>
+
+<h4>2. Find the old version still on the page</h4>
+<p>This uses <code>pageinspect</code>, one of PostgreSQL’s own add-on extensions. It needs a superuser, and on some systems the separate “contrib” package. The other parts work on a default install.</p>
+<pre><code>-- list every row version stored in page 0
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+
+SELECT lp, t_xmin, t_xmax, t_ctid
+FROM heap_page_items(get_raw_page('accounts', 0));
+ lp | t_xmin | t_xmax | t_ctid
+----+--------+--------+--------
+  1 |   2945 |   2946 | (0,3)
+  2 |   2945 |      0 | (0,2)
+  3 |   2946 |      0 | (0,3)</code></pre>
+<p><strong>What to look for:</strong> slot 1 is still there. Its <code>t_xmax</code> is the updating transaction, and its <code>t_ctid</code> points to slot 3. That is steps 4 and 5.</p>
+
+<h4>3. Two sessions, two answers</h4>
+<p>Open two terminals, A and B.</p>
+<pre><code>-- A: take one snapshot for the whole transaction
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT balance FROM accounts WHERE id = 1;    -- 400
+
+-- B: change the row and commit
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+SELECT balance FROM accounts WHERE id = 1;    -- 300
+
+-- A: same query, same transaction
+SELECT balance FROM accounts WHERE id = 1;    -- 400
+
+-- B: try to clean up while A is still open
+VACUUM (VERBOSE) accounts;
+INFO:  table "accounts": found 1 removable, 3 nonremovable
+       row versions in 1 out of 1 pages
+DETAIL:  1 dead row versions cannot be removed yet,
+         oldest xmin: 2947
+
+-- A: finish
+COMMIT;
+SELECT balance FROM accounts WHERE id = 1;    -- 300
+
+-- B: try again
+VACUUM (VERBOSE) accounts;
+DETAIL:  0 dead row versions cannot be removed yet,
+         oldest xmin: 2948</code></pre>
+<p>The vacuum output is shortened and wrapped to fit.</p>
+<p><strong>What to look for:</strong> A and B get different answers at the same moment, and neither waits. Then <code>1 dead row versions cannot be removed yet</code>: that is the version A still needs. Once A commits, vacuum can take it.</p>
+
+<h4>4. Find who is holding vacuum back</h4>
+<pre><code>-- sessions holding a snapshot, oldest first
+SELECT pid, state, backend_xmin, now() - xact_start AS open_for
+FROM pg_stat_activity
+WHERE backend_xmin IS NOT NULL
+ORDER BY xact_start;</code></pre>
+<p><strong>What to look for:</strong> a row with state <code>idle in transaction</code> and a large <code>open_for</code>. That session opened a transaction and went quiet. Run it while terminal A from part 3 is open and you’ll see A in the list.</p>
+<p>To watch dead rows build up on a table, read <code>n_dead_tup</code> from <code>pg_stat_user_tables</code>. It is an estimate, and it updates with a short delay.</p>
+
+<!-- section: myths -->
+<ul>
+<li><strong>“An update changes the row in place.”</strong> It writes a new version and marks the old one as replaced. Part 1 of “See it yourself” shows the row moving to a new slot.</li>
+<li><strong>“A <code>SELECT</code> only reads.”</strong> The first reader to check a new row saves a hint bit on it. We watched a plain <code>SELECT</code> change a row’s flags on the page.</li>
+<li><strong>“A big rollback is slow, because the work has to be undone.”</strong> Nothing is undone. The transaction is marked as rolled back, and its versions become invisible. The cost comes later, as extra work for vacuum.</li>
+<li><strong>“Vacuum gives disk space back.”</strong> It frees space inside the table for reuse. The file usually stays the same size. Only a full rewrite, like <code>VACUUM FULL</code>, shrinks it.</li>
+<li><strong>“A long read-only query is harmless.”</strong> Its snapshot stops vacuum from removing dead versions across the database for as long as it runs.</li>
+<li><strong>“An index entry means the row exists.”</strong> Indexes point at dead versions too. PostgreSQL checks the table to be sure, unless the visibility map says the whole page is safe.</li>
+<li><strong>“MVCC means no locks.”</strong> It means readers need no locks. Writers still lock the rows they change.</li>
+<li><strong>“Every database does it this way.”</strong> MySQL’s InnoDB also has MVCC, but it changes the row in place and keeps the old versions in a separate undo log. Old versions there don’t bloat the table, and a long rollback has real work to do.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>MVCC means an update writes a new version of a row and leaves the old one where it is. Readers and writers don’t wait for each other.</li>
+<li>Each version carries <code>xmin</code> (who created it), <code>xmax</code> (who replaced it) and <code>ctid</code> (where it is, or where the newer version is).</li>
+<li>A snapshot records which transactions were finished. A version is visible if its creator had committed by then and its replacer had not.</li>
+<li>Read Committed takes a new snapshot for every statement. Repeatable Read keeps one for the whole transaction.</li>
+<li>A commit only writes to the WAL and marks the transaction in the commit log. No rows are touched, so commit and rollback are both cheap.</li>
+<li>After a crash, a transaction with no commit record counts as rolled back. Its versions are ignored, and nothing has to be undone.</li>
+<li>Replaced versions become dead rows. Vacuum removes them and frees the space for reuse, but usually doesn’t shrink the file.</li>
+<li>Vacuum can’t remove a version that any open snapshot might still need. One long or forgotten transaction causes bloat across the database.</li>
+<li>If no indexed column changes and the page has room, a HOT update skips the indexes. Otherwise every index gets a new entry.</li>
+<li>Transaction IDs are 32-bit and wrap around, so vacuum must freeze old rows. That is why vacuum is never optional.</li>
+</ul>
