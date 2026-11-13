@@ -12,6 +12,7 @@ A plain static website of engineering topics, grouped into tracks. It started as
 - `src/styles.css`, `src/app.js` — look and behaviour of the site.
 - `scripts/build.mjs` — content → `site/` (home page + one page per topic). No dependencies. It stops with a list of problems if a topic file breaks its track's format, and prints `Note:` lines for style problems.
 - `site/` — the generated website. Don't edit by hand; it is rewritten on every build.
+- Global search — the search box in the top bar of every page suggests topics and section matches as you type. It reads `site/assets/search-index.js`, which the build generates. The home page loads that file up front; other pages load it the first time the search is used.
 - Reading mode — the book button in the top bar puts a warm tint over every page, with a slider for its strength. Saved in the reader's browser (`sd-hub-reading`, `sd-hub-reading-intensity`).
 - `.claude/skills/add-topic` — the steps for writing a new topic in any track. Use it for every new topic.
 - `.claude/skills/review-topic` — the checks for a new or edited topic.

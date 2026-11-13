@@ -34,6 +34,7 @@ const esc = s => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 const plain = html => String(html)
+  .replace(/<\/?(strong|em|code|b|i|span|sup|sub)\b[^>]*>/gi, '')
   .replace(/<[^>]+>/g, ' ')
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
   .replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
@@ -64,7 +65,7 @@ function page({ root, title, description, bodyAttrs, body, scripts, v }) {
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600;7..72,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="${root}assets/styles.css?v=${v}">
 </head>
-<body ${bodyAttrs}>
+<body ${bodyAttrs} data-root="${root}" data-v="${v}">
 ${body}
 ${scripts.map(s => `<script src="${root}assets/${s}?v=${v}"></script>`).join('\n')}
 </body>
@@ -76,6 +77,11 @@ function topbar(root, hubTitle) {
   return `<header class="topbar">
   <div class="topbar-in">
     <a class="brand" href="${root}index.html"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text">${esc(hubTitle)}</span></a>
+    <div class="gsearch" role="search">
+      <span class="gsearch-field"><svg class="gsearch-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="6.500" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.500 4.500" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input id="gsearch" type="search" placeholder="Search all topics" autocomplete="off" spellcheck="false" role="combobox" aria-label="Search all topics" aria-expanded="false" aria-controls="gsearchList" aria-autocomplete="list"></span>
+      <ul class="gsearch-list" id="gsearchList" role="listbox" aria-label="Suggestions" hidden></ul>
+    </div>
     <a class="top-link top-home" href="${root}index.html">All topics</a>
     <div class="reading">
       <button class="theme-btn" id="readBtn" type="button" aria-label="Reading mode" title="Reading mode" aria-expanded="false" aria-controls="readPanel">${BOOK_ICON}</button>
@@ -266,7 +272,10 @@ export function build() {
   const index = topics.map(t => ({
     id: t.id,
     title: t.title,
-    sections: t.secs.map(s => ({ key: s.key, label: s.label, text: plain(s.html).toLowerCase() })),
+    track: t.track.title,
+    category: t.category,
+    summary: t.summary,
+    sections: t.secs.map(s => ({ key: s.key, label: s.label, text: plain(s.html) })),
   }));
   const indexJs = 'window.HUB_INDEX = ' + JSON.stringify(index) + ';\n';
   fs.writeFileSync(path.join(SITE, 'assets', 'styles.css'), css);
@@ -325,7 +334,8 @@ export function build() {
         <li>Mark each topic as Not started, In progress, or Completed. Your progress is saved in this browser.</li>
         <li>Switch between grid and list view with the two buttons next to the filters. Your choice is remembered.</li>
         <li>The book button at the top turns on reading mode: a warm tint that is easier on the eyes. Use its slider to make the tint lighter or stronger.</li>
-        <li>Search looks inside the topics too, and shows which sections mention your word. Press <kbd>/</kbd> to jump to search.</li>
+        <li>The search box at the top works on every page. It suggests topics as you type, and it looks inside the topics too. Press <kbd>/</kbd> to jump to it, then use the arrow keys and Enter.</li>
+        <li>The filter box on this page narrows the list below, and shows which sections mention your word.</li>
         <li>Every topic ends with a quick revision: a short summary of what you learnt.</li>
       </ul>
     </details>
@@ -337,7 +347,7 @@ ${topics.length ? `
   </div>
 
   <div class="controls">
-    <input class="search" id="search" type="search" placeholder="Search topics and their content" aria-label="Search topics" autocomplete="off">
+    <input class="search" id="search" type="search" placeholder="Filter the topics below" aria-label="Filter the topics on this page" autocomplete="off">
     <div class="filters" role="group" aria-label="Filter by status">
       <button class="chip" type="button" data-filter="all" aria-pressed="true">All</button>
       <button class="chip" type="button" data-filter="not" aria-pressed="false">Not started</button>

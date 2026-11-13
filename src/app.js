@@ -22,6 +22,18 @@
   function $(id) { return document.getElementById(id); }
   function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
 
+  /* the search index keeps the original text; lower-case copies are made once, for matching */
+  var indexReady = false;
+  function prepIndex() {
+    if (indexReady || !window.HUB_INDEX) return;
+    indexReady = true;
+    window.HUB_INDEX.forEach(function (t) {
+      t._title = t.title.toLowerCase();
+      t._meta = ((t.track || '') + ' ' + (t.category || '') + ' ' + (t.summary || '')).toLowerCase();
+      t.sections.forEach(function (s) { s._text = s.text.toLowerCase(); });
+    });
+  }
+
   var progress = load(LS_PROGRESS, {}) || {};
   function statusOf(id) { return progress[id] || 'not'; }
   function setStatus(id, s) { progress[id] = s; save(LS_PROGRESS, progress); paint(); }
@@ -83,6 +95,156 @@
     });
   })();
 
+  /* ---------- global search with suggestions (every page) ---------- */
+  var gInput = $('gsearch');
+  if (gInput) (function () {
+    var list = $('gsearchList');
+    var root = document.body.getAttribute('data-root') || '';
+    var rows = [], active = -1, loading = false;
+
+    // the index is big, so pages other than home only load it when the search is used
+    function withIndex(cb) {
+      if (window.HUB_INDEX) { prepIndex(); return cb(); }
+      if (loading) return;
+      loading = true;
+      var s = document.createElement('script');
+      s.src = root + 'assets/search-index.js?v=' + (document.body.getAttribute('data-v') || '');
+      s.onload = function () { prepIndex(); cb(); };
+      s.onerror = function () { loading = false; };
+      document.head.appendChild(s);
+    }
+
+    function find(q) {
+      var topics = [], inside = [];
+      window.HUB_INDEX.forEach(function (t) {
+        var i = t._title.indexOf(q), score = -1;
+        if (i === 0) score = 100;                                          // title starts with it
+        else if (i > 0 && /[^a-z0-9]/.test(t._title.charAt(i - 1))) score = 80;  // a word in the title starts with it
+        else if (i > 0) score = 60;
+        else if (t._meta.indexOf(q) >= 0) score = 40;                      // track, category or summary
+        if (score >= 0) topics.push({ score: score, t: t });
+        // how often the word appears decides which topics come first
+        var count = 0, hits = [];
+        t.sections.forEach(function (s) {
+          var at = s._text.indexOf(q);
+          if (at < 0) return;
+          count += s._text.split(q).length - 1;
+          if (hits.length < 2) hits.push({ t: t, s: s, at: at });
+        });
+        if (hits.length) inside.push({ count: count, hits: hits });
+      });
+      topics.sort(function (a, b) { return b.score - a.score; });
+      inside.sort(function (a, b) { return b.count - a.count; });
+      var first = inside.map(function (x) { return x.hits[0]; });
+      var second = inside.filter(function (x) { return x.hits[1]; }).map(function (x) { return x.hits[1]; });
+      return topics.slice(0, 5).concat(first, second).slice(0, 8);
+    }
+
+    // text with the matching part wrapped in <mark>
+    function marked(text, q) {
+      var frag = document.createDocumentFragment();
+      var at = text.toLowerCase().indexOf(q);
+      if (at < 0) { frag.append(text); return frag; }
+      var m = document.createElement('mark');
+      m.textContent = text.slice(at, at + q.length);
+      frag.append(text.slice(0, at), m, text.slice(at + q.length));
+      return frag;
+    }
+    function snippet(text, at, q) {
+      var start = Math.max(0, at - 45), end = Math.min(text.length, at + q.length + 75);
+      var s = text.slice(start, end);
+      if (start > 0) s = '…' + s.slice(s.indexOf(' ') + 1);
+      if (end < text.length) s = s.slice(0, s.lastIndexOf(' ')) + '…';
+      return s;
+    }
+
+    function open(show) {
+      list.hidden = !show;
+      gInput.setAttribute('aria-expanded', String(show));
+      if (!show) { active = -1; gInput.removeAttribute('aria-activedescendant'); }
+    }
+    function setActive(n) {
+      if (!rows.length) return;
+      active = (n + rows.length) % rows.length;
+      rows.forEach(function (a, i) {
+        a.parentNode.classList.toggle('active', i === active);
+        a.parentNode.setAttribute('aria-selected', String(i === active));
+      });
+      gInput.setAttribute('aria-activedescendant', rows[active].parentNode.id);
+      rows[active].parentNode.scrollIntoView({ block: 'nearest' });
+    }
+    function render() {
+      var q = gInput.value.trim().toLowerCase();
+      list.textContent = '';
+      rows = [];
+      active = -1;
+      if (q.length < 2) return open(false);
+      var res = find(q);
+      if (!res.length) {
+        var none = document.createElement('li');
+        none.className = 'gs-empty';
+        none.textContent = 'No topics match “' + gInput.value.trim() + '”.';
+        list.appendChild(none);
+      }
+      res.forEach(function (r, n) {
+        var li = document.createElement('li');
+        li.id = 'gs-' + n;
+        li.setAttribute('role', 'option');
+        li.setAttribute('aria-selected', 'false');
+        var a = document.createElement('a');
+        a.tabIndex = -1;
+        a.href = root + 'topics/' + r.t.id + '.html' + (r.s ? '#s-' + r.s.key : '');
+        var title = document.createElement('span');
+        title.className = 'gs-title';
+        title.appendChild(marked(r.t.title, q));
+        var sub = document.createElement('span');
+        sub.className = 'gs-sub';
+        sub.textContent = r.s ? 'In: ' + r.s.label : [r.t.track, r.t.category].filter(Boolean).join(' · ');
+        a.appendChild(title);
+        a.appendChild(sub);
+        if (r.s) {
+          var snip = document.createElement('span');
+          snip.className = 'gs-snip';
+          snip.appendChild(marked(snippet(r.s.text, r.at, q), q));
+          a.appendChild(snip);
+        }
+        a.addEventListener('click', function () { open(false); gInput.blur(); });
+        li.appendChild(a);
+        list.appendChild(li);
+        rows.push(a);
+      });
+      open(true);
+    }
+    function update() {
+      if (gInput.value.trim().length < 2) return open(false);
+      withIndex(render);
+    }
+
+    gInput.addEventListener('input', update);
+    gInput.addEventListener('focus', update);
+    gInput.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (list.hidden) update(); else setActive(active + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (!list.hidden) setActive(active - 1); }
+      else if (e.key === 'Enter') {
+        var go = rows[active >= 0 ? active : 0];
+        if (go && !list.hidden) { e.preventDefault(); go.click(); }
+      }
+      else if (e.key === 'Escape') {
+        if (!list.hidden) open(false);
+        else { gInput.value = ''; gInput.blur(); }
+      }
+    });
+    document.addEventListener('click', function (e) {
+      if (!list.hidden && !e.target.closest('.gsearch')) open(false);
+    });
+    document.addEventListener('keydown', function (e) {
+      var typing = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName || '');
+      var slash = e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey;
+      var cmdK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k';
+      if (slash || cmdK) { e.preventDefault(); gInput.focus(); gInput.select(); }
+    });
+  })();
+
   /* ---------- things that depend on progress ---------- */
   var painters = [];
   function paint() {
@@ -102,6 +264,7 @@
     var search = $('search');
     var filter = 'all';
     var index = {};
+    prepIndex();
     (window.HUB_INDEX || []).forEach(function (t) { index[t.id] = t; });
 
     var last = load(LS_LAST, null);
@@ -133,7 +296,7 @@
         hitsEl.hidden = true; hitsEl.textContent = '';
         var ok = filter === 'all' || statusOf(id) === filter;
         if (ok && q) {
-          var hits = ((index[id] || {}).sections || []).filter(function (s) { return s.text.indexOf(q) >= 0; });
+          var hits = ((index[id] || {}).sections || []).filter(function (s) { return s._text.indexOf(q) >= 0; });
           ok = c.getAttribute('data-text').indexOf(q) >= 0 || hits.length > 0;
           if (hits.length) {
             hitsEl.append('Found in:');
@@ -200,8 +363,6 @@
         sel.addEventListener('change', function () { setStatus(c.getAttribute('data-id'), sel.value); });
       });
       document.addEventListener('keydown', function (e) {
-        var typing = /^(INPUT|SELECT|TEXTAREA)$/.test((e.target.tagName || ''));
-        if (e.key === '/' && !typing) { e.preventDefault(); search.focus(); search.select(); }
         if (e.key === 'Escape' && e.target === search) { search.value = ''; paint(); }
       });
     }
