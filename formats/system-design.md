@@ -19,6 +19,17 @@ Title it as the thing being built: "URL Shortener", "Chat App". Don't start the 
 
 When a design uses an idea that has its own topic, explain it in one or two sentences and add that topic to `related`. Don't re-teach it.
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one architecture diagram in `highLevel`, one more in `deepDives` or `data`.
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: deep dives down to two. Cut the API down to the four or five endpoints that matter.
+
 ## The 12 sections
 
 | # | Key | Title on the page | What to write |
@@ -39,10 +50,11 @@ When a design uses an idea that has its own topic, explain it in one or two sent
 ## Must have
 
 - Numbers in `estimates` that are used again in `scaling`. The maths has to connect.
-- One architecture diagram in `highLevel`.
+- Two diagrams: the architecture in `highLevel`, and one more in `deepDives` or `data`.
 - An endpoint table in `api`, and a failure table in `failures`.
 - A stated database choice with the reason, in `data`.
 - A "Not doing" list in `requirements`. A design with no limits is not a design.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

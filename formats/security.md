@@ -27,6 +27,17 @@ Two kinds of topic, same format:
 - Every vulnerable example must be followed by the fixed version.
 - Don't invent security advice. If you are not sure a defence works, check a trusted source such as OWASP, or leave it out.
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one in `attack` showing the attacker's path, one more in `defence` showing where the fix sits.
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: extra payload variations. One attack, one fix, then the layers.
+
 ## The 12 sections
 
 | # | Key | Title on the page | What to write |
@@ -46,11 +57,12 @@ Two kinds of topic, same format:
 
 ## Must have
 
-- One diagram in `attack`.
+- Two diagrams: the attacker's path in `attack`, and where the fix sits in `defence`.
 - Vulnerable code in `vulnerable` and the fixed version in `defence`, clearly paired.
 - At least two extra layers in `layers`.
 - A list of wrong fixes in `mistakes`.
 - No real targets and no attack tooling, as described above.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

@@ -17,6 +17,17 @@ The test: can you say "use the X pattern here" and another developer knows what 
 - A choice between patterns ("saga vs 2PC"). That is `decisions`.
 - An attack and its defence. That is `security`.
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one in `problem` showing how it breaks without the pattern, one in `how` showing it working.
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: variants down to the two people actually use.
+
 ## The 12 sections
 
 | # | Key | Title on the page | What to write |
@@ -37,9 +48,10 @@ The test: can you say "use the X pattern here" and another developer knows what 
 ## Must have
 
 - A concrete failure in `problem`, before the pattern is explained.
-- One diagram in `how`.
+- Two diagrams: how it breaks in `problem`, and how it works in `how`.
 - Before and after code in `code`.
 - A "Skip it when" part in `whenToUse`.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

@@ -21,6 +21,17 @@ Examples: indexes, transactions and isolation levels, locks, query plans, schema
 - Every claim about behaviour must be true for that database. Isolation levels, locks and defaults differ between PostgreSQL and MySQL. Say which one you mean.
 - SQL must be real and runnable. Create the table before you query it.
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one in `internals` showing what the database does, one more in `example` or `numbers` (rows, pages, or what the index looks like).
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: extra `EXPLAIN` output, and settings that don't change the behaviour you just explained.
+
 ## The 12 sections
 
 | # | Key | Title on the page | What to write |
@@ -42,9 +53,10 @@ Examples: indexes, transactions and isolation levels, locks, query plans, schema
 
 - The database named in `what`.
 - Runnable SQL in `example`, starting from `CREATE TABLE`.
-- One diagram in `internals`.
+- Two diagrams: one in `internals`, and one more in `example` or `numbers`.
 - A comparison table at the end of `types`.
 - Real commands in `commands`, with a note on how to read their output.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

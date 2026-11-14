@@ -7,85 +7,74 @@ related: saga-pattern
 -->
 
 <!-- section: what -->
-<p><strong>Sharding</strong> means splitting the rows of a table across several database servers. Each server holds only part of the data. Each part is called a <strong>shard</strong>.</p>
-<p>All shards have the <em>same tables and columns</em>. They just hold different rows. For example, users 1 to 1 million on shard A, users 1 million to 2 million on shard B.</p>
-<p>The column used to decide which shard a row goes to is called the <strong>shard key</strong> (for example <code>user_id</code> or <code>tenant_id</code>).</p>
-<div class="note"><strong>Quick background</strong>, since sharding builds on these ideas:
+<p><strong>Sharding</strong> means splitting the rows of a table across several database servers. Each server holds only part of the data, and each part is a <strong>shard</strong>.</p>
+<p>Every shard has the <em>same tables and columns</em>. They just hold different rows: users 1 to 1 million on shard A, 1 to 2 million on shard B. The column that decides where a row goes is the <strong>shard key</strong>, usually something like <code>user_id</code> or <code>tenant_id</code>.</p>
+<div class="note">Three words that get mixed up:
 <ul style="margin:6px 0 0">
-<li><strong>Vertical scaling</strong>: give the one database server more CPU, RAM, and faster disks. Simple, but there is a ceiling and it gets expensive.</li>
-<li><strong>Replication</strong>: keep <em>copies</em> of the same data on several servers. Usually one <strong>primary</strong> takes writes, and <strong>replicas</strong> serve reads. Every server still holds all the data.</li>
-<li><strong>Partitioning</strong>: splitting a table into pieces. If the pieces stay on one server (like PostgreSQL’s built-in table partitioning), that is partitioning but not sharding. Sharding is partitioning <em>across servers</em>.</li>
+<li><strong>Vertical scaling</strong>: one bigger server. Simple, with a ceiling.</li>
+<li><strong>Replication</strong>: copies of the same data. One primary takes writes, replicas serve reads. Every server still holds everything.</li>
+<li><strong>Sharding</strong>: different data on each server. Partitioning across machines.</li>
 </ul></div>
-<p>So: replication = same data, many copies. Sharding = different data, many pieces. Real systems often use both: each shard has its own replicas.</p>
+<p>One-line version: replication = same data, many copies. Sharding = different data, many pieces. Big systems use both, since each shard gets its own replicas.</p>
 
 <!-- section: why -->
-<p>A single database server has limits:</p>
+<p>One database server runs into three walls:</p>
 <ul>
-<li><strong>Writes.</strong> Read replicas help with reads, but every write still goes to the one primary. If writes grow beyond what one machine can handle, replicas don’t help.</li>
-<li><strong>Storage.</strong> The data might grow larger than one machine can store comfortably. Large tables also make backups, restores, index builds, and schema changes slow.</li>
-<li><strong>Working set.</strong> Databases are fast when the frequently used data and indexes fit in memory. When they no longer fit, more queries hit disk and slow down.</li>
+<li><strong>Writes.</strong> Read replicas don’t help. Every write still lands on the single primary.</li>
+<li><strong>Storage.</strong> Huge tables make backups, restores, index builds and schema changes painfully slow.</li>
+<li><strong>Working set.</strong> Databases are fast while the hot data and indexes fit in memory. Once they don’t, queries start hitting disk.</li>
 </ul>
-<p>Sharding solves these by dividing the work. With 4 shards, each server stores roughly a quarter of the data and takes roughly a quarter of the writes, <em>if</em> the shard key spreads the load evenly.</p>
-<p>Without it, once you hit the ceiling of the biggest machine you can buy, the only options left are to delete or archive data, or to slow down growth.</p>
+<p>Sharding divides all three. With 4 shards each server holds about a quarter of the data and takes about a quarter of the writes — <em>if</em> the shard key spreads load evenly, which is the whole difficulty.</p>
+<p>So the real question is: which column can you put nearly every query behind?</p>
 
 <!-- section: realWorld -->
-<p>Think of a city library that has grown too big for one building.</p>
-<p><strong>Replication</strong> is building three identical libraries with the same books. More people can read at once, but every new book must be added to all three buildings. And each building still needs room for every book.</p>
-<p><strong>Sharding</strong> is splitting the collection: authors A–H in the north branch, I–P in the central branch, Q–Z in the south branch. Each branch holds fewer books, and new books only go to one branch.</p>
-<p>The trade-offs show up immediately:</p>
+<p>A city library that outgrew its building.</p>
 <ul>
-<li>To find a book, you need to know the rule (“authors starting with M are central”). That rule is the <strong>shard key</strong>.</li>
-<li>A question like “list every book published in 2020” means visiting all three branches. That is a <strong>cross-shard query</strong>.</li>
-<li>If authors starting with S are hugely popular, the south branch gets crowded while others are quiet. That is a <strong>hot shard</strong>.</li>
-<li>Opening a fourth branch means moving books around. That is <strong>resharding</strong>.</li>
+<li><strong>Replication</strong> is three identical libraries. More people can read at once, but every new book goes into all three, and each building still needs room for everything.</li>
+<li><strong>Sharding</strong> is splitting the collection: authors A–H north, I–P central, Q–Z south. Each branch holds less, and a new book goes to one branch.</li>
+<li>To find a book you must know the rule (“M is central”). That rule is the <strong>shard key</strong>.</li>
+<li>“List every book published in 2020” means visiting all three branches: a <strong>cross-shard query</strong>.</li>
+<li>If S authors are wildly popular, the south branch is packed while the others are quiet: a <strong>hot shard</strong>.</li>
+<li>Opening a fourth branch means moving books around: <strong>resharding</strong>, the operation everyone dreads.</li>
 </ul>
 
 <!-- section: software -->
-<p>Say you run a multi-tenant SaaS product on PostgreSQL. Each customer company is a <strong>tenant</strong>. Almost every query is about one tenant: “show this tenant’s invoices”.</p>
-<p>That makes <code>tenant_id</code> a natural shard key: all data for one tenant lives on one shard, so most queries touch only one database.</p>
-<p>A simple version uses a <strong>lookup table</strong> that says which shard each tenant lives on:</p>
+<p>A multi-tenant SaaS on PostgreSQL. Each customer company is a <strong>tenant</strong>, and almost every query is about one tenant, so <code>tenant_id</code> is the natural shard key.</p>
 <pre><code>// shard-router.ts
-import { Pool } from 'pg';
-
 const shards: Record&lt;string, Pool&gt; = {
   shard_1: new Pool({ connectionString: process.env.SHARD_1_URL }),
   shard_2: new Pool({ connectionString: process.env.SHARD_2_URL }),
 };
 
-// tenant -&gt; shard mapping, stored in a small "directory" database,
-// cached in memory or Redis because it is read on every request
+// tenant -&gt; shard, kept in a small directory database and cached,
+// because this runs on every single request
 async function shardFor(tenantId: string): Promise&lt;Pool&gt; {
-  const name = await directory.getShardName(tenantId); // e.g. "shard_2"
-  return shards[name];
+  return shards[await directory.getShardName(tenantId)];
 }
 
 export async function getInvoices(tenantId: string) {
   const db = await shardFor(tenantId);
   const res = await db.query(
     'SELECT * FROM invoices WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 50',
-    [tenantId]
-  );
+    [tenantId]);
   return res.rows;
 }</code></pre>
-<p>Notice what is now harder:</p>
+<p>What just got harder:</p>
 <ul>
-<li>“Total revenue across all tenants” must query every shard and add up the results in your app.</li>
-<li>You can’t rely on one <code>SERIAL</code> sequence for IDs across shards, because each shard has its own. Use UUIDs (UUIDv7 sorts by time), or another globally unique scheme.</li>
-<li>A transaction that changes data on two shards is no longer a normal single-database transaction. (The Saga Pattern and 2PC topic covers how to handle this.)</li>
+<li>“Total revenue across all tenants” has to query every shard and add up in your app.</li>
+<li><code>SERIAL</code> ids break, because each shard counts on its own. Use UUIDs (UUIDv7 sorts by time) or another global scheme.</li>
+<li>A transaction touching two shards is no longer one database transaction. That is what sagas and two-phase commit are for.</li>
 </ul>
-<p class="note">Tools: you don’t always write this routing yourself. For PostgreSQL, the <strong>Citus</strong> extension shards tables across nodes. For MySQL, <strong>Vitess</strong> does it. MongoDB and Cassandra shard built-in. Many teams still route in the app for full control.</p>
+<p class="note">You don’t always write the routing yourself. <strong>Citus</strong> shards PostgreSQL, <strong>Vitess</strong> shards MySQL, and MongoDB and Cassandra shard built-in. Plenty of teams still route in the app, for control.</p>
 
 <!-- section: internals -->
-<p>Flow of one request in an app-level sharded system:</p>
 <ol>
-<li>The user sends <code>GET /invoices</code> with their auth token.</li>
-<li>The API server reads the shard key from the request (here, <code>tenant_id</code> from the token).</li>
-<li>The <strong>router</strong> works out which shard holds that key: by a formula (hash or range) or by looking it up in the directory.</li>
-<li>The server sends the query to that one shard only.</li>
-<li>The shard runs the query on its smaller dataset and returns rows.</li>
-<li>The server returns the result to the user.</li>
+<li>The request arrives with the shard key in it — here <code>tenant_id</code>, read from the auth token.</li>
+<li>The <strong>router</strong> works out which shard owns that key, by formula (hash or range) or by looking it up in a directory.</li>
+<li>The query goes to that one shard, which runs it against its smaller dataset.</li>
+<li>The server returns the rows.</li>
 </ol>
-<p>For a query <em>without</em> the shard key (“find invoice by invoice number” when you don’t know the tenant), the router must send it to <em>all</em> shards and merge the results. This is called <strong>scatter-gather</strong>. It is slower and gets worse as you add shards.</p>
+<p>A query <em>without</em> the shard key — “find invoice 8812” when you don’t know the tenant — has to go to every shard and merge the answers. That is <strong>scatter-gather</strong>, and it gets worse with every shard you add.</p>
 
 <div class="diagram">
 <svg viewBox="0 0 640 290" role="img" aria-label="Request routed through a shard router to one of three shards">
@@ -104,31 +93,22 @@ export async function getInvoices(tenantId: string) {
 <text x="330" y="132" class="sub">tenant B → shard 2</text>
 </svg>
 </div>
-<p>Each shard is usually a full database setup on its own: one primary plus replicas, its own backups, and its own monitoring.</p>
+<p>Each shard is a full database setup of its own: a primary, replicas, backups, monitoring.</p>
 
 <!-- section: types -->
-<h4>1. Range-based sharding</h4>
-<p><strong>What:</strong> each shard owns a range of key values. IDs 1–1M on shard 1, 1M–2M on shard 2. Or dates: 2024 on one shard, 2025 on another.</p>
-<p><strong>Good:</strong> range queries (“orders from March”) touch few shards. Easy to understand.</p>
-<p><strong>Bad:</strong> new data often goes to the newest range, so one shard takes all the writes (a hot shard). Uneven data needs ranges to be split later.</p>
+<div class="table-wrap"><table>
+<tr><th></th><th>Range</th><th>Hash</th><th>Directory</th><th>Geographic</th></tr>
+<tr><td>How</td><td>A value range each</td><td><code>hash(key)</code> picks</td><td>Lookup table</td><td>One per region</td></tr>
+<tr><td>Spread</td><td>Often uneven</td><td>Usually even</td><td>You control it</td><td>Depends on users</td></tr>
+<tr><td>Range queries</td><td>Efficient</td><td>Hit all shards</td><td>Depends</td><td>Fine inside a region</td></tr>
+<tr><td>Adding shards</td><td>Split a range</td><td>Hard with <code>% N</code></td><td>Update the map</td><td>Add a region</td></tr>
+<tr><td>Fits</td><td>Time-series, logs</td><td>User data at scale</td><td>Multi-tenant SaaS</td><td>Global apps, data laws</td></tr>
+</table></div>
+<p>The trap in each: range puts every new write on the newest shard. Hash can’t do range queries. A directory sits on every request, so it must be cached and always up. Regions are never equal.</p>
 
-<h4>2. Hash-based sharding</h4>
-<p><strong>What:</strong> run the key through a hash function and use the result to pick a shard. Simplest form: <code>hash(user_id) % N</code>.</p>
-<p><strong>Good:</strong> spreads keys evenly, so load is usually balanced.</p>
-<p><strong>Bad:</strong> range queries must hit every shard. With plain <code>% N</code>, changing N moves most keys (see the numbers section). <strong>Consistent hashing</strong> or a fixed large number of virtual buckets (for example 1,024 buckets mapped onto however many servers you have) reduces how much data moves.</p>
-
-<h4>How consistent hashing helps</h4>
-<p><strong>The one-minute version:</strong> consistent hashing is a way to assign keys to servers so that when you add or remove a server, only a small share of keys move, instead of almost all of them.</p>
-
-<p><strong>The problem it solves.</strong> With <code>hash(key) % N</code>, the shard for every key depends on N. Change N from 8 to 9 and the answer changes for most keys. Most of your data now sits on the “wrong” shard and must be copied. While that copy runs, reads may look in the wrong place. With terabytes of data, that is hours or days of risky work.</p>
-
-<p><strong>The idea: a ring.</strong> Imagine all possible hash values arranged in a circle, like the numbers on a clock, where the largest value wraps back to the smallest.</p>
-<ol>
-<li>Hash each <strong>server’s name</strong> (for example <code>hash("shard-A")</code>) to get its position on the ring.</li>
-<li>Hash each <strong>key</strong> (for example <code>hash(user_id)</code>) to get its position on the same ring.</li>
-<li>To find a key’s shard, start at the key’s position and walk <strong>clockwise</strong> until you reach a server. That server owns the key.</li>
-</ol>
-<p>The important part: a key’s owner depends only on its <em>nearest server clockwise</em>, not on the total number of servers.</p>
+<h4>Why <code>% N</code> hurts, and what consistent hashing does</h4>
+<p>With <code>shard = hash(key) % 8</code>, every key’s answer depends on 8. Move to 9 and most keys belong somewhere else, so most of your data moves while traffic is live.</p>
+<p><strong>Consistent hashing</strong> fixes that. Put all hash values on a circle, and hash each <em>server name</em> onto the same circle. A key belongs to the first server clockwise from it, so a new server only takes the arc just before it.</p>
 
 <div class="diagram">
 <svg viewBox="0 0 640 300" role="img" aria-label="Hash ring before and after adding server D. Only key k1 moves.">
@@ -152,200 +132,82 @@ export async function getInvoices(tenantId: string) {
 <circle cx="560" cy="140" r="5" class="box"/><text x="572" y="156" class="sub">k2 → B</text>
 <circle cx="439" cy="225" r="5" class="box"/><text x="400" y="248" class="sub">k3 → C</text>
 <circle cx="392" cy="95" r="5" class="box"/><text x="334" y="90" class="sub">k4 → A</text>
-<text x="320" y="285" text-anchor="middle" class="sub">Each key walks clockwise to the first server. D only takes keys between A and D, which used to belong to B.</text>
+<text x="320" y="285" text-anchor="middle" class="sub">Each key walks clockwise to the first server. D only takes what used to walk past it to B.</text>
 </svg>
 </div>
 
-<p><strong>Adding a server.</strong> When D joins the ring, it lands between two existing servers. Only the keys on the arc just before D (keys that used to walk past that spot to B) now stop at D. Every other key still reaches the same server as before. In the diagram, only k1 moves.</p>
-<p><strong>Removing a server.</strong> If a server leaves (or fails), only its keys move, to the next server clockwise. Everyone else stays put.</p>
+<p>Two things make it practical. <strong>Virtual nodes</strong>: each server sits on the ring 100+ times, so arcs even out. <strong>Fixed slots</strong>: a large fixed set of buckets with a table of who owns each — Redis Cluster uses 16,384.</p>
+<p>It only decides <em>which</em> keys move. Copying them live is still your problem, and it does nothing for one hot key.</p>
 
-<h4>The catch, and the fix: virtual nodes</h4>
-<p>With only a few servers, their random positions on the ring are rarely evenly spaced. One server might own a huge arc and get far more keys than the others. Also, when a server leaves, <em>all</em> its keys land on just one neighbour, which can overload it.</p>
-<p>The usual fix is <strong>virtual nodes</strong>: put each physical server on the ring many times (for example, hash <code>"shard-A#1"</code>, <code>"shard-A#2"</code>, … up to 100 or more). Now each server owns many small arcs spread around the ring. This gives two benefits:</p>
-<ul>
-<li>Load is much more even, because many small random arcs average out.</li>
-<li>When a server leaves, its keys spread across <em>many</em> other servers instead of one neighbour.</li>
-</ul>
-<p>It also lets you give a bigger machine more virtual nodes, so it takes a bigger share.</p>
-
-<h4>A small code sketch</h4>
-<pre><code>// consistent-hash-ring.ts  (to show the idea, not production code)
-import { createHash } from 'crypto';
-
-const hash = (s: string) =&gt;
-  createHash('md5').update(s).digest().readUInt32BE(0); // 0 .. 2^32-1
-
-class HashRing {
-  private ring: { pos: number; server: string }[] = [];
-
-  constructor(servers: string[], private vnodes = 100) {
-    servers.forEach(s =&gt; this.add(s));
-  }
-
-  add(server: string) {
-    for (let i = 0; i &lt; this.vnodes; i++) {
-      this.ring.push({ pos: hash(server + '#' + i), server });
-    }
-    this.ring.sort((a, b) =&gt; a.pos - b.pos);
-  }
-
-  remove(server: string) {
-    this.ring = this.ring.filter(n =&gt; n.server !== server);
-  }
-
-  // first ring position at or after the key's hash; wrap to the start if none
-  serverFor(key: string): string {
-    const h = hash(key);
-    const node = this.ring.find(n =&gt; n.pos &gt;= h) ?? this.ring[0];
-    return node.server;
-  }
-}
-
-const ring = new HashRing(['shard-A', 'shard-B', 'shard-C']);
-ring.serverFor('user-42'); // e.g. 'shard-B'</code></pre>
-<p>A real implementation would use binary search instead of <code>find</code>, because the ring can have thousands of entries and this lookup runs on every request.</p>
-
-<h4>Numbers: % N vs consistent hashing</h4>
-<p>Assume 10 million keys spread evenly (illustrative).</p>
-<div class="table-wrap"><table>
-<tr><th>Change</th><th>hash % N: keys that move</th><th>Consistent hashing: keys that move</th></tr>
-<tr><td>4 → 5 servers</td><td>about 4/5 ≈ 8,000,000</td><td>about 1/5 ≈ 2,000,000</td></tr>
-<tr><td>8 → 9 servers</td><td>about 8/9 ≈ 8,900,000</td><td>about 1/9 ≈ 1,100,000</td></tr>
-<tr><td>One of 8 servers removed</td><td>about 7/8 ≈ 8,750,000</td><td>about 1/8 ≈ 1,250,000 (only the removed server’s keys)</td></tr>
-</table></div>
-<p>The consistent hashing column is the minimum possible: the new server must receive its fair share from somewhere. Those figures assume a well-balanced ring (virtual nodes); with few virtual nodes the real share can be noticeably higher or lower.</p>
-
-<h4>A popular alternative: fixed slots</h4>
-<p>Many systems get the same benefit in a simpler way. They split the hash space into a fixed, large number of <strong>slots</strong> (buckets) that never changes, and keep a small table saying which server owns each slot. Adding a server means handing it some slots. Example: Redis Cluster uses 16,384 hash slots. This is easy to reason about and lets you move exactly the slots you choose.</p>
-
-<h4>What consistent hashing does not solve</h4>
-<ul>
-<li>It decides <em>which</em> keys move. You still have to actually copy that data to the new shard while live traffic continues, then switch routing.</li>
-<li>It doesn’t fix hot keys. If one user or tenant gets huge traffic, they are still one key on one server.</li>
-<li>Range queries still need to hit many shards, because hashing scatters neighbouring keys.</li>
-<li>Every app server must use the same ring (same hash function, same server list, same virtual node count). If two servers disagree, they route the same key to different shards.</li>
-</ul>
-<p>Where you will see it: Amazon’s Dynamo paper, Cassandra (token ring with virtual nodes), many caching clients for spreading keys across Memcached or Redis servers, and load balancers that need “same user → same server” without a lookup table.</p>
-
-<h4>3. Directory-based (lookup) sharding</h4>
-<p><strong>What:</strong> a lookup table maps each key (or tenant) to a shard.</p>
-<p><strong>Good:</strong> very flexible. You can move one big tenant to its own shard. Common for multi-tenant SaaS.</p>
-<p><strong>Bad:</strong> the directory is an extra component on every request. It must be fast (cached) and highly available, or it becomes a single point of failure.</p>
-
-<h4>4. Geographic sharding</h4>
-<p><strong>What:</strong> shard by region: Indian users in an India data center, EU users in the EU.</p>
-<p><strong>Good:</strong> lower delay for users, and helps with data residency laws.</p>
-<p><strong>Bad:</strong> regions are rarely equal in size; users who move or interact across regions are tricky.</p>
-
-<div class="table-wrap"><table>
-<tr><th></th><th>Range</th><th>Hash</th><th>Directory</th><th>Geographic</th></tr>
-<tr><td>Even spread</td><td>Often uneven</td><td>Usually even</td><td>You control it</td><td>Depends on users</td></tr>
-<tr><td>Range queries</td><td>Efficient</td><td>Hit all shards</td><td>Depends on mapping</td><td>Efficient within a region</td></tr>
-<tr><td>Adding shards</td><td>Split a range</td><td>Hard with % N; easier with buckets</td><td>Update the mapping, move data</td><td>Add a region</td></tr>
-<tr><td>Extra parts</td><td>Range map</td><td>None</td><td>Directory service</td><td>Region routing</td></tr>
-<tr><td>Typical use</td><td>Time-series, logs</td><td>User data at large scale</td><td>Multi-tenant SaaS</td><td>Global apps, data laws</td></tr>
-</table></div>
-
-<h4>Choosing a shard key</h4>
-<p>This is the most important decision, and it is hard to change later. A good shard key:</p>
-<ul>
-<li>Appears in most queries (so most queries hit one shard).</li>
-<li>Has many distinct values and spreads load evenly.</li>
-<li>Keeps data that is used together on the same shard (all of one tenant’s rows together).</li>
-</ul>
 
 <!-- section: numbers -->
-<p><strong>Assumptions</strong> (illustrative only, not benchmarks): your database has 2 TB of data and must handle 20,000 writes per second at peak. Load tests showed one primary handles about 5,000 writes per second comfortably for your workload.</p>
+<p><strong>Assumptions</strong>, illustrative, not benchmarks: 2 TB of data, 20,000 writes/s at peak, and load tests showing one primary handles about 5,000 writes/s for this workload.</p>
 <ul>
 <li>Minimum shards for writes: 20,000 ÷ 5,000 = <strong>4</strong>.</li>
-<li>You want headroom for growth and uneven traffic, so plan for <strong>8 shards</strong>: about 2,500 writes/s and 250 GB each.</li>
+<li>With headroom for growth: <strong>8 shards</strong>, about 2,500 writes/s and 250 GB each.</li>
 </ul>
-
-<h4>Why <code>% N</code> hurts when you add a shard</h4>
-<p>With <code>shard = hash(key) % 8</code>, going from 8 to 9 shards changes the result for most keys. On average about <strong>8 out of 9 keys (≈ 89%) move</strong> to a different shard. Moving most of 2 TB while serving live traffic is risky and slow.</p>
-<p>With consistent hashing, adding the 9th shard moves only about <strong>1/9 of keys (≈ 11%)</strong>: just enough to fill the new shard.</p>
-
-<h4>Hot shard example</h4>
-<p>Say 1,000 tenants are spread evenly across 8 shards (125 each). One tenant is a huge customer producing 30% of all writes: 6,000 writes/s. Whatever shard holds them now gets 6,000 + about 1,750 (its share of the rest) = <strong>~7,750 writes/s</strong>, far over the 5,000 limit, while other shards sit at ~1,750.</p>
-<p>Even sharding by tenant count did not give even load. With directory-based sharding you can give that tenant its own shard. If one tenant alone exceeds a shard’s capacity, you need a finer key for them (for example tenant plus customer ID).</p>
+<p><strong>Growing from 8 to 9 shards.</strong> With <code>hash(key) % N</code>, about <strong>8 of every 9 keys (89%)</strong> move — nearly 2 TB in flight while the site is up. With consistent hashing, about <strong>1 in 9 (11%)</strong> moves: just enough to fill the new shard.</p>
+<p><strong>The hot shard.</strong> 1,000 tenants spread evenly over 8 shards is 125 each. Now one huge customer makes 30% of all writes, 6,000/s on its own. Its shard gets 6,000 + its ~1,750 share of the rest = <strong>7,750 writes/s</strong>, far past the 5,000 limit, while the other shards sit at 1,750. Even counts did not give even load, which is why directory sharding exists: give that tenant a shard to itself.</p>
 
 <!-- section: tradeoffs -->
-<h4>What you gain</h4>
 <ul>
-<li>Write capacity and storage that grow by adding servers.</li>
-<li>Smaller datasets per server: faster backups, restores, index builds.</li>
-<li>Failure isolation: one shard down affects only part of the users.</li>
+<li><strong>Capacity vs query power.</strong> You get write and storage headroom by adding servers, and you lose joins, cross-shard transactions, unique constraints and foreign keys across shards.</li>
+<li><strong>Smaller pieces vs more pieces.</strong> Each shard backs up and rebuilds fast, but now you run N sets of backups, migrations, failovers and dashboards, and every schema change runs N times.</li>
+<li><strong>Isolation vs blast radius.</strong> One shard down takes out some users instead of all of them — unless the directory is down, which takes out everyone.</li>
+<li><strong>Even spread vs locality.</strong> Hashing spreads load but scatters neighbouring rows. Ranges keep them together but create hot spots.</li>
+<li><strong>Now vs later.</strong> Resharding live is one of the hardest operations in backend work, so the key you pick today is the key you live with.</li>
 </ul>
-<h4>What you give up</h4>
-<ul>
-<li><strong>Cross-shard queries</strong> become scatter-gather; slower and more complex.</li>
-<li><strong>Joins across shards</strong> aren’t done by the database for you (unless a tool like Citus handles some cases).</li>
-<li><strong>Transactions across shards</strong> lose simple ACID guarantees. You need two-phase commit or patterns like sagas.</li>
-<li><strong>Unique constraints and foreign keys</strong> only work inside one shard.</li>
-<li><strong>Operations</strong> multiply: N shards means N sets of backups, migrations, monitoring, and failovers. Schema migrations must run on every shard.</li>
-<li><strong>Resharding</strong> later is one of the hardest operations in backend engineering.</li>
-</ul>
-<p>Sharding is a big, mostly one-way step. Most teams treat it as a last resort.</p>
 
 <!-- section: whenToUse -->
-<h4>Signals you may need sharding</h4>
+<p><strong>Picking the key</strong> is the part that is hard to undo. A good one is in most queries, has many distinct values, and keeps data used together on one shard.</p>
+<p><strong>Signals you actually need it:</strong></p>
 <ul>
-<li>Write load is near the limit of your largest reasonable primary, even after tuning.</li>
-<li>Data size makes backups, restores, or migrations unacceptably slow.</li>
-<li>Your growth forecast clearly passes one machine’s limits soon.</li>
-<li>You need data in specific regions for legal reasons.</li>
+<li>Write load is near the limit of the biggest reasonable primary, after tuning.</li>
+<li>Data size makes backups, restores or migrations unacceptably slow.</li>
+<li>Growth clearly passes one machine within your planning horizon.</li>
+<li>Law requires data to sit in a particular region.</li>
 </ul>
-<h4>Try these first (usually in this order)</h4>
-<ol>
-<li>Fix slow queries and add the right indexes.</li>
-<li>Add caching (for example Redis) for hot reads.</li>
-<li>Add read replicas for read-heavy load.</li>
-<li>Scale the server up (vertical scaling). Modern machines are very large.</li>
-<li>Archive or delete old data; use table partitioning on one server.</li>
-<li>Split by feature: move a separate domain (like analytics or logs) to its own database. This is sometimes called vertical partitioning or functional partitioning.</li>
-</ol>
-<p>Many large products run for years on one well-tuned PostgreSQL primary plus replicas. Only shard when you have numbers showing you need it.</p>
+<p><strong>Try these first, in this order:</strong> fix slow queries and indexes → cache hot reads → add read replicas → scale the server up → archive old data or partition on one server → move a separate domain like analytics to its own database.</p>
+<p>Plenty of large products run for years on one well-tuned primary plus replicas. Shard when you have numbers, not a feeling.</p>
 
 <!-- section: mistakes -->
 <ul>
-<li><strong>Sharding too early.</strong> You pay the complexity cost long before you get any benefit.</li>
-<li><strong>A bad shard key.</strong> For example <code>created_at</code> (all new writes go to one shard) or <code>country</code> (one country dominates).</li>
-<li><strong>Using <code>% N</code> without a plan for growth.</strong> Adding a shard then means moving most of the data.</li>
-<li><strong>Confusing sharding with replication.</strong> Replicas add read capacity and availability; they don’t add write capacity or reduce data per server.</li>
-<li><strong>Ignoring queries without the shard key.</strong> Admin search, reporting, and analytics often need a separate system (a search index like Meilisearch/Elasticsearch, or a data warehouse fed by change events).</li>
-<li><strong>Relying on auto-increment IDs.</strong> Two shards both create order #1001.</li>
-<li><strong>Forgetting each shard needs replicas.</strong> Without them, losing one shard’s server loses that part of the data until restore.</li>
+<li><strong>Sharding too early.</strong> You pay all the complexity long before you get any benefit.</li>
+<li><strong>A bad shard key.</strong> <code>created_at</code> sends every new write to one shard. <code>country</code> gives one shard most of the users.</li>
+<li><strong>Using <code>% N</code> with no plan for growth.</strong> The day you add a shard, almost everything moves.</li>
+<li><strong>Confusing sharding with replication.</strong> Replicas add read capacity and availability. They add no write capacity at all.</li>
+<li><strong>Ignoring queries without the shard key.</strong> Admin search and reporting usually need a separate search index or warehouse fed by change events.</li>
+<li><strong>Auto-increment ids.</strong> Two shards both happily create order #1001.</li>
+<li><strong>Forgetting replicas per shard.</strong> Lose one shard’s server and that slice of your data is gone until a restore finishes.</li>
 </ul>
 
 <!-- section: interview -->
 <h4>Common questions</h4>
-<p><strong>“Your database can’t keep up. What do you do?”</strong><br>
-First find out why: reads or writes? Fix queries and indexes, add caching, add read replicas for reads, scale up. Shard only when writes or data size exceed one machine. Interviewers like hearing that order.</p>
+<p><strong>“The database can’t keep up. What do you do?”</strong><br>
+Find out whether it’s reads or writes first. Queries and indexes, then caching, then replicas for reads, then a bigger machine. Shard when writes or size pass one machine. Interviewers want that order, not the word “shard” in sentence one.</p>
 <p><strong>“How would you shard the users table?”</strong><br>
-Choose a key used in most queries and spread evenly, like <code>user_id</code>, with hashing. Mention how you’d handle lookups by email (a separate lookup table from email to user_id) and how you’d add shards later (buckets or consistent hashing).</p>
-<p><strong>“What’s the difference between sharding and replication?”</strong><br>
-Replication copies the same data to more servers (helps reads and availability). Sharding splits the data across servers (helps writes and storage). They are usually combined.</p>
-
+Hash on <code>user_id</code>, since it is in most queries and spreads evenly. Handle login by email with a small email → user_id lookup table, and plan growth with buckets or consistent hashing rather than <code>% N</code>.</p>
+<p><strong>“Sharding vs replication?”</strong><br>
+Replication copies the same data for reads and availability. Sharding splits data for writes and storage. Real systems do both.</p>
 <h4>Follow-ups to expect</h4>
 <ul>
-<li>How do you handle a celebrity user or a huge tenant (hot shard)?</li>
-<li>How do you do a transaction across two shards? (2PC or sagas; ideally design so it isn’t needed.)</li>
-<li>How do you generate unique IDs?</li>
-<li>How do you add a shard with no downtime? (Copy data in the background, keep it in sync with change capture or double writes, then switch routing.)</li>
-<li>How do you run a report across all users? (Scatter-gather for small cases; a separate analytics store for real reporting.)</li>
+<li>What about a celebrity user or a giant tenant? (Directory sharding, or a finer key for them.)</li>
+<li>A transaction across two shards? (Saga, or two-phase commit. Better: design so it isn’t needed.)</li>
+<li>Adding a shard with no downtime? (Copy in the background, keep in sync with change capture, then switch routing.)</li>
+<li>A report across all users? (Scatter-gather for small cases, a separate analytics store for real reporting.)</li>
 </ul>
-
 <h4>How it fits a bigger design</h4>
-<p>In a design like “Twitter” or “Uber”, sharding usually appears when you estimate storage and write rates. Show the numbers that justify it, pick the key, and name the trade-off you accept.</p>
+<p>In a “design Twitter” style question, sharding shows up the moment you estimate storage and write rate. Show the numbers that justify it, name the key, and say which trade-off you are accepting.</p>
 
 <!-- section: revision -->
 <ul>
-<li>Sharding splits rows across several database servers; each part is a shard.</li>
-<li>Replication copies data; sharding divides it. They are often combined.</li>
-<li>The shard key decides where each row lives, and it is hard to change later.</li>
-<li>Range, hash, directory, and geographic are the main strategies.</li>
-<li>Queries with the shard key hit one shard; queries without it hit all.</li>
-<li>Cross-shard joins, transactions, and unique constraints get harder.</li>
-<li>Plain <code>% N</code> moves most data when N changes; buckets or consistent hashing help.</li>
-<li>Shard last, after indexes, caching, replicas, and vertical scaling.</li>
+<li>Sharding splits rows across database servers; each piece is a shard.</li>
+<li>Replication copies data, sharding divides it. Most systems use both.</li>
+<li>The shard key decides where a row lives, and it is the hardest thing to change later.</li>
+<li>Range, hash, directory and geographic are the four strategies.</li>
+<li>Queries with the shard key hit one shard; queries without it hit all of them.</li>
+<li>Cross-shard joins, transactions and unique constraints stop working.</li>
+<li><code>% N</code> moves most data when N changes; consistent hashing or fixed slots move a fair share.</li>
+<li>Even row counts don’t mean even load. One big tenant can swamp a shard.</li>
+<li>Shard last: after indexes, caching, replicas and a bigger machine.</li>
 </ul>

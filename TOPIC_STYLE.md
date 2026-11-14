@@ -3,6 +3,7 @@
 How to write a topic for UnderTheHood.
 
 This file holds the rules that are the same for every topic.
+The one rule that beats all the others: a topic is for **learning**, not for reference. Moderate depth, short, and as visual as you can make it. Part 7 says what that means in numbers.
 Each track also has its own format file in `formats/`, which lists the 12 sections for that track.
 Read both before writing: this file, then `formats/<track>.md`.
 
@@ -115,7 +116,8 @@ Rules that hold for every track:
 - Write all 12 sections, in the order given. The site adds the section titles, so don't repeat them inside the content.
 - Each format file has a "Must have" list. Every item on it is required.
 - A section can be left out only if it truly does not apply. The build prints a note for every missing section, so nothing is left out by accident.
-- A topic should be about as deep as the existing Core Concepts topics: roughly a 12 to 20 minute read.
+- Keep the whole topic inside the budget in part 7: about 1,200 to 1,700 words, a 6 to 9 minute read. All 12 sections still get written; each one is just short.
+- A short section is not a thin one. Say the useful thing, then stop.
 - The first section always ends with a one-line version in a note box.
 - The last section is always `revision`.
 
@@ -245,7 +247,88 @@ Diagram rules:
 - Always add `role="img"` and an `aria-label` that says what the diagram shows.
 - One idea per diagram. If it needs a legend to be understood, split it.
 
-## 7. Writing style
+Shapes that work, and when to reach for each:
+
+| Shape | Good for | How it looks |
+|---|---|---|
+| Flow | A request or a message moving between parts | Boxes left to right, arrows between them |
+| Numbered flow | Steps that happen in order | Same, with `1`, `2`, `3` on the arrows |
+| Before and after | What a change fixes | One SVG split in two halves, with a label over each |
+| Layers | What sits on top of what | Stacked bars, widest at the bottom |
+| Fan-out | One thing talking to many | One box on the left, three on the right |
+| Timeline | What happened when (incidents, locks, retries) | One horizontal line, ticks and `sub` captions |
+| Side by side | Two options compared | Two small flows, one above the other, each with a title |
+
+Keep the same shape all the way through a topic. A reader who learnt your boxes in section 3 should not have to learn new ones in section 6.
+
+## 7. Depth, length and visuals
+
+A topic exists so the reader can **understand the idea, explain it to someone else, and use it**. It is not a reference manual. Anything that does not serve those three things is cut.
+
+### Length budget
+
+| | Target | Hard limit |
+|---|---|---|
+| Whole topic | 1,200 to 1,700 words (a 6 to 9 minute read) | 2,000 words |
+| One section | 100 to 150 words | 250 words |
+| One paragraph | 2 to 4 sentences | 5 sentences |
+
+`npm run build` prints a `Note:` when a topic or a section goes over the hard limit. The reading time is shown on the card and under the page title.
+
+A topic that runs long is not more useful. It just means the cutting pass has not happened yet.
+
+### Moderate depth
+
+Cover these, and stop:
+
+- what it is, in plain words
+- the problem it solves
+- how it works, at the level you could draw on a whiteboard
+- where you would use it, and where you would not
+- what it costs
+- the mistakes people make
+
+Leave out:
+
+- every option, flag and config knob. Give the two or three that matter.
+- long chains of edge cases and "but what if"
+- history, version-by-version changes, vendor comparisons
+- a second and third example that make the same point as the first
+- deep internals that only make sense to someone who already knows the thing
+
+Test for a paragraph: **would you say this at a whiteboard in 30 seconds?** If not, cut it, or turn it into a diagram or a table.
+
+### Visual first
+
+Reach for a picture before a paragraph.
+
+- Every topic needs **at least two diagrams**. Three is better. One of them belongs in the section that explains how the thing works.
+- A diagram **replaces** prose, it is not added next to it. After drawing one, delete the sentences that say the same thing and leave one line pointing at it.
+- Label the parts inside the diagram with `sub` captions instead of explaining them underneath.
+
+| What you are explaining | Use |
+|---|---|
+| Something moving between parts | A diagram with arrows |
+| Two or more options compared | A table |
+| Steps in order | A numbered list, or a numbered diagram |
+| What a change fixes | One before-and-after diagram |
+| Trade-offs | A bullet list, each item starting with a bold "X vs Y." label |
+| Maths | The steps, each result in bold |
+| Why it matters, and the story | Prose. This is the only place for it. |
+
+Three paragraphs in a row with no list, table, diagram or code block between them is a sign something should have been drawn.
+
+### The cutting pass
+
+Short writing takes a second pass. Always do it:
+
+1. Run `npm run build` and read the reading time.
+2. Take the longest section. Find what it repeats, and cut that.
+3. Take the longest explanation still standing, and turn it into a diagram or a table.
+4. Cut every sentence that would not change what the reader does.
+5. Build again. Repeat until the whole topic is under 9 minutes.
+
+## 8. Writing style
 
 The same in every track.
 
@@ -309,7 +392,7 @@ Before and after:
 - Use curly quotes in normal text (“like this”, don’t), and straight quotes inside code.
 - When you mention another topic, name it and add it to `related` in the header. Don't re-teach what another topic already covers. Give it one or two sentences and link.
 
-## 8. Not allowed
+## 9. Not allowed
 
 - `<script>` tags. The build stops if it finds one.
 - `onclick` and other inline event handlers.
@@ -320,7 +403,7 @@ Before and after:
 - **Private details.** This site is public. Never write a real employer's or customer's name, internal host names or URLs, real keys or passwords, or real customer data. This matters most in `incidents`, and applies everywhere.
 - Text copied from a book, a course, or another website.
 
-## 9. Checklist before publishing
+## 10. Checklist before publishing
 
 - [ ] The file is in the right track folder (part 1), and the file name is small letters, digits and dashes.
 - [ ] Header has `title`, `summary`, `category`, `order`.
@@ -329,6 +412,9 @@ Before and after:
 - [ ] Every item in the format file's "Must have" list is there.
 - [ ] Every new term is explained where it first appears.
 - [ ] The tone is developer to developer, with no words from the "Don't write" list.
+- [ ] The build's reading time is 9 minutes or less, and no section is over about 250 words.
+- [ ] At least two diagrams, and every comparison of options is a table, not prose.
+- [ ] The cutting pass (part 7) has been done, not just planned.
 - [ ] Code uses `&lt;`, `&gt;`, `&amp;`.
 - [ ] Tables are wrapped in `<div class="table-wrap">`.
 - [ ] Diagrams have no hard-coded colours and a unique marker id.
@@ -337,7 +423,7 @@ Before and after:
 - [ ] `npm run build` finishes with no errors and no lines starting with `Note:`.
 - [ ] `npm run preview` shows the topic correctly in light and dark mode, and on a narrow window.
 
-## 10. Publishing
+## 11. Publishing
 
 ```
 npm run build       # check the files and rebuild site/

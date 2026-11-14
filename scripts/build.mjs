@@ -98,7 +98,13 @@ function topbar(root, hubTitle, withSidebar) {
 </header>`;
 }
 
-/* Words a developer would not say out loud to a teammate. TOPIC_STYLE.md part 6 lists the plain swaps. */
+/* Words a developer would not say out loud to a teammate. TOPIC_STYLE.md part 8 lists the plain swaps. */
+/* Length and visual budget. TOPIC_STYLE.md part 7.
+   A topic is for learning, so it stays short and leans on diagrams. */
+const MAX_TOPIC_WORDS = 2000;   // about a 10 minute read; the target is 1200-1700
+const MAX_SECTION_WORDS = 250;  // prose only; code and diagram text don't count
+const MIN_DIAGRAMS = 2;
+
 const FORMAL_WORDS = /\b(utili[sz]e[sd]?|utili[sz]ing|leverag(?:e|es|ed|ing)|facilitat\w+|subsequently|consequently|furthermore|moreover|thus|hence|therefore|whereas|aforementioned|in order to|prior to|with respect to|numerous|commenc\w+|thereby|wherein|plethora|myriad|paradigm|seamless(?:ly)?|delv(?:e|es|ed|ing)|pivotal|paramount|compris\w+|ascertain\w*|elucidat\w+|necessitat\w+|pertaining|albeit|whilst|nonetheless|nevertheless|approximately|sufficient(?:ly)?|obtain(?:s|ed|ing)?|mitigat\w+|additionally|regarding|endeavou?r\w*)\b/gi;
 
 /* Read one topic file: a header comment with "key: value" lines,
@@ -229,8 +235,26 @@ export function build() {
     if (Object.keys(formal).length) {
       notes.push(`${file}: formal words found, use plain ones (see "Writing style" in TOPIC_STYLE.md): ${Object.entries(formal).map(([w, n]) => `${w} ×${n}`).join(', ')}`);
     }
+    /* length and visuals: keep topics readable in one sitting (TOPIC_STYLE.md part 7) */
+    const all = Object.values(t.sections).join(' ');
+    const topicWords = plain(all).split(/\s+/).filter(Boolean).length;
+    if (topicWords > MAX_TOPIC_WORDS) {
+      notes.push(`${file}: ${topicWords} words, about a ${Math.round(topicWords / 200)} minute read. The budget is 1,200 to 1,700 words (9 minutes). Do the cutting pass in TOPIC_STYLE.md part 7`);
+    }
+    const long = [];
+    const diagrams = (all.match(/class="diagram"/g) || []).length;
+    if (diagrams < MIN_DIAGRAMS) {
+      notes.push(`${file}: ${diagrams === 0 ? 'no diagrams' : 'only 1 diagram'}. A topic needs at least ${MIN_DIAGRAMS}; turn the longest explanation into one (TOPIC_STYLE.md part 7)`);
+    }
+
     for (const [key, html] of Object.entries(t.sections)) {
       const at = `${file}, section "${key}"`;
+      const secWords = plain(html.replace(/<pre[\s\S]*?<\/pre>/gi, ' ').replace(/<svg[\s\S]*?<\/svg>/gi, ' '))
+        .split(/\s+/).filter(Boolean).length;
+      if (secWords > MAX_SECTION_WORDS) long.push(`${key} ${secWords}`);
+      if ((html.match(/<p>/g) || []).length >= 4 && !/<(ul|ol|table|pre|svg|h4)\b/i.test(html)) {
+        notes.push(`${at}: four or more paragraphs with no list, table, diagram or code. Break it up or draw it (TOPIC_STYLE.md part 7)`);
+      }
       const h = html.replace(/<pre[\s\S]*?<\/pre>/gi, '');
       if (/<h[1-3]\b/i.test(h)) notes.push(`${at}: use <h4> for sub-headings, not h1, h2 or h3`);
       if (/<[a-z][^>]*\son[a-z]+\s*=/i.test(h)) notes.push(`${at}: inline event handlers (onclick and similar) are not allowed`);
@@ -240,6 +264,9 @@ export function build() {
       if ((h.match(/<svg\b/gi) || []).length > (h.match(/class="diagram"/g) || []).length) notes.push(`${at}: wrap every <svg> in <div class="diagram">`);
       if (/<svg\b(?![^>]*aria-label)/i.test(h)) notes.push(`${at}: the <svg> needs role="img" and an aria-label`);
       for (const m of h.matchAll(/<[a-z][^>]*\sid="([^"]+)"/gi)) (ids[m[1]] ||= []).push(key);
+    }
+    if (long.length) {
+      notes.push(`${file}: sections over ${MAX_SECTION_WORDS} words of prose (${long.join(', ')}). Keep each near 150; cut it or draw it (TOPIC_STYLE.md part 7)`);
     }
     for (const [id, where] of Object.entries(ids)) {
       if (where.length > 1) notes.push(`${file}: id "${id}" is used ${where.length} times (sections: ${[...new Set(where)].join(', ')}); ids must be unique in a topic`);

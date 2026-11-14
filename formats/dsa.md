@@ -25,6 +25,17 @@ Two kinds of topic, same format:
 - Always show the simple way first. The reader should see why the better way is needed.
 - State time and space cost for every solution shown, with the reason.
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one in `idea`, one more in `walkthrough` showing the array or pointers at two or three steps.
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: the second brute-force variant. One slow solution, one fast one, and move on.
+
 ## The 12 sections
 
 | # | Key | Title on the page | What to write |
@@ -47,9 +58,10 @@ Two kinds of topic, same format:
 - The input limits in `problem`.
 - An examples table with three rows in `examples`.
 - The simple solution with its cost in `brute`.
-- One diagram in `idea`.
+- Two diagrams: one in `idea`, and one more in `walkthrough` showing the state at a few steps.
 - A step table in `walkthrough` that matches the code in `code`.
 - Time and space cost for both solutions in `complexity`.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

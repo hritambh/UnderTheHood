@@ -12,6 +12,8 @@ The user only has to say what they want added, for example "add a topic on rate 
 
 A topic is one file, `content/topics/<track>/<id>.html`.
 
+**What a topic is for.** The reader is learning, not looking something up. A topic has to be easy to get through: moderate depth, short, and as visual as you can make it. That means **1,200 to 1,700 words, a 6 to 9 minute read, with at least two diagrams**. All 12 sections are still written; each one is just short. `TOPIC_STYLE.md` part 7 is the full rule, and the build fails you with a `Note:` when a topic runs long.
+
 Three files define how it must be written:
 
 | File | What it is |
@@ -70,6 +72,9 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
    - Write all 12 sections of that track, in the file order the guide gives, each holding what its row in the guide's table asks for. The playbook may tell you to work them out in a different order. The file order never changes.
    - Include every item in the guide's "Must have" list.
    - Use only the building blocks from `TOPIC_STYLE.md`.
+   - **Keep it short.** 100 to 150 words per section, 250 at the very most. Cover what it is, why it exists, how it works at whiteboard level, where to use it, what it costs, and the usual mistakes. Leave out every option and flag, long edge-case chains, history, and second examples that make the same point.
+   - **Draw before you write.** Sketch the diagrams the guide asks for first, then write only what they don't already say. A diagram replaces prose, it is not added next to it.
+   - Pick the shape that fits: arrows for something moving, a table for options compared, a numbered list for steps, prose only for why it matters. Three paragraphs in a row with nothing between them means something should have been drawn.
    - Follow "Writing style" in `TOPIC_STYLE.md`. The tone is one developer explaining to another at a whiteboard:
      - plain everyday words, no formal or academic ones (use the swap table)
      - short sentences, mostly under 20 words, one idea each
@@ -81,21 +86,28 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
    - `revision` is only a summary list of what the topic taught. No questions, key terms or scenario.
    - Don't re-teach what another topic covers. Give it one or two sentences and add that topic to `related`.
 
-9. **Leave existing topics alone.** Don't edit other topic files. If an older topic should link back to the new one, say so in your report and let the user decide.
+9. **Cut it down.** The first draft is always too long. Run `npm run build` and read the reading time and the length notes.
+   - Take the longest section. Cut what repeats something said earlier.
+   - Take the longest explanation left, and turn it into a diagram or a table.
+   - Cut every sentence that would not change what the reader does.
+   - Build again. Repeat until the topic is under 9 minutes with no length or diagram `Note:`.
 
-10. **Build and fix.** Run `npm run build`.
+10. **Leave existing topics alone.** Don't edit other topic files. If an older topic should link back to the new one, say so in your report and let the user decide.
+
+11. **Build and fix.** Run `npm run build`.
     - Errors stop the build. Fix every one.
     - Lines starting with `Note:` are style problems. Fix those too, until the build prints none for the new topic.
 
-11. **Run the playbook's checks.** Every item under "Checks before you finish" in `tracks/<track>.md` must pass.
+12. **Run the playbook's checks.** Every item under "Checks before you finish" in `tracks/<track>.md` must pass.
 
-12. **Review it.** Go through the `review-topic` skill for the new file.
+13. **Review it.** Go through the `review-topic` skill for the new file.
 
-13. **Look at the result.** Run `npm run preview` and open the new topic page, or read the built file in `site/topics/<id>.html`. Check the diagrams, the tables and the code blocks.
+14. **Look at the result.** Run `npm run preview` and open the new topic page, or read the built file in `site/topics/<id>.html`. Check the diagrams, the tables and the code blocks.
 
-14. **Report to the user**, briefly:
+15. **Report to the user**, briefly:
     - the track you chose and why
     - the file you created and where it sits in the track's order
+    - its reading time and how many diagrams it has
     - anything you flagged in step 5
     - anything you left out, could not verify, or were unsure about
     - any back-links you suggest for older topics
@@ -103,6 +115,7 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
 ## Do not
 
 - Do not ask the user which track to use. Deciding that is this skill's job.
+- Do not hand over a topic that runs past 9 minutes, or that has fewer than two diagrams, because "the subject is big". A big subject gets narrowed, or split into two topics, and you say so in the report.
 - Do not push or deploy. A push to `main` goes live automatically, so push only when the user asks to push or deploy. Say that the topic is built locally and not live yet.
 - Do not edit anything in `site/` by hand. It is rewritten on every build.
 - Do not change `TOPIC_STYLE.md`, `formats/`, the playbooks, `content/hub.json`, `src/` or `scripts/` to make a topic fit. Make the topic fit the format. If the format itself seems wrong for this topic, tell the user.

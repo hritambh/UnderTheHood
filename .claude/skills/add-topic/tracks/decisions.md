@@ -33,6 +33,17 @@ The file order is fixed by the guide. This is the order to think in.
 11. **`decision`.** Write the opening last: what is being chosen, and when it comes up.
 12. **`revision`.**
 
+## Keep it short and visual
+
+The reader wants to understand this well enough to explain it and use it. Everything past that is weight.
+
+- Budget: **1,200 to 1,700 words** for the whole topic, 100 to 150 per section, 250 at the very most. Full rule: `TOPIC_STYLE.md` part 7.
+- **Draw first.** Sketch the two diagrams before writing prose: the options side by side in `options`, and the migration path in `changing`. Then write only what the diagrams don't already say.
+- A table beats three paragraphs comparing things. A numbered list beats a paragraph of steps.
+- Say the useful thing in a section, then stop. A short section is not a thin one.
+- **Cutting pass, every time.** Run `npm run build`, take the section it flags as longest, cut what repeats, turn the longest explanation left into a diagram or a table. Build again. Repeat until the topic is under 9 minutes.
+- First thing to cut here: anything past three options, and any criterion that doesn't change the answer.
+
 ## Traps in this track
 
 - Writing an advert for one side.
@@ -50,3 +61,6 @@ The file order is fixed by the guide. This is the order to think in.
 - [ ] `changing` covers both directions.
 - [ ] `whenEach` has a "When it doesn't matter much" part.
 - [ ] Every "Must have" item in the guide is there.
+- [ ] The build shows the topic at 9 minutes or less, with no length or diagram `Note:`.
+- [ ] Two diagrams at least, where the guide says they go.
+- [ ] The cutting pass was actually done, not just planned.

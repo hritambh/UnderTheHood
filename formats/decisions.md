@@ -22,6 +22,17 @@ Title it as the choice: "X vs Y". Two options is best. Three is the most a topic
 - No winner without a context. The answer is always "it depends on...", and the topic's job is to say exactly what it depends on.
 - Every "it depends" must be followed by the thing it depends on and which way it pushes.
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one in `options` with the two shapes side by side, one more in `changing` showing the migration path.
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: past three options, and cut any criterion that doesn't change the answer.
+
 ## The 12 sections
 
 | # | Key | Title on the page | What to write |
@@ -42,10 +53,12 @@ Title it as the choice: "X vs Y". Two options is best. Three is the most a topic
 ## Must have
 
 - A comparison table in `compare`, with the same criteria that `criteria` explains.
+- Two diagrams: the options side by side in `options`, and the migration path in `changing`.
 - Each option's own topic listed in `related`, when one exists.
 - Both directions covered in `changing`.
 - A "When it doesn't matter much" part in `whenEach`.
 - Fair treatment of every option, as described above.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

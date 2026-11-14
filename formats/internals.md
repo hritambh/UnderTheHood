@@ -25,6 +25,17 @@ Internals change between versions. So:
 - Don't state a default value, a limit or a file layout unless you are sure of it. If unsure, check the tool's own documentation, or leave it out.
 - Say "by default" when a setting can change the behaviour.
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one in `bigPicture`, one more in `walkthrough` following the operation through the parts.
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: every part of the tool this topic is not about. One operation, followed properly.
+
 ## The 12 sections
 
 | # | Key | Title on the page | What to write |
@@ -45,9 +56,10 @@ Internals change between versions. So:
 ## Must have
 
 - The version named in `what`.
-- One diagram in `bigPicture`.
+- Two diagrams: the parts in `bigPicture`, and the operation's path in `walkthrough`.
 - One operation followed all the way through in `walkthrough`, and the same operation used again in `failure`.
 - Real commands in `tryIt` that work on a default install.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

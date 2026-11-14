@@ -1,6 +1,6 @@
 # UnderTheHood (static website)
 
-The site was called "My System Design Learning Hub" until 2026-11-13. The project folder and the Vercel project still use the old name `system-design-hub`.
+The site was called "My System Design Learning Hub" until 2026-11-13. The project folder is `/Users/hritambh/Documents/UnderTheHood` (renamed from `system-design-hub` on 2026-11-14). The Vercel project still uses the old name `system-design-hub`.
 
 A plain static website of engineering topics, grouped into tracks. It started as a copy of a Claude artifact, but the artifact is no longer used. The files in `content/` are the only source.
 
@@ -22,6 +22,7 @@ A plain static website of engineering topics, grouped into tracks. It started as
 - `.claude/skills/add-topic` — the skill for every new topic. It decides the track by itself (the user does not have to name one), then applies that track's playbook and format file.
 - `.claude/skills/add-topic/tracks/<track>.md` — one playbook per track: how to scope a topic, the order to work in, the traps, and the checks before finishing.
 - `.claude/skills/review-topic` — the checks for a new or edited topic.
+- `.claude/skills/refactor-topic` — reworking an existing topic to the current length and visual rules.
 
 Topic pages are served at `/topics/<id>.html` whatever the track, so an id must be unique across all tracks.
 
@@ -31,6 +32,7 @@ These apply every time a topic is added or edited, with or without the skills:
 
 - **The skill picks the track.** When the user asks for a topic, don't ask them which track. Decide with the nine questions under "Picking the track" in `TOPIC_STYLE.md`, say the choice and the reason in one line, and carry on. If the user did name a track, use theirs.
 - **Same format every time.** A topic uses exactly the 12 sections of its track, as listed in `formats/<track>.md`, with every "Must have" item, written by following the track's playbook. Read `TOPIC_STYLE.md`, the track's format file and its playbook before writing.
+- **Short, moderate depth, visual.** Topics are for learning, not for reference. 1,200 to 1,700 words (a 6 to 9 minute read), 100 to 150 per section, at least two diagrams. Cover the fundamentals, how it works, where it is used and what it costs, then stop. Prefer a diagram, table or numbered list over paragraphs. The build prints a `Note:` when a topic runs long or has too few diagrams. The full rule is part 7 of `TOPIC_STYLE.md`.
 - **Tone.** Topics are written the way one developer explains something to another: plain everyday words, short sentences, no formal or academic English. The full rule and the word list are under "Writing style" in `TOPIC_STYLE.md`.
 - **Placement.** Before adding a topic or any content, look through the existing topics in every track. Flag it to the user if the content is already covered, belongs inside another topic or another track, or if existing content sits in the wrong place. Flag only; don't move existing content without the user saying so.
 - **Public site.** No real employer or customer names, internal host names, keys, or real customer data in any topic.

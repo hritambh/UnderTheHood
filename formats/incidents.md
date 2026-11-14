@@ -37,6 +37,17 @@ Replace them with plain stand-ins: "a payments service", "a large customer", "ab
 - For your own incident, write what you know. Mark guesses as guesses.
 - No blame. Write about what the system allowed, not about who did it.
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one in `context` showing the system before, one more in `rootCause` showing the chain of causes.
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: timeline rows where nothing was learnt or decided.
+
 ## The 12 sections
 
 | # | Key | Title on the page | What to write |
@@ -58,9 +69,10 @@ Replace them with plain stand-ins: "a payments service", "a large customer", "ab
 
 - The source named, or a line saying details were changed, in `summary`.
 - A timeline table in `timeline`.
-- One diagram in `context`.
+- Two diagrams: the system in `context`, and the chain of causes in `rootCause`.
 - A root cause that goes at least three "why"s deep.
 - No private details and no blame, as described above.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

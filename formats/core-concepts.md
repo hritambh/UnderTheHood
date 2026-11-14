@@ -22,6 +22,17 @@ Examples: caching, load balancing, rate limiting, pagination, consistency models
 | an attack and how to defend against it | `security` |
 | a choice between options ("SQL vs NoSQL") | `decisions` |
 
+## Length and visuals
+
+The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
+
+- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **At least two diagrams**: one in `internals` showing the flow, one more in `realWorld` or `types` (the types side by side).
+- Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
+- Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
+- First thing to cut in this track: the third and fourth type. Two or three types explained well beat six listed.
+
 ## The 12 sections
 
 Write them in this order. The site adds the titles, so don't repeat them in the content.
@@ -44,9 +55,10 @@ Write them in this order. The site adds the titles, so don't repeat them in the 
 ## Must have
 
 - A one-line version in a note box at the end of `what`.
-- At least one diagram, in `internals`.
+- Two diagrams: the flow in `internals`, and one more in `realWorld` or `types`.
 - A comparison table at the end of `types`.
 - Worked maths in `numbers`, with assumptions labelled as made up.
+- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
 
 ## A good example to copy from
 
