@@ -33,6 +33,8 @@ const DEFAULT_SECTIONS = [
 const esc = s => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+const noSvg = html => String(html).replace(/<svg[\s\S]*?<\/svg>/gi, ' ');
+
 const plain = html => String(html)
   .replace(/<\/?(strong|em|code|b|i|span|sup|sub)\b[^>]*>/gi, '')
   .replace(/<[^>]+>/g, ' ')
@@ -237,7 +239,7 @@ export function build() {
     }
     /* length and visuals: keep topics readable in one sitting (TOPIC_STYLE.md part 7) */
     const all = Object.values(t.sections).join(' ');
-    const topicWords = plain(all).split(/\s+/).filter(Boolean).length;
+    const topicWords = plain(noSvg(all)).split(/\s+/).filter(Boolean).length;
     if (topicWords > MAX_TOPIC_WORDS) {
       notes.push(`${file}: ${topicWords} words, about a ${Math.round(topicWords / 200)} minute read. The budget is 1,200 to 1,700 words (9 minutes). Do the cutting pass in TOPIC_STYLE.md part 7`);
     }
@@ -249,7 +251,7 @@ export function build() {
 
     for (const [key, html] of Object.entries(t.sections)) {
       const at = `${file}, section "${key}"`;
-      const secWords = plain(html.replace(/<pre[\s\S]*?<\/pre>/gi, ' ').replace(/<svg[\s\S]*?<\/svg>/gi, ' '))
+      const secWords = plain(noSvg(html).replace(/<pre[\s\S]*?<\/pre>/gi, ' '))
         .split(/\s+/).filter(Boolean).length;
       if (secWords > MAX_SECTION_WORDS) long.push(`${key} ${secWords}`);
       if ((html.match(/<p>/g) || []).length >= 4 && !/<(ul|ol|table|pre|svg|h4)\b/i.test(html)) {
@@ -289,7 +291,7 @@ export function build() {
 
   for (const t of topics) {
     t.secs = t.track.sections.filter(([k]) => t.sections[k]).map(([k, label]) => ({ key: k, label, html: t.sections[k] }));
-    const words = t.secs.reduce((n, s) => n + plain(s.html).split(' ').length, 0);
+    const words = t.secs.reduce((n, s) => n + plain(noSvg(s.html)).split(' ').length, 0);
     t.minutes = Math.max(1, Math.round(words / 200));
   }
 

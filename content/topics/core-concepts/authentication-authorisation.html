@@ -7,201 +7,67 @@ related: realtime-communication
 -->
 
 <!-- section: what -->
-<p><strong>Authentication</strong> is proving who you are. You type an email and password, and the server checks them.</p>
-<p><strong>Authorisation</strong> is deciding what you’re allowed to do. You are logged in, but can you delete this order? Can you see that invoice?</p>
-<p>They always run in that order. First the server works out who is calling. Then it checks if that person can do the thing they asked for.</p>
-<p>HTTP status codes follow the same split:</p>
-<ul>
-<li><code>401 Unauthorized</code>: “I don’t know who you are.” Authentication failed. (The name is confusing. It really means “not authenticated”.)</li>
-<li><code>403 Forbidden</code>: “I know who you are, and the answer is no.” Authorisation failed.</li>
-</ul>
-<p>Authentication has two parts, and people often mix them up:</p>
+<p><strong>Authentication</strong> is proving who you are. <strong>Authorisation</strong> is deciding what you’re allowed to do. Always in that order: first who is calling, then whether they may do this.</p>
+<p>The status codes follow the same split. <code>401 Unauthorized</code> means “I don’t know who you are” — the name is misleading, it really means not authenticated. <code>403 Forbidden</code> means “I know who you are, and the answer is no”.</p>
+<p>Authentication has two halves, and the design choices all sit in the second one:</p>
 <ol>
-<li><strong>Logging in</strong>: you prove who you are once, with a password, a one-time code, or a passkey.</li>
-<li><strong>Staying logged in</strong>: the server remembers you for the next requests, so you don’t send your password every time.</li>
+<li><strong>Logging in</strong>: proving yourself once, with a password, a one-time code or a passkey.</li>
+<li><strong>Staying logged in</strong>: the server remembering you, so you don’t send the password again.</li>
 </ol>
-<p>This topic is mostly about part 2, because that is where the design choices are. The common ways to do it are:</p>
-<ul>
-<li><strong>Sessions</strong>: the server keeps a record of your login and gives the browser a random ID.</li>
-<li><strong>JWT</strong> (JSON Web Token, usually said “jot”): the server gives you a signed token that holds your details. The server keeps nothing.</li>
-<li><strong>API keys</strong>: a long secret string that identifies a program, not a person.</li>
-<li><strong>OAuth 2.0 and OpenID Connect</strong>: another service you already trust, like Google, tells the app who you are. This is “Login with Google”.</li>
-</ul>
+<p>Four ways to do the second half: <strong>sessions</strong> (the server keeps the record, the browser holds a random id), <strong>JWTs</strong> (you carry a signed token), <strong>API keys</strong> (a secret that identifies a program), and <strong>OAuth / OpenID Connect</strong> (a service you trust vouches for you).</p>
 <p class="note">One-line version: authentication = “who are you?”, authorisation = “what can you do?”. Session = the server remembers you. JWT = you carry a signed note that says who you are.</p>
 
 <!-- section: why -->
-<p>HTTP has no memory. Every request shows up alone, with no link to the one before it. The server can’t tell if two requests came from the same person.</p>
-<p>So after you log in, <em>every</em> request has to carry some proof of who you are. The server checks that proof again each time.</p>
-<p>Without authentication, anyone can say they are anyone. Without authorisation, any logged-in user can read anyone else’s data. Both end the same way: leaked data and taken-over accounts.</p>
-<p>Why not just send the password with every request? Three reasons:</p>
-<ul>
-<li>Checking a password is slow on purpose. The numbers section shows how slow.</li>
-<li>The app would have to keep your password around, which is one more place to steal it from.</li>
-<li>You can’t give limited or short-lived access with a password. It is all or nothing until it’s changed.</li>
-</ul>
-<p>So you log in once and get something weaker and short-lived in return: a session ID or a token. The choice between them matters because they differ on a few things:</p>
-<ul>
-<li><strong>Where the login lives</strong>: on the server (session) or inside the token the client holds (JWT).</li>
-<li><strong>How fast you can cancel it</strong>: right now, or only when it expires.</li>
-<li><strong>How many servers need to check it</strong>: one app, or twenty services.</li>
-<li><strong>Who is calling</strong>: a browser, a mobile app, or another company’s server.</li>
-</ul>
-<p>The real question is: <em>where do I keep the proof of login, and how fast can I take it away?</em></p>
+<p>HTTP has no memory. Every request arrives alone, with no link to the one before, so the server can’t tell that two requests came from the same person. After login, <em>every</em> request has to carry proof.</p>
+<p>Why not send the password each time? Checking one is slow on purpose (see the numbers), the app would have to keep it around, and a password is all-or-nothing — no limited or short-lived access.</p>
+<p>So you log in once and get something weaker back. Which weak thing you pick comes down to: <strong>where do you keep the proof, and how fast can you take it away?</strong></p>
 
 <!-- section: realWorld -->
-<p>Think of an office building with a front desk and a guard on every floor.</p>
+<p>An office building with a front desk and a guard on every floor. The desk checking your ID is authentication; the floor-5 guard checking you may enter is authorisation. How do the guards know you passed the desk?</p>
 <ul>
-<li><strong>Authentication</strong> is the front desk checking your ID card when you walk in.</li>
-<li><strong>Authorisation</strong> is the guard on floor 5 checking if you’re allowed on floor 5.</li>
+<li><strong>Session</strong>: a plain badge numbered 4417. The number means nothing, so every guard phones the desk: “who is 4417?” Get fired at 2 pm, the desk crosses it out, and the badge dies on the next check.</li>
+<li><strong>JWT</strong>: a pass saying “Asha, engineer, floors 1–5, valid until 6 pm”, with a stamp that’s hard to fake. No phone calls — guards read it and check the stamp. Fast, works even when the desk phone is down. Get fired at 2 pm and the pass still works until 6.</li>
+<li><strong>API key</strong>: a loading-bay card given to the courier company. It belongs to a company, not a person, and it works for months.</li>
+<li><strong>OAuth</strong>: a visitor shows a letter from a company the building trusts — “this is Ravi, meeting room 2 only”. The building never sees Ravi’s password.</li>
 </ul>
-<p>Now, how do the guards know you already showed your ID at the desk?</p>
-<ul>
-<li><strong>Session</strong>: the desk gives you a plain badge with a number on it, say 4417. The number means nothing by itself. Every guard phones the desk and asks, “Who is 4417?” The desk looks in its register and answers. If you get fired at 2 pm, the desk crosses out 4417, and the badge stops working on the very next check.</li>
-<li><strong>JWT</strong>: the desk gives you a pass that says “Asha, engineer, floors 1 to 5, valid until 6 pm”, with an official stamp that is hard to fake. Guards don’t phone anyone. They read the pass and check the stamp. This is fast, and it works even if the desk phone is down. But if you get fired at 2 pm, the pass still looks fine until 6 pm.</li>
-<li><strong>API key</strong>: the building gives the courier company a key card for the loading bay. It belongs to the company, not to one person, and it works for months.</li>
-<li><strong>OAuth / “Login with Google”</strong>: a visitor has no ID from this building. They show a letter from a company the building trusts. It says “this is Ravi, and he may use meeting room 2 only”. The building never sees Ravi’s own company password. It trusts the letter.</li>
-</ul>
-<p>The costs show up here too:</p>
-<ul>
-<li>With badges, the desk phone rings on every single check. If the desk is busy or down, nobody gets through.</li>
-<li>With stamped passes, there are no phone calls. But you can’t cancel a pass early, unless guards also carry a list of cancelled passes. And a list they must check every time is just the phone call again.</li>
-<li>If someone steals a badge or a pass, they can use it. Short expiry times limit the damage.</li>
-</ul>
+<p>The costs are in the story too. Badges ring the desk phone constantly, and a busy desk blocks everyone. Stamped passes make no calls but can’t be cancelled early — unless guards carry a list of cancelled passes, which is the phone call again.</p>
 
 <!-- section: software -->
-<p>Say you’re building a food-delivery app with a NestJS backend. Users log in and see their own orders. Admins can see all orders.</p>
-<p>Below is the same login done two ways, and then the permission check.</p>
+<p>A food-delivery app on NestJS: users see their own orders, admins see all. Login checks the password the same way either way — <code>argon2.verify(user.passwordHash, password)</code>, against a slow salted <strong>hash</strong> (a one-way scramble, with a random value mixed in per user so identical passwords differ).</p>
+<p><strong>Session version:</strong> the login lives in Redis, the browser gets a cookie holding only an id.</p>
+<pre><code>// main.ts — cookie holds only the id; the data sits in Redis
+app.use(session({ store: new RedisStore({ client: redis }),
+  cookie: { httpOnly: true, secure: true, sameSite: 'lax' } }));
 
-<h4>Checking the password (same for both options)</h4>
+req.session.userId = user.id;
+req.session.destroy(() =&gt; {});   // logout: gone from Redis, so gone now</code></pre>
+<p><strong>JWT version:</strong> the server signs a token and stores nothing.</p>
 <pre><code>// auth.service.ts
-async checkPassword(email: string, password: string) {
-  const user = await this.users.findByEmail(email);
-  if (!user) return null;
-  // the database stores a slow, salted hash, never the password
-  const ok = await argon2.verify(user.passwordHash, password);
-  return ok ? user : null;
-}</code></pre>
-<p>A <strong>hash</strong> is a one-way scramble. You can turn a password into its hash, but you can’t turn the hash back into the password. <strong>Salted</strong> means a random value is mixed in for each user, so two users with the same password get different hashes.</p>
+return { accessToken: await this.jwt.signAsync(
+  { sub: user.id, role: user.role }, { expiresIn: '15m' }) };
 
-<h4>Option 1: session login</h4>
-<p>The session lives in Redis, a fast in-memory store. The browser only gets a cookie with the session ID.</p>
-<pre><code>// main.ts  (session setup, connect-redis v8)
-import * as session from 'express-session';
-import { RedisStore } from 'connect-redis';
-import { createClient } from 'redis';
-
-const redis = createClient({ url: process.env.REDIS_URL });
-await redis.connect();
-
-app.use(session({
-  store: new RedisStore({ client: redis }),
-  secret: process.env.SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,   // page JavaScript can't read the cookie
-    secure: true,     // sent over HTTPS only
-    sameSite: 'lax',  // not sent on cross-site POSTs
-    maxAge: 7 * 24 * 60 * 60 * 1000,  // 7 days
-  },
-}));</code></pre>
-<pre><code>// auth.controller.ts  (session version)
-@Post('login')
-async login(@Body() dto: LoginDto, @Req() req: Request) {
-  const user = await this.auth.checkPassword(dto.email, dto.password);
-  if (!user) throw new UnauthorizedException();
-  req.session.userId = user.id;  // saved in Redis, not in the cookie
-  return { ok: true };
-}
-
-@Post('logout')
-logout(@Req() req: Request) {
-  req.session.destroy(() =&gt; {});  // gone from Redis = logged out now
-}</code></pre>
-<p>After login, the browser sends the cookie by itself on every request. The server reads <code>req.session.userId</code> to know who is calling.</p>
-
-<h4>Option 2: JWT login</h4>
-<p>The server signs a token and hands it over. It stores nothing.</p>
-<pre><code>// auth.service.ts  (JWT version)
-async login(email: string, password: string) {
-  const user = await this.checkPassword(email, password);
-  if (!user) throw new UnauthorizedException();
-  const payload = { sub: user.id, role: user.role };
-  return {
-    accessToken: await this.jwt.signAsync(payload, { expiresIn: '15m' }),
-  };
-}</code></pre>
-<pre><code>// jwt.guard.ts
-@Injectable()
-export class JwtGuard implements CanActivate {
-  constructor(private readonly jwt: JwtService) {}
-
-  async canActivate(ctx: ExecutionContext): Promise&lt;boolean&gt; {
-    const req = ctx.switchToHttp().getRequest();
-    const [type, token] = (req.headers.authorization ?? '').split(' ');
-    if (type !== 'Bearer' || !token) throw new UnauthorizedException();
-    try {
-      // checks the signature and the expiry time
-      req.user = await this.jwt.verifyAsync(token);
-    } catch {
-      throw new UnauthorizedException();
-    }
-    return true;
-  }
-}</code></pre>
-<p>The client sends the token in a header on every request: <code>Authorization: Bearer &lt;token&gt;</code>. “Bearer” means “whoever carries this token gets in”.</p>
-
-<h4>Authorisation: the check people forget</h4>
+// jwt.guard.ts — signature and expiry only, no lookup
+req.user = await this.jwt.verifyAsync(token);</code></pre>
+<p>The client sends <code>Authorization: Bearer &lt;token&gt;</code>. “Bearer” means whoever carries it gets in.</p>
+<p>Neither of those is authorisation. That is the check people forget:</p>
 <pre><code>// orders.controller.ts
-@UseGuards(JwtGuard)            // authentication: who is calling?
+@UseGuards(JwtGuard)                       // 401 if we don't know who you are
 @Get(':id')
 async getOrder(@Param('id') id: string, @Req() req) {
   const order = await this.orders.findById(id);
-  if (!order) throw new NotFoundException();
-
-  // authorisation: can this user see THIS order?
-  const isOwner = order.userId === req.user.sub;
-  const isAdmin = req.user.role === 'admin';
-  if (!isOwner &amp;&amp; !isAdmin) throw new ForbiddenException();
-
+  if (order.userId !== req.user.sub &amp;&amp; req.user.role !== 'admin')
+    throw new ForbiddenException();        // 403: known, but not allowed
   return order;
 }</code></pre>
-<p>The guard answers “who is this?” and fails with 401. The check inside answers “can they see <em>this</em> order?” and fails with 403. You need both. A valid login doesn’t mean the order is theirs.</p>
-
-<p>Notice what is now harder:</p>
-<ul>
-<li>With sessions, every request does a Redis lookup. Redis becomes something your whole app depends on.</li>
-<li>With JWTs, logout is not real. The token works until it expires, unless you add a second piece like a refresh token. The next section covers this.</li>
-<li>Either way, every endpoint that returns data needs its own “is this theirs?” check. No library does that for you.</li>
-</ul>
-<p class="note">NestJS also has <code>@nestjs/passport</code>, which wraps the Passport library and gives you ready-made “strategies” for sessions, JWTs, and Google login. The hand-written guard above shows what those do inside.</p>
+<p>A valid login does not make the order yours. Every endpoint that takes an id needs its own check, and no library writes that for you.</p>
 
 <!-- section: internals -->
-<h4>Session flow</h4>
-<ol>
-<li>Browser sends <code>POST /login</code> with email and password.</li>
-<li>Server finds the user and checks the password against the stored hash.</li>
-<li>Server makes a long random session ID and saves <code>session ID → user ID, expiry</code> in Redis or the database.</li>
-<li>Server replies with <code>Set-Cookie: sid=…; HttpOnly; Secure; SameSite=Lax</code>.</li>
-<li>From now on, the browser adds that cookie to every request to this site. Your frontend code does nothing.</li>
-<li>On each request, the server reads the ID from the cookie, looks it up in the store, and gets the user. If the ID isn’t there, it replies 401.</li>
-<li>Logout deletes the record from the store. The cookie is now a useless number.</li>
-</ol>
-
-<h4>JWT flow</h4>
-<ol>
-<li>The start is the same: the browser sends the password and the server checks it.</li>
-<li>Server builds a token with the user’s ID, role, and an expiry time, and <strong>signs</strong> it with a secret key.</li>
-<li>Server sends the token back. The client keeps it.</li>
-<li>On each request, the client sends <code>Authorization: Bearer &lt;token&gt;</code>.</li>
-<li>Server checks the signature and the expiry time. Both are just maths on the token itself. There is no lookup.</li>
-<li>If the signature is good and the token hasn’t expired, the server trusts what the token says.</li>
-</ol>
+<p><strong>Session:</strong> the server makes a long random id, stores <code>id → user, expiry</code> in Redis, and returns <code>Set-Cookie: sid=…</code>. The browser attaches that cookie to every request by itself; the server looks it up each time. Logout deletes the record, and the cookie becomes a useless number.</p>
+<p><strong>JWT:</strong> the server builds a token holding the user id, role and expiry, and <strong>signs</strong> it with a key. The client sends it in a header. The server checks the signature and the expiry — pure maths on the token, no lookup — and then trusts what it says.</p>
 
 <div class="diagram">
-<svg viewBox="0 0 640 250" role="img" aria-label="With a session, the server looks up the session ID in a store on every request. With a JWT, the server checks the signature and needs no lookup.">
+<svg viewBox="0 0 640 250" role="img" aria-label="With a session, the server looks the session ID up in a store on every request. With a JWT, the server checks the signature and needs no lookup.">
 <defs><marker id="ah-auth" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
-
 <text x="20" y="24" class="lbl">Session</text>
 <text x="78" y="24" class="sub">the server looks the ID up on every request</text>
 <rect x="20" y="40" width="130" height="50" rx="8" class="box"/><text x="85" y="70" text-anchor="middle" class="lbl">Browser</text>
@@ -219,193 +85,117 @@ async getOrder(@Param('id') id: string, @Req() req) {
 </svg>
 </div>
 
-<h4>What is inside a JWT</h4>
-<p>A JWT is three parts joined by dots: <code>header.payload.signature</code>.</p>
-<ul>
-<li><strong>Header</strong>: which signing method was used, for example <code>{"alg":"HS256","typ":"JWT"}</code>.</li>
-<li><strong>Payload</strong>: the facts about the user, called <strong>claims</strong>. For example <code>{"sub":"user_42","role":"admin","exp":1798761600}</code>. Here <code>sub</code> is the user ID and <code>exp</code> is the expiry time.</li>
-<li><strong>Signature</strong>: what you get when you run the header and payload through a signing function with the server’s secret key.</li>
-</ul>
-<p>Say someone changes one character of the payload, like <code>"role":"user"</code> to <code>"role":"admin"</code>. The signature no longer matches, and the server rejects the token. They can’t make a new signature, because they don’t have the key.</p>
-<p class="note">The header and payload are only encoded (Base64URL), <strong>not encrypted</strong>. Anyone who has the token can read them. Paste one into jwt.io and you’ll see what is inside. Never put passwords or private data in a JWT.</p>
-
-<h4>Access tokens and refresh tokens</h4>
-<p>A JWT can’t be cancelled, so you keep it short-lived, often 15 minutes. But nobody wants to log in every 15 minutes. So login returns two things:</p>
-<ol>
-<li>An <strong>access token</strong>: the short-lived JWT, sent on every request.</li>
-<li>A <strong>refresh token</strong>: a long-lived random string, saved in the server’s database. It is only ever sent to one endpoint, <code>POST /refresh</code>.</li>
-</ol>
-<p>When the access token expires, the client calls <code>/refresh</code>. The server looks up the refresh token in the database. If it is still there, the server gives out a new access token.</p>
-<p>To log someone out, delete their refresh token. Their access token dies within 15 minutes and can’t be renewed.</p>
+<p>A JWT is <code>header.payload.signature</code>: the signing method, the facts (<strong>claims</strong>) like <code>{"sub":"user_42","role":"admin"}</code>, and a signature over both. Change one character and the signature stops matching, and nobody can forge a new one without the key.</p>
+<p class="note">Header and payload are <strong>encoded, not encrypted</strong>. Anyone holding the token can read them. Never put private data in a JWT.</p>
+<p>Because a JWT can’t be cancelled, you keep it short — 15 minutes — and pair it with a <strong>refresh token</strong>: a long-lived random string stored in your database and sent only to <code>POST /refresh</code>. Logout deletes that row, so the access token dies within 15 minutes and can’t be renewed.</p>
 
 <!-- section: types -->
-<h4>1. Sessions</h4>
-<p><strong>How:</strong> the server stores the login. The browser holds a random ID in a cookie.</p>
-<p><strong>Use when:</strong> you have a web app where the browser talks to your own backend. This is the simple default.</p>
-<p><strong>Good:</strong> logout and “ban this user” work at once. The cookie holds nothing readable. You can list a user’s active logins and end any of them.</p>
-<p><strong>Bad:</strong> a store lookup on every request. Every server has to reach the same store. Cookies also need protection against an attack called CSRF, where another website makes your browser send a request with your cookie attached.</p>
-
-<h4>2. JWT</h4>
-<p><strong>How:</strong> the client holds a signed token with the user’s details. The server only checks the signature.</p>
-<p><strong>Use when:</strong> many services need to check the user without calling a central auth service each time. Also common for mobile apps and public APIs.</p>
-<p><strong>Good:</strong> no lookup, so any service with the key can check it. Works the same for browsers, mobile apps, and other servers.</p>
-<p><strong>Bad:</strong> can’t be cancelled before it expires. Bigger than a session ID. If the user’s role changes, the old token still says the old role until it expires.</p>
-
-<h4>3. API keys</h4>
-<p><strong>How:</strong> you create a long random string for a customer or a service. They send it in a header like <code>X-API-Key</code> on every call. The server keeps a hash of the key and looks that up.</p>
-<p><strong>Use when:</strong> the caller is a program, not a person. A cron job, a partner’s server, a developer using your public API.</p>
-<p><strong>Good:</strong> very simple. Each key can have its own permissions and its own rate limit (a cap on calls per minute). It is easy to cancel one key.</p>
-<p><strong>Bad:</strong> keys live for months, so a leaked key works until someone notices. Keys end up pasted in code and chat messages. A key identifies the app, not the person using it.</p>
-
-<h4>4. OAuth 2.0 and OpenID Connect</h4>
-<p>These two are often mixed up.</p>
-<ul>
-<li><strong>OAuth 2.0</strong> is about <em>access</em>. It lets an app get limited access to your data on another service, without ever seeing your password for that service. Example: a calendar app that can read your Google Calendar, and nothing else. The limits are called <strong>scopes</strong>.</li>
-<li><strong>OpenID Connect (OIDC)</strong> is a thin layer on top of OAuth that adds <em>identity</em>. Along with the access token, the app gets an <strong>ID token</strong>: a JWT that says who the user is. This is what “Login with Google” uses.</li>
-</ul>
-<p>The usual flow is called the <strong>authorization code flow</strong>:</p>
-<ol>
-<li>You click “Login with Google”. The app sends your browser to Google, with the app’s ID and the scopes it wants.</li>
-<li>You log in <em>at Google</em> and approve. The app never sees your Google password.</li>
-<li>Google sends your browser back to the app with a one-time <strong>code</strong> in the URL.</li>
-<li>The app’s backend sends that code to Google, along with the app’s own secret, and gets tokens back.</li>
-<li>The app reads your Google user ID and email from the ID token. It finds or creates your account, and starts its <em>own</em> session or JWT for you.</li>
-</ol>
-<p>Step 5 is easy to miss. Google only handles the login. After that, your app still needs sessions or JWTs to keep the user logged in.</p>
-<p><strong>Use when:</strong> you want “Login with Google” or “Login with GitHub”. Or your company wants one login for all its tools, which is called single sign-on (SSO). Or other apps need limited access to your users’ data.</p>
-<p><strong>Good:</strong> you don’t store passwords at all. Users don’t need one more password.</p>
-<p><strong>Bad:</strong> more moving parts, and you depend on the other service. If Google login is down, so is yours.</p>
-<p class="note">Mobile apps and single-page apps can’t keep a secret, because users can open them up and look inside. They add a step called <strong>PKCE</strong> (said “pixy”). The app makes a random value at the start, and at step 4 it proves it knows that value. A stolen code is useless without it.</p>
-
-<h4>Authorisation models</h4>
-<p>Once you know who the user is, there are three common ways to decide what they can do. Most apps mix them.</p>
-<ul>
-<li><strong>Ownership checks</strong>: “is this order yours?” Compare the user ID on the record with the user ID of the caller. Every app needs this.</li>
-<li><strong>RBAC (role-based access control)</strong>: each user has a role like <code>admin</code>, <code>support</code>, or <code>customer</code>, and each role has a list of allowed actions. Simple, and enough for most apps.</li>
-<li><strong>ABAC (attribute-based access control)</strong>: rules that look at facts about the user, the record, and the request. For example, “a manager can approve expenses under ₹50,000 from their own department”. Flexible, but harder to test and to explain.</li>
-</ul>
-
 <div class="table-wrap"><table>
 <tr><th></th><th>Session</th><th>JWT</th><th>API key</th><th>OAuth / OIDC</th></tr>
-<tr><td>Who it identifies</td><td>A user</td><td>A user or a service</td><td>An app or service</td><td>A user, through another service</td></tr>
-<tr><td>Where the login lives</td><td>Server store</td><td>Inside the token</td><td>Server database</td><td>The other service, then your own session or JWT</td></tr>
-<tr><td>Lookup per request</td><td>Yes</td><td>No</td><td>Yes</td><td>Depends on what you use after login</td></tr>
-<tr><td>Cancel it right now</td><td>Yes, delete it</td><td>No, wait for expiry</td><td>Yes, delete it</td><td>Depends on what you use after login</td></tr>
-<tr><td>Typical lifetime</td><td>Days to weeks</td><td>Minutes (access token)</td><td>Months, until replaced</td><td>Tokens last minutes to hours</td></tr>
-<tr><td>Typical use</td><td>Web app with one backend</td><td>Many services, mobile apps</td><td>Server-to-server, public APIs</td><td>Login with Google, SSO</td></tr>
+<tr><td>Identifies</td><td>A user</td><td>A user or service</td><td>An app</td><td>A user, via another service</td></tr>
+<tr><td>Login lives</td><td>Server store</td><td>In the token</td><td>Server database</td><td>Elsewhere, then your own session</td></tr>
+<tr><td>Lookup per request</td><td>Yes</td><td>No</td><td>Yes</td><td>Whatever you use after login</td></tr>
+<tr><td>Cancel now</td><td>Yes</td><td>No, wait for expiry</td><td>Yes</td><td>Same</td></tr>
+<tr><td>Typical life</td><td>Days to weeks</td><td>Minutes</td><td>Months</td><td>Minutes to hours</td></tr>
+<tr><td>Fits</td><td>One backend + browser</td><td>Many services, mobile</td><td>Server to server</td><td>Login with Google, SSO</td></tr>
 </table></div>
+<h4>OAuth 2.0 and OpenID Connect</h4>
+<p>OAuth is about <em>access</em>: an app reads your calendar and nothing else, never seeing your password. Those limits are <strong>scopes</strong>. OpenID Connect adds <em>identity</em>: an <strong>ID token</strong> saying who you are. That is “Login with Google”.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 210" role="img" aria-label="Authorization code flow: browser to Google, code back to the app, app swaps code for tokens, app starts its own session">
+<defs><marker id="ah2-auth" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="20" y="40" width="140" height="56" rx="8" class="box"/><text x="90" y="64" text-anchor="middle" class="lbl">Browser</text><text x="90" y="82" text-anchor="middle" class="sub">clicks “Login with Google”</text>
+<rect x="250" y="40" width="140" height="56" rx="8" class="box hi"/><text x="320" y="64" text-anchor="middle" class="lbl">Google</text><text x="320" y="82" text-anchor="middle" class="sub">user logs in here</text>
+<rect x="480" y="40" width="140" height="56" rx="8" class="box"/><text x="550" y="64" text-anchor="middle" class="lbl">Your backend</text><text x="550" y="82" text-anchor="middle" class="sub">holds the app secret</text>
+<rect x="480" y="140" width="140" height="50" rx="8" class="box hi"/><text x="550" y="162" text-anchor="middle" class="lbl">Your session</text><text x="550" y="179" text-anchor="middle" class="sub">or your own JWT</text>
+<line x1="160" y1="60" x2="248" y2="60" class="arr" marker-end="url(#ah2-auth)"/><text x="204" y="52" text-anchor="middle" class="sub">1. redirect</text>
+<line x1="248" y1="82" x2="162" y2="82" class="arr dim" marker-end="url(#ah2-auth)"/><text x="204" y="100" text-anchor="middle" class="sub">2. one-time code</text>
+<line x1="160" y1="96" x2="478" y2="140" class="arr" marker-end="url(#ah2-auth)"/><text x="300" y="130" class="sub">3. code to your app</text>
+<path d="M550 40 C 610 10, 410 4, 392 48" class="arr" fill="none" marker-end="url(#ah2-auth)"/><text x="430" y="24" class="sub">4. code + secret → tokens</text>
+<line x1="550" y1="96" x2="550" y2="138" class="arr" marker-end="url(#ah2-auth)"/><text x="560" y="122" class="sub">5. start your own login</text>
+</svg>
+</div>
+
+<p>Step 5 is the one people miss: Google only handles the login. Your app still needs its own session or JWT afterwards. Apps that can’t keep a secret — mobile, single-page — add <strong>PKCE</strong>, proving at step 4 that they made the request, so a stolen code is useless.</p>
+
+<h4>Deciding what they can do</h4>
+<ul>
+<li><strong>Ownership checks</strong>: “is this order yours?” Every app needs these.</li>
+<li><strong>RBAC</strong>: roles like <code>admin</code> or <code>support</code>, each with allowed actions. Enough for most apps.</li>
+<li><strong>ABAC</strong>: rules over attributes — “a manager approves expenses under ₹50,000 in their own department”. Flexible, hard to test.</li>
+</ul>
 
 <!-- section: numbers -->
-<p><strong>Assumptions</strong> (made up for this example, not benchmarks): the app gets 2,000 requests per second, and 1 million users are logged in. Every request needs an authentication check.</p>
-
-<h4>Sessions</h4>
+<p><strong>Assumptions</strong>, made up: 2,000 requests/s, 1 million logged-in users, every request authenticated.</p>
 <ul>
-<li>Lookups: 2,000 requests/s = <strong>2,000 Redis lookups/s</strong>.</li>
-<li>Extra time: if one lookup takes about 1 ms on the same network, every request gets about <strong>1 ms slower</strong>.</li>
-<li>Memory: say one session takes 200 bytes. 1,000,000 × 200 bytes = <strong>200 MB</strong>. That fits on one small Redis server.</li>
-<li>Cookie size: say 100 bytes per request. 2,000 × 100 = 200,000 bytes/s = <strong>200 KB/s</strong> of request headers.</li>
+<li><strong>Sessions</strong>: 2,000 Redis lookups/s, about <strong>1 ms</strong> per request. At 200 bytes each, 1,000,000 sessions = <strong>200 MB</strong>, one small Redis.</li>
+<li><strong>JWTs</strong>: <strong>0</strong> lookups, but a 300-byte token on every request is <strong>600 KB/s</strong> of headers, three times the cookie.</li>
+<li><strong>Refreshes</strong>: 15-minute tokens, 100,000 active users → 100,000 ÷ 900 s ≈ <strong>111 refresh calls/s</strong>, which <em>do</em> hit the database. So JWTs cut lookups from 2,000/s to 111/s, not to zero.</li>
 </ul>
-
-<h4>JWTs</h4>
-<ul>
-<li>Lookups: <strong>0</strong>. Checking a signature is CPU work, and it takes a tiny part of a millisecond.</li>
-<li>Token size: say 300 bytes for a small payload. 2,000 × 300 = 600,000 bytes/s = <strong>600 KB/s</strong> of request headers. That is three times the session cookie, and it grows with everything you add to the payload.</li>
-<li>Refresh calls: tokens last 15 minutes, which is 900 seconds. Say 100,000 of those users are active. That is 100,000 ÷ 900 ≈ <strong>111 refresh calls/s</strong>, and each one <em>does</em> hit the database.</li>
-</ul>
-<p>So JWTs don’t remove the lookups completely. In this example they cut them from 2,000/s to about 111/s.</p>
-
-<h4>How long does a cancelled or stolen login keep working?</h4>
-<ul>
-<li>Session: until the next request. You delete it and it’s gone.</li>
-<li>JWT with a 15-minute life: up to <strong>15 minutes</strong>. About 7.5 minutes on average, if the token was made at a random moment.</li>
-<li>JWT with a 24-hour life: up to <strong>24 hours</strong>. This is why long-lived JWTs are risky.</li>
-</ul>
-
-<h4>Why you log in once, and not on every request</h4>
-<p>Password hashes are slow on purpose, so that guessing millions of passwords takes far too long. Say one check takes 100 ms of CPU time.</p>
-<ul>
-<li>50 logins/s × 100 ms = 5 seconds of CPU work every second. That keeps <strong>5 CPU cores</strong> busy just for logins.</li>
-<li>If all 2,000 requests/s carried a password, that would be 2,000 × 100 ms = 200 seconds of CPU work every second, or <strong>200 cores</strong>.</li>
-</ul>
-<p>That is the reason for the whole design. Do the slow check once at login, then use a cheap proof (a session ID or a token) after that.</p>
+<p><strong>A cancelled login keeps working</strong> until the next request with a session, up to 15 minutes with a short JWT, and up to a full day with a 24-hour one.</p>
+<p><strong>Why you don’t re-check the password.</strong> Hashes are slow on purpose, say 100 ms of CPU. 50 logins/s keeps <strong>5 cores</strong> busy. If all 2,000 requests/s carried a password: 200 seconds of CPU every second, <strong>200 cores</strong>. That number is the reason for the whole design.</p>
 
 <!-- section: tradeoffs -->
 <ul>
-<li><strong>Server memory vs no lookups.</strong> Sessions keep the login on the server and pay a lookup per request. JWTs keep it in the token and pay nothing per request.</li>
-<li><strong>Instant cancel vs independence.</strong> A session can be killed at once, but every service has to reach the session store. A JWT can be checked by any service alone, but it can’t be killed early.</li>
-<li><strong>Short life vs fewer refreshes.</strong> A 5-minute token limits the damage if it’s stolen, but clients refresh more often. A 24-hour token is easy on the servers and a gift to a thief.</li>
-<li><strong>Cookies vs the Authorization header.</strong> The browser sends cookies by itself. That is handy, but it also means another website can make your browser send a request with your cookie attached. This attack is <strong>CSRF</strong> (cross-site request forgery). <code>SameSite</code> cookies and CSRF tokens stop it. A token in a header is never sent by itself, so there is no CSRF. But your JavaScript has to keep that token somewhere. If an attacker gets a script onto your page, which is called <strong>XSS</strong> (cross-site scripting), that script can read the token and send it away.</li>
-<li><strong>One shared secret vs a key pair.</strong> With HS256, the same secret signs tokens and checks them. So every service that can check a token can also make one. With RS256 or ES256, a private key signs and a public key checks. Only the auth service can make tokens, and everyone else gets the public key. Use a key pair when more than one service checks tokens.</li>
-<li><strong>Simple roles vs detailed rules.</strong> Roles are easy to understand and to test. Detailed rules can say anything, but it gets hard to answer “who can see this?”</li>
-<li><strong>Build it vs buy it.</strong> Writing login yourself teaches you a lot and has no monthly bill. A hosted service or an open-source server (Auth0, Clerk, Amazon Cognito, Keycloak) comes with password reset, email checks, two-step login, and Google login already done. For a real product, most teams should not write all of this from scratch.</li>
+<li><strong>Lookups vs cancellation.</strong> A session dies the moment you delete it, but every service must reach the store. A JWT is checked anywhere, and can’t be killed early.</li>
+<li><strong>Short life vs fewer refreshes.</strong> Five minutes limits the damage from theft; 24 hours is easy on the servers and a gift to a thief.</li>
+<li><strong>Cookies vs the Authorization header.</strong> Browsers send cookies by themselves, which is handy and exactly why <strong>CSRF</strong> works. <code>SameSite</code> and CSRF tokens stop it. A header token has no CSRF, but JavaScript must hold it, and <strong>XSS</strong> can read it.</li>
+<li><strong>Shared secret vs key pair.</strong> With HS256 anything that verifies can also mint. With RS256 only the auth service signs; everyone else gets the public key.</li>
+<li><strong>Roles vs rules.</strong> Roles are easy to test. Attribute rules express anything, and make “who can see this?” hard to answer.</li>
 </ul>
 
 <!-- section: whenToUse -->
-<h4>Signals for each choice</h4>
 <ul>
-<li><strong>Sessions:</strong> a web app with one backend, or a few backends that share one Redis. You want logout and bans to work at once. You want the simplest thing that is safe.</li>
-<li><strong>JWT:</strong> several services each need to know who the user is. Or your clients are mobile apps and other servers, where cookies are awkward. Use a short access token with a refresh token.</li>
-<li><strong>API keys:</strong> the caller is a script or a server. Give each customer their own key, so you can limit and cancel them one by one.</li>
-<li><strong>OAuth / OIDC:</strong> you want “Login with Google”, company single sign-on, or to let other apps act for your users.</li>
+<li><strong>Sessions</strong>: a web app with one backend, or a few sharing one Redis, where logout and bans must work at once. The safe default.</li>
+<li><strong>JWT</strong>: several services need to know the user, or the clients are mobile apps where cookies are awkward. Short access token plus refresh token.</li>
+<li><strong>API keys</strong>: the caller is a script or a server. One key per customer, cancellable on its own.</li>
+<li><strong>OAuth / OIDC</strong>: “Login with Google”, single sign-on, or letting other apps act for your users.</li>
 </ul>
-<h4>When you probably don’t need JWTs</h4>
-<p>If you have one backend and a browser frontend, sessions are simpler and safer.</p>
-<p>A common mistake is to pick JWTs because they sound modern, and then add a database check on every request so that logout works. At that point you have built sessions again, with more code.</p>
-<h4>For authorisation</h4>
-<p>Start with ownership checks plus a few roles. Move to detailed rules only when your roles keep growing into things like <code>admin-but-only-for-billing-in-europe</code>.</p>
+<p><strong>You don’t need JWTs</strong> for one backend and a browser. The common mistake is picking them because they sound modern, then adding a database check per request so logout works — that is sessions, rebuilt with extra code.</p>
+<p><strong>For authorisation</strong>, start with ownership checks and a few roles. Add attribute rules only when roles turn into <code>admin-but-only-for-billing-in-europe</code>.</p>
 
 <!-- section: mistakes -->
 <ul>
-<li><strong>Checking login but not ownership.</strong> <code>GET /orders/124</code> returns someone else’s order, because the code only checked that the caller is logged in. This bug is called IDOR (insecure direct object reference), and it is one of the most common ways real apps leak data. Check ownership on every endpoint that takes an ID.</li>
-<li><strong>Trusting the frontend.</strong> Hiding the “Delete” button from normal users is not authorisation. Anyone can call the API directly. The server must check every time.</li>
-<li><strong>Storing passwords badly.</strong> Never store them as plain text, and never with a fast hash like MD5 or SHA-256. Use a slow, salted password hash: Argon2, bcrypt, or scrypt.</li>
-<li><strong>Putting secrets in a JWT.</strong> Anyone who holds the token can read the payload.</li>
-<li><strong>Long-lived JWTs with no refresh token.</strong> A 30-day token that can’t be cancelled is a 30-day problem when it leaks.</li>
-<li><strong>Keeping tokens in <code>localStorage</code>.</strong> Any script on the page can read it, including a bad one that got in through XSS. An <code>HttpOnly</code> cookie can’t be read by scripts at all.</li>
-<li><strong>Not fixing the signing method.</strong> Old JWT bugs let attackers send a token with <code>"alg":"none"</code> and no signature. When you check a token, tell the library exactly which method you accept.</li>
-<li><strong>Cookies without CSRF protection.</strong> Set <code>SameSite</code>, and use CSRF tokens on requests that change data.</li>
-<li><strong>Keeping the same session ID after login.</strong> If an attacker planted a session ID in the victim’s browser before login, they now share the logged-in session. This is called session fixation. Make a new session ID at login.</li>
-<li><strong>Login errors that say too much.</strong> “No account with this email” tells an attacker which emails are registered. Say “wrong email or password” for both cases.</li>
-<li><strong>No limit on login tries.</strong> Without a rate limit, a script can try thousands of passwords. Limit tries per account and per IP address.</li>
-<li><strong>Mixing up 401 and 403.</strong> 401 means “log in first”. 403 means “you are logged in, and the answer is still no”.</li>
+<li><strong>Checking login but not ownership.</strong> <code>GET /orders/124</code> returns someone else’s order. This is IDOR, and it is one of the most common real-world data leaks.</li>
+<li><strong>Trusting the frontend.</strong> Hiding the Delete button is not authorisation. Anyone can call the API.</li>
+<li><strong>Storing passwords badly.</strong> Never plain text, never a fast hash like MD5. Argon2, bcrypt or scrypt, salted.</li>
+<li><strong>Secrets in a JWT, or long-lived JWTs with no refresh token.</strong> A 30-day token that can’t be cancelled is a 30-day problem when it leaks.</li>
+<li><strong>Tokens in <code>localStorage</code>.</strong> Any script on the page can read one. An <code>HttpOnly</code> cookie can’t.</li>
+<li><strong>Not fixing the signing method.</strong> Old JWT bugs accepted <code>"alg":"none"</code>. Name the algorithm you accept.</li>
+<li><strong>Keeping the session id after login.</strong> An attacker who planted it now shares your session. Issue a new one.</li>
+<li><strong>Login errors that say too much.</strong> “No account with this email” tells an attacker which emails exist.</li>
+<li><strong>No limit on login attempts.</strong> Rate limit per account and per IP.</li>
 </ul>
 
 <!-- section: interview -->
 <h4>Common questions</h4>
-<p><strong>“Sessions or JWTs? Which would you pick?”</strong><br>
-It depends on who checks the login. One backend with a browser: sessions in Redis, because logout is instant and the cookie holds nothing readable. Many services: a short-lived JWT so each service can check it alone, plus a refresh token in the database so logins can still be cancelled. Say the trade-off out loud: a lookup on every request vs not being able to cancel early.</p>
-<p><strong>“How do you log a user out if you use JWTs?”</strong><br>
-Keep access tokens short (5 to 15 minutes) and delete the refresh token on logout. If logout must be instant, keep a blocklist of cancelled tokens in Redis until they expire, and check it on each request. A JWT can carry its own ID for this, in the <code>jti</code> claim. Admit the cost: that check is a lookup, which is what JWTs were meant to avoid.</p>
-<p><strong>“How does ‘Login with Google’ work?”</strong><br>
-Walk through the authorization code flow. Redirect to Google. The user logs in there. Google redirects back with a one-time code. Your backend swaps the code for tokens. You read who the user is from the ID token and start your own session.</p>
-<p><strong>“What is the difference between authentication and authorisation?”</strong><br>
-Authentication is who you are, and it fails with 401. Authorisation is what you can do, and it fails with 403. Give the IDOR example to show you know they are separate checks.</p>
-
+<p><strong>“Sessions or JWTs?”</strong><br>
+Depends who checks the login. One backend with a browser: sessions in Redis, since logout is instant. Many services: a short JWT each can verify alone, plus a refresh token in the database so logins can still be cancelled.</p>
+<p><strong>“How do you log out with JWTs?”</strong><br>
+Short access tokens, and delete the refresh token. If logout must be instant, keep a blocklist in Redis keyed by <code>jti</code> — and admit that is a lookup per request, the thing JWTs were avoiding.</p>
+<p><strong>“How does Login with Google work?”</strong><br>
+Authorization code flow: redirect, user logs in at Google, one-time code comes back, your backend swaps it for tokens, you read the ID token and start your own session.</p>
 <h4>Follow-ups to expect</h4>
 <ul>
-<li>Where do you store the token in a browser? (An <code>HttpOnly</code>, <code>Secure</code>, <code>SameSite</code> cookie is the safest default. Avoid <code>localStorage</code>.)</li>
-<li>How do other services check a JWT? (They get the auth service’s public key and check the signature themselves. No call to the auth service per request.)</li>
-<li>What is refresh token rotation? (Every refresh gives a new refresh token and cancels the old one. If an old one shows up again, someone copied it, so you cancel all of that user’s tokens.)</li>
-<li>What do you put in the JWT payload? (User ID, role, expiry. Keep it small, and no private data.)</li>
-<li>How do you store passwords? (Argon2 or bcrypt, salted, never plain text.)</li>
-<li>How do you stop password guessing? (Rate limits, lockouts, and two-step login.)</li>
-<li>Where do authorisation checks live when you have many services? (The gateway checks <em>who</em> the caller is. Each service checks <em>what they can do</em> with its own data.)</li>
+<li>Where do you store a token in a browser? (<code>HttpOnly</code>, <code>Secure</code>, <code>SameSite</code> cookie. Not <code>localStorage</code>.)</li>
+<li>How do other services verify a JWT? (The auth service’s public key, checked locally.)</li>
+<li>What is refresh token rotation? (Each refresh kills the old one; an old one reappearing means it was copied.)</li>
+<li>Where do authorisation checks live across services? (The gateway says <em>who</em>; each service decides <em>what</em>.)</li>
 </ul>
-
 <h4>How it fits a bigger design</h4>
-<p>In most system designs there is an API gateway, the single front door that all requests pass through. It checks the session or token on the way in and passes the user ID to the services behind it. An auth service owns users, password hashes, and refresh tokens. Redis holds sessions or the blocklist.</p>
-<p>Each service still does its own ownership and role checks, because only it knows its data. In an interview, one or two sentences on this is usually enough, unless the question is about auth itself.</p>
+<p>An API gateway is the front door: it checks the session or token and passes the user id back. An auth service owns users, hashes and refresh tokens. Each service still does its own ownership checks.</p>
 
 <!-- section: revision -->
 <ul>
-<li>Authentication proves who you are. Authorisation decides what you are allowed to do.</li>
-<li>A failed authentication returns 401. A failed authorisation returns 403.</li>
-<li>A session keeps the login on the server. The browser holds only a random ID in a cookie, and the server looks it up on every request.</li>
-<li>A JWT keeps the login inside a signed token. The server checks the signature and the expiry time, with no lookup.</li>
-<li>A session can be cancelled at once by deleting it. A JWT works until it expires, so keep it short-lived and pair it with a refresh token.</li>
-<li>Anyone can read a JWT payload, so it must never hold secrets.</li>
+<li>Authentication proves who you are; authorisation decides what you may do.</li>
+<li>Failed authentication is 401. Failed authorisation is 403.</li>
+<li>A session keeps the login on the server, and the browser holds only a random id.</li>
+<li>A JWT keeps the login in a signed token, so the server checks signature and expiry with no lookup.</li>
+<li>Sessions can be cancelled instantly. JWTs live until they expire, so keep them short and pair them with a refresh token.</li>
+<li>JWT payloads are readable by anyone holding the token.</li>
 <li>API keys identify programs, not people.</li>
-<li>OAuth 2.0 gives an app limited access to a user’s data on another service. OpenID Connect adds login on top, which is how “Login with Google” works.</li>
-<li>Cookies need CSRF protection. Tokens that JavaScript can read can be stolen through XSS.</li>
-<li>The server must check ownership on every request, not only that the user is logged in.</li>
+<li>OAuth gives limited access to data elsewhere; OpenID Connect adds identity on top.</li>
+<li>Cookies need CSRF protection; tokens JavaScript can read are exposed to XSS.</li>
+<li>Check ownership on every request, not just that someone is logged in.</li>
 </ul>
