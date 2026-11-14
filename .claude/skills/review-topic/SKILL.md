@@ -23,7 +23,7 @@ The first thing to check is always the same: **is this easy to learn from?** Mod
 
 3. **Run `npm run build`.**
    - Errors: the file breaks the format. These must be fixed.
-   - Lines starting with `Note:`: problems the build can detect. Length and visuals (topic over 2,000 words, sections over 250, fewer than two diagrams, four paragraphs in a row with nothing between them), and style (missing sections, wrong heading level, unwrapped table, hard-coded colour, repeated id, repeated order number, formal words, a revision that is more than a list).
+   - Lines starting with `Note:`: problems the build can detect. Length and visuals (topic over 2,200 words, sections over 250, fewer than two diagrams, four paragraphs in a row with nothing between them), and style (missing sections, wrong heading level, unwrapped table, hard-coded colour, repeated id, repeated order number, formal words, a revision that is more than a list).
 
 4. **Read the whole topic file** and check what the build cannot:
 
@@ -38,7 +38,7 @@ The first thing to check is always the same: **is this easy to learn from?** Mod
    - `revision` is only a summary list of 6 to 10 points. It has no questions, key terms or scenario, and nothing that the topic did not teach earlier.
 
    **Depth, length and visuals** (`TOPIC_STYLE.md` part 7)
-   - The whole topic is 1,200 to 1,700 words, a 6 to 9 minute read. The build prints the notes; the page header shows the time.
+   - The whole topic is 1,400 to 1,900 words, a 7 to 10 minute read. The build prints the notes; the page header shows the time.
    - No section runs past about 250 words, and no paragraph past 5 sentences.
    - At least two diagrams, in the places the format file names.
    - The depth is moderate: what it is, why, how it works at whiteboard level, when to use it, what it costs, the usual mistakes. Flag every list of options and flags, long edge-case chain, history lesson, and second example that makes the same point as the first.

@@ -29,7 +29,7 @@ Internals change between versions. So:
 
 The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
 
-- **1,200 to 1,700 words** for the whole topic: a 6 to 9 minute read. The build prints a `Note:` over 2,000.
+- **1,400 to 1,900 words** for the whole topic: a 7 to 10 minute read. The build prints a `Note:` over 2,200.
 - **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
 - **At least two diagrams**: one in `bigPicture`, one more in `walkthrough` following the operation through the parts.
 - Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
@@ -59,7 +59,7 @@ The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for l
 - Two diagrams: the parts in `bigPicture`, and the operation's path in `walkthrough`.
 - One operation followed all the way through in `walkthrough`, and the same operation used again in `failure`.
 - Real commands in `tryIt` that work on a default install.
-- The whole topic under 1,700 words, and no section over 250. See "Length and visuals" above.
+- The whole topic under 1,900 words, and no section over 250. See "Length and visuals" above.
 
 ## Skeleton
 

@@ -8,7 +8,7 @@ related: realtime-communication
 
 <!-- section: what -->
 <p><strong>Authentication</strong> is proving who you are. <strong>Authorisation</strong> is deciding what you’re allowed to do. Always in that order: first who is calling, then whether they may do this.</p>
-<p>The status codes follow the same split. <code>401 Unauthorized</code> means “I don’t know who you are” — the name is misleading, it really means not authenticated. <code>403 Forbidden</code> means “I know who you are, and the answer is no”.</p>
+<p>The status codes follow the split. <code>401 Unauthorized</code> means “I don’t know who you are” (the name is misleading — it means not authenticated). <code>403 Forbidden</code> means “I know who you are, and the answer is no”.</p>
 <p>Authentication has two halves, and the design choices all sit in the second one:</p>
 <ol>
 <li><strong>Logging in</strong>: proving yourself once, with a password, a one-time code or a passkey.</li>
@@ -18,7 +18,7 @@ related: realtime-communication
 <p class="note">One-line version: authentication = “who are you?”, authorisation = “what can you do?”. Session = the server remembers you. JWT = you carry a signed note that says who you are.</p>
 
 <!-- section: why -->
-<p>HTTP has no memory. Every request arrives alone, with no link to the one before, so the server can’t tell that two requests came from the same person. After login, <em>every</em> request has to carry proof.</p>
+<p>HTTP has no memory. Every request arrives alone, so the server can’t tell two requests came from the same person. After login, <em>every</em> request must carry proof.</p>
 <p>Why not send the password each time? Checking one is slow on purpose (see the numbers), the app would have to keep it around, and a password is all-or-nothing — no limited or short-lived access.</p>
 <p>So you log in once and get something weaker back. Which weak thing you pick comes down to: <strong>where do you keep the proof, and how fast can you take it away?</strong></p>
 
@@ -87,7 +87,7 @@ async getOrder(@Param('id') id: string, @Req() req) {
 
 <p>A JWT is <code>header.payload.signature</code>: the signing method, the facts (<strong>claims</strong>) like <code>{"sub":"user_42","role":"admin"}</code>, and a signature over both. Change one character and the signature stops matching, and nobody can forge a new one without the key.</p>
 <p class="note">Header and payload are <strong>encoded, not encrypted</strong>. Anyone holding the token can read them. Never put private data in a JWT.</p>
-<p>Because a JWT can’t be cancelled, you keep it short — 15 minutes — and pair it with a <strong>refresh token</strong>: a long-lived random string stored in your database and sent only to <code>POST /refresh</code>. Logout deletes that row, so the access token dies within 15 minutes and can’t be renewed.</p>
+<p>Because a JWT can’t be cancelled, keep it short — 15 minutes — and pair it with a <strong>refresh token</strong>: a long-lived random string in your database, sent only to <code>POST /refresh</code>. Logout deletes that row, so the access token dies within 15 minutes.</p>
 
 <!-- section: types -->
 <div class="table-wrap"><table>
@@ -133,13 +133,12 @@ async getOrder(@Param('id') id: string, @Req() req) {
 <li><strong>JWTs</strong>: <strong>0</strong> lookups, but a 300-byte token on every request is <strong>600 KB/s</strong> of headers, three times the cookie.</li>
 <li><strong>Refreshes</strong>: 15-minute tokens, 100,000 active users → 100,000 ÷ 900 s ≈ <strong>111 refresh calls/s</strong>, which <em>do</em> hit the database. So JWTs cut lookups from 2,000/s to 111/s, not to zero.</li>
 </ul>
-<p><strong>A cancelled login keeps working</strong> until the next request with a session, up to 15 minutes with a short JWT, and up to a full day with a 24-hour one.</p>
 <p><strong>Why you don’t re-check the password.</strong> Hashes are slow on purpose, say 100 ms of CPU. 50 logins/s keeps <strong>5 cores</strong> busy. If all 2,000 requests/s carried a password: 200 seconds of CPU every second, <strong>200 cores</strong>. That number is the reason for the whole design.</p>
 
 <!-- section: tradeoffs -->
 <ul>
 <li><strong>Lookups vs cancellation.</strong> A session dies the moment you delete it, but every service must reach the store. A JWT is checked anywhere, and can’t be killed early.</li>
-<li><strong>Short life vs fewer refreshes.</strong> Five minutes limits the damage from theft; 24 hours is easy on the servers and a gift to a thief.</li>
+<li><strong>Short life vs fewer refreshes.</strong> A 5-minute token limits theft damage. A 24-hour one is easy on the servers and a gift to a thief — a cancelled login keeps working that long.</li>
 <li><strong>Cookies vs the Authorization header.</strong> Browsers send cookies by themselves, which is handy and exactly why <strong>CSRF</strong> works. <code>SameSite</code> and CSRF tokens stop it. A header token has no CSRF, but JavaScript must hold it, and <strong>XSS</strong> can read it.</li>
 <li><strong>Shared secret vs key pair.</strong> With HS256 anything that verifies can also mint. With RS256 only the auth service signs; everyone else gets the public key.</li>
 <li><strong>Roles vs rules.</strong> Roles are easy to test. Attribute rules express anything, and make “who can see this?” hard to answer.</li>
@@ -157,7 +156,7 @@ async getOrder(@Param('id') id: string, @Req() req) {
 
 <!-- section: mistakes -->
 <ul>
-<li><strong>Checking login but not ownership.</strong> <code>GET /orders/124</code> returns someone else’s order. This is IDOR, and it is one of the most common real-world data leaks.</li>
+<li><strong>Checking login but not ownership.</strong> <code>GET /orders/124</code> returns someone else’s order. Called IDOR, and one of the most common real data leaks.</li>
 <li><strong>Trusting the frontend.</strong> Hiding the Delete button is not authorisation. Anyone can call the API.</li>
 <li><strong>Storing passwords badly.</strong> Never plain text, never a fast hash like MD5. Argon2, bcrypt or scrypt, salted.</li>
 <li><strong>Secrets in a JWT, or long-lived JWTs with no refresh token.</strong> A 30-day token that can’t be cancelled is a 30-day problem when it leaks.</li>

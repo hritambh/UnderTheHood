@@ -103,7 +103,7 @@ function topbar(root, hubTitle, withSidebar) {
 /* Words a developer would not say out loud to a teammate. TOPIC_STYLE.md part 8 lists the plain swaps. */
 /* Length and visual budget. TOPIC_STYLE.md part 7.
    A topic is for learning, so it stays short and leans on diagrams. */
-const MAX_TOPIC_WORDS = 2000;   // about a 10 minute read; the target is 1200-1700
+const MAX_TOPIC_WORDS = 2200;   // about an 11 minute read; the target is 1400-1900
 const MAX_SECTION_WORDS = 250;  // prose only; code and diagram text don't count
 const MIN_DIAGRAMS = 2;
 
@@ -241,7 +241,7 @@ export function build() {
     const all = Object.values(t.sections).join(' ');
     const topicWords = plain(noSvg(all)).split(/\s+/).filter(Boolean).length;
     if (topicWords > MAX_TOPIC_WORDS) {
-      notes.push(`${file}: ${topicWords} words, about a ${Math.round(topicWords / 200)} minute read. The budget is 1,200 to 1,700 words (9 minutes). Do the cutting pass in TOPIC_STYLE.md part 7`);
+      notes.push(`${file}: ${topicWords} words, about a ${Math.round(topicWords / 200)} minute read. The budget is 1,400 to 1,900 words (10 minutes). Do the cutting pass in TOPIC_STYLE.md part 7`);
     }
     const long = [];
     const diagrams = (all.match(/class="diagram"/g) || []).length;

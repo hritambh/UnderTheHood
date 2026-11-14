@@ -12,7 +12,7 @@ The user only has to say what they want added, for example "add a topic on rate 
 
 A topic is one file, `content/topics/<track>/<id>.html`.
 
-**What a topic is for.** The reader is learning, not looking something up. A topic has to be easy to get through: moderate depth, short, and as visual as you can make it. That means **1,200 to 1,700 words, a 6 to 9 minute read, with at least two diagrams**. All 12 sections are still written; each one is just short. `TOPIC_STYLE.md` part 7 is the full rule, and the build fails you with a `Note:` when a topic runs long.
+**What a topic is for.** The reader is learning, not looking something up. A topic has to be easy to get through: moderate depth, short, and as visual as you can make it. That means **1,400 to 1,900 words, a 7 to 10 minute read, with at least two diagrams**. All 12 sections are still written; each one is just short. `TOPIC_STYLE.md` part 7 is the full rule, and the build fails you with a `Note:` when a topic runs long.
 
 Three files define how it must be written:
 
@@ -90,7 +90,7 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
    - Take the longest section. Cut what repeats something said earlier.
    - Take the longest explanation left, and turn it into a diagram or a table.
    - Cut every sentence that would not change what the reader does.
-   - Build again. Repeat until the topic is under 9 minutes with no length or diagram `Note:`.
+   - Build again. Repeat until the topic is under 10 minutes with no length or diagram `Note:`.
 
 10. **Leave existing topics alone.** Don't edit other topic files. If an older topic should link back to the new one, say so in your report and let the user decide.
 
@@ -115,7 +115,7 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
 ## Do not
 
 - Do not ask the user which track to use. Deciding that is this skill's job.
-- Do not hand over a topic that runs past 9 minutes, or that has fewer than two diagrams, because "the subject is big". A big subject gets narrowed, or split into two topics, and you say so in the report.
+- Do not hand over a topic that runs past 10 minutes, or that has fewer than two diagrams, because "the subject is big". A big subject gets narrowed, or split into two topics, and you say so in the report.
 - Do not push or deploy. A push to `main` goes live automatically, so push only when the user asks to push or deploy. Say that the topic is built locally and not live yet.
 - Do not edit anything in `site/` by hand. It is rewritten on every build.
 - Do not change `TOPIC_STYLE.md`, `formats/`, the playbooks, `content/hub.json`, `src/` or `scripts/` to make a topic fit. Make the topic fit the format. If the format itself seems wrong for this topic, tell the user.

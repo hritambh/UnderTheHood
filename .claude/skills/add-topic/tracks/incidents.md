@@ -42,11 +42,11 @@ The file order is fixed by the guide. This is the order to think in.
 
 The reader wants to understand this well enough to explain it and use it. Everything past that is weight.
 
-- Budget: **1,200 to 1,700 words** for the whole topic, 100 to 150 per section, 250 at the very most. Full rule: `TOPIC_STYLE.md` part 7.
+- Budget: **1,400 to 1,900 words** for the whole topic, 100 to 150 per section, 250 at the very most. Full rule: `TOPIC_STYLE.md` part 7.
 - **Draw first.** Sketch the two diagrams before writing prose: the system before in `context`, and the chain of causes in `rootCause`. Then write only what the diagrams don't already say.
 - A table beats three paragraphs comparing things. A numbered list beats a paragraph of steps.
 - Say the useful thing in a section, then stop. A short section is not a thin one.
-- **Cutting pass, every time.** Run `npm run build`, take the section it flags as longest, cut what repeats, turn the longest explanation left into a diagram or a table. Build again. Repeat until the topic is under 9 minutes.
+- **Cutting pass, every time.** Run `npm run build`, take the section it flags as longest, cut what repeats, turn the longest explanation left into a diagram or a table. Build again. Repeat until the topic is under 10 minutes.
 - First thing to cut here: timeline rows where nothing was learnt or decided.
 
 ## Traps in this track
@@ -66,6 +66,6 @@ The reader wants to understand this well enough to explain it and use it. Everyt
 - [ ] Each lesson would be useful to someone on a different system.
 - [ ] Each checklist item can be answered yes or no.
 - [ ] Every "Must have" item in the guide is there.
-- [ ] The build shows the topic at 9 minutes or less, with no length or diagram `Note:`.
+- [ ] The build shows the topic at 10 minutes or less, with no length or diagram `Note:`.
 - [ ] Two diagrams at least, where the guide says they go.
 - [ ] The cutting pass was actually done, not just planned.

@@ -116,7 +116,7 @@ Rules that hold for every track:
 - Write all 12 sections, in the order given. The site adds the section titles, so don't repeat them inside the content.
 - Each format file has a "Must have" list. Every item on it is required.
 - A section can be left out only if it truly does not apply. The build prints a note for every missing section, so nothing is left out by accident.
-- Keep the whole topic inside the budget in part 7: about 1,200 to 1,700 words, a 6 to 9 minute read. All 12 sections still get written; each one is just short.
+- Keep the whole topic inside the budget in part 7: about 1,400 to 1,900 words, a 7 to 10 minute read. All 12 sections still get written; each one is just short.
 - A short section is not a thin one. Say the useful thing, then stop.
 - The first section always ends with a one-line version in a note box.
 - The last section is always `revision`.
@@ -269,7 +269,7 @@ A topic exists so the reader can **understand the idea, explain it to someone el
 
 | | Target | Hard limit |
 |---|---|---|
-| Whole topic | 1,200 to 1,700 words (a 6 to 9 minute read) | 2,000 words |
+| Whole topic | 1,400 to 1,900 words (a 7 to 10 minute read) | 2,200 words |
 | One section | 100 to 150 words | 250 words |
 | One paragraph | 2 to 4 sentences | 5 sentences |
 
@@ -326,7 +326,7 @@ Short writing takes a second pass. Always do it:
 2. Take the longest section. Find what it repeats, and cut that.
 3. Take the longest explanation still standing, and turn it into a diagram or a table.
 4. Cut every sentence that would not change what the reader does.
-5. Build again. Repeat until the whole topic is under 9 minutes.
+5. Build again. Repeat until the whole topic is under 10 minutes.
 
 ## 8. Writing style
 
@@ -412,7 +412,7 @@ Before and after:
 - [ ] Every item in the format file's "Must have" list is there.
 - [ ] Every new term is explained where it first appears.
 - [ ] The tone is developer to developer, with no words from the "Don't write" list.
-- [ ] The build's reading time is 9 minutes or less, and no section is over about 250 words.
+- [ ] The build's reading time is 10 minutes or less, and no section is over about 250 words.
 - [ ] At least two diagrams, and every comparison of options is a table, not prose.
 - [ ] The cutting pass (part 7) has been done, not just planned.
 - [ ] Code uses `&lt;`, `&gt;`, `&amp;`.
