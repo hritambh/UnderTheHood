@@ -1,0 +1,215 @@
+<!--
+title: CQRS
+summary: Splitting the code and data that change things (commands) from the code and data that answer questions (queries), so each side can be shaped for its own job.
+category: Architecture
+order: 10
+related: saga-pattern
+-->
+
+<!-- section: what -->
+<p><strong>CQRS</strong> stands for Command Query Responsibility Segregation. A <strong>command</strong> is a request to change something, like “place this order”. A <strong>query</strong> is a request to read something, like “show my orders”.</p>
+<p>Most apps use one model for both: the same tables and the same classes. CQRS splits them. The <strong>write model</strong> is built to check rules and save changes safely. The <strong>read model</strong> is built to answer screens fast, often as a ready-made copy of the data in the shape a screen needs.</p>
+<p>It grew out of an older rule called CQS: a method should either change state or return data, not both. CQRS applies that to a whole part of a system.</p>
+<p class="note">One-line version: writes go through a model built to enforce rules, and reads come from a separate model built to answer screens fast.</p>
+
+<!-- section: problem -->
+<p>Take an online shop with tidy, normalised tables: <code>orders</code>, <code>order_items</code>, <code>customers</code>, <code>payments</code>, <code>shipments</code>. That shape is right for writes. Each fact is stored once.</p>
+<p>The “My orders” page wants something else: one line per order with the customer name, total, payment status and delivery date. That is a five-table join for every page view.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 205" role="img" aria-label="One database serving both checkout writes and a heavy read query, so slow reads make checkouts wait">
+<defs>
+<marker id="ah-cqrs-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+<marker id="ah-cqrs-pw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead-warn"/></marker>
+</defs>
+<rect x="20" y="24" width="180" height="54" rx="8" class="box"/><text x="110" y="47" text-anchor="middle" class="lbl">Checkout</text><text x="110" y="65" text-anchor="middle" class="sub">writes</text>
+<rect x="20" y="114" width="180" height="54" rx="8" class="box"/><text x="110" y="137" text-anchor="middle" class="lbl">My orders page</text><text x="110" y="155" text-anchor="middle" class="sub">reads, 100× more often</text>
+<rect x="440" y="56" width="180" height="80" rx="8" class="box warn"/><text x="530" y="91" text-anchor="middle" class="lbl">Orders database</text><text x="530" y="109" text-anchor="middle" class="sub">one model for both</text>
+<line x1="200" y1="51" x2="438" y2="84" class="arr" marker-end="url(#ah-cqrs-p)"/>
+<line x1="200" y1="141" x2="438" y2="110" class="arr warnline" marker-end="url(#ah-cqrs-pw)"/>
+<text x="318" y="52" text-anchor="middle" class="sub">INSERT, 5 ms</text>
+<text x="318" y="150" text-anchor="middle" class="sub">5-table join, 400 ms</text>
+<text x="320" y="196" text-anchor="middle" class="sub">Same tables, same connections: slow reads make checkouts wait.</text>
+</svg>
+</div>
+
+<p>On a sale day (numbers made up for the example) that 400 ms query runs thousands of times a minute and fills the database. Checkout writes queue behind it and start timing out. Adding indexes for the page makes every write slower, and the order class keeps growing fields that only one screen needs.</p>
+
+<!-- section: realWorld -->
+<p>Think of a busy restaurant.</p>
+<ul>
+<li><strong>The kitchen is the write side.</strong> It takes order tickets, refuses what it can’t make (“no fish left”), and cooks. Its ticket rail is laid out for cooking, not for customers.</li>
+<li><strong>The order screen above the counter is the read side.</strong> It shows “order 42: ready” in big letters. It is built to be read at a glance, and it knows no kitchen rules.</li>
+<li><strong>The cook pressing “done”</strong> is the event that updates the screen.</li>
+</ul>
+<p>Customers look at the screen and leave the cooks alone, so the kitchen stays fast. The cost is in the story too: the screen is a few seconds behind. Your food can be ready before the screen says so, and somebody has to keep that screen working.</p>
+
+<!-- section: how -->
+<ol>
+<li>The client sends a <strong>command</strong>, such as <code>PlaceOrder</code>, to the write side.</li>
+<li>The command handler loads the current state, checks the rules and saves to the write database in one transaction.</li>
+<li>The change is published as an <strong>event</strong>, such as <code>OrderPlaced</code>.</li>
+<li>A <strong>projector</strong> listens for events and updates the read model: one ready-made row per order, per screen.</li>
+<li>The client sends a <strong>query</strong> to the read side.</li>
+<li>The query handler reads straight from the read model. No joins and no rules.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 240" role="img" aria-label="CQRS flow: commands go to the write database, an event updates the read database through a projector, and queries read from the read database">
+<defs><marker id="ah-cqrs-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="20" y="85" width="100" height="56" rx="8" class="box"/><text x="70" y="118" text-anchor="middle" class="lbl">Client</text>
+<rect x="180" y="20" width="150" height="56" rx="8" class="box hi"/><text x="255" y="43" text-anchor="middle" class="lbl">Command handler</text><text x="255" y="61" text-anchor="middle" class="sub">checks the rules</text>
+<rect x="470" y="20" width="150" height="56" rx="8" class="box"/><text x="545" y="43" text-anchor="middle" class="lbl">Write database</text><text x="545" y="61" text-anchor="middle" class="sub">source of truth</text>
+<rect x="180" y="150" width="150" height="56" rx="8" class="box hi"/><text x="255" y="173" text-anchor="middle" class="lbl">Query handler</text><text x="255" y="191" text-anchor="middle" class="sub">no rules, no joins</text>
+<rect x="470" y="150" width="150" height="56" rx="8" class="box"/><text x="545" y="173" text-anchor="middle" class="lbl">Read database</text><text x="545" y="191" text-anchor="middle" class="sub">one row per screen</text>
+<line x1="120" y1="100" x2="178" y2="62" class="arr" marker-end="url(#ah-cqrs-h)"/>
+<line x1="120" y1="126" x2="178" y2="164" class="arr" marker-end="url(#ah-cqrs-h)"/>
+<line x1="330" y1="48" x2="468" y2="48" class="arr" marker-end="url(#ah-cqrs-h)"/>
+<line x1="330" y1="178" x2="468" y2="178" class="arr" marker-end="url(#ah-cqrs-h)"/>
+<line x1="545" y1="76" x2="545" y2="148" class="arr dim" marker-end="url(#ah-cqrs-h)"/>
+<text x="70" y="74" text-anchor="middle" class="sub">1. command</text>
+<text x="70" y="160" text-anchor="middle" class="sub">5. query</text>
+<text x="400" y="41" text-anchor="middle" class="sub">2. save</text>
+<text x="400" y="171" text-anchor="middle" class="sub">6. read</text>
+<text x="535" y="108" text-anchor="end" class="sub">3. OrderPlaced event</text>
+<text x="535" y="125" text-anchor="end" class="sub">4. projector updates the read model</text>
+<text x="320" y="232" text-anchor="middle" class="sub">The read database is a few milliseconds to a few seconds behind the write database.</text>
+</svg>
+</div>
+
+<p>That gap is <strong>eventual consistency</strong>: the read side catches up, but not instantly.</p>
+
+<!-- section: code -->
+<p>Before: one service does everything, and the list endpoint pays for the joins on every call.</p>
+<pre><code>// orders.service.ts (before)
+async listForCustomer(customerId: string) {
+  return this.db.query(`
+    SELECT o.id, o.status, c.name, p.status AS payment,
+           s.eta, SUM(i.qty * i.price) AS total
+    FROM orders o
+    JOIN customers c   ON c.id = o.customer_id
+    JOIN order_items i ON i.order_id = o.id
+    JOIN payments p    ON p.order_id = o.id
+    LEFT JOIN shipments s ON s.order_id = o.id
+    WHERE o.customer_id = $1
+    GROUP BY o.id, c.name, p.status, s.eta`, [customerId]);
+}</code></pre>
+<p>After: three small pieces. The list is now a single-table read.</p>
+<pre><code>// place-order.handler.ts (write side)
+async execute(cmd: PlaceOrderCommand) {
+  await this.db.transaction(async (tx) =&gt; {
+    const order = Order.place(cmd);            // rules live here
+    await tx.orders.insert(order);
+    await tx.outbox.insert(new OrderPlaced(order));
+  });
+}
+
+// order-summary.projector.ts (keeps the read model fresh)
+async onOrderPlaced(e: OrderPlaced) {
+  await this.db.query(`
+    INSERT INTO order_summary
+      (order_id, customer_id, customer_name, status, total)
+    VALUES ($1, $2, $3, 'PLACED', $4)
+    ON CONFLICT (order_id) DO NOTHING`,
+    [e.orderId, e.customerId, e.customerName, e.total]);
+}
+
+// list-orders.handler.ts (read side)
+async execute(q: ListOrdersQuery) {
+  return this.db.query(
+    `SELECT * FROM order_summary WHERE customer_id = $1`,
+    [q.customerId]);
+}</code></pre>
+<p>The event is saved in an <code>outbox</code> table in the same transaction, so it can’t be lost. <code>ON CONFLICT DO NOTHING</code> makes a repeated event harmless. Later events, like a payment or a shipment, update the same row.</p>
+
+<!-- section: variants -->
+<div class="table-wrap"><table>
+<tr><th></th><th>Split code only</th><th>Separate read store</th><th>With event sourcing</th></tr>
+<tr><td>Write store</td><td>Normal tables</td><td>Normal tables</td><td>A log of events</td></tr>
+<tr><td>Read store</td><td>Same database</td><td>Own tables, Redis or a search engine</td><td>Built by replaying events</td></tr>
+<tr><td>Read lag</td><td>None</td><td>Milliseconds to seconds</td><td>Milliseconds to seconds</td></tr>
+<tr><td>Effort</td><td>Low</td><td>Medium</td><td>High</td></tr>
+</table></div>
+<h4>Split code only</h4>
+<p>Command handlers and query handlers are separate classes on one database. Queries use hand-written SQL or views. Start here: the code gets cleaner and nothing can drift.</p>
+<h4>Separate read store</h4>
+<p>The read model lives in its own tables or its own database, updated by events. Pick it when reads need a different shape, or far more capacity, than writes.</p>
+<h4>With event sourcing</h4>
+<p>The write side stores every event instead of the current state. Pick it only when you need the full history, such as an audit trail. CQRS does not need it.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Stale reads.</strong> A user saves, the list reloads, and the change is not there yet. The UI has to plan for that.</li>
+<li><strong>More moving parts.</strong> Events, projectors and a second store all have to be deployed, monitored and kept running.</li>
+<li><strong>Every change touches more places.</strong> One new field means a command, an event, a projector and a read table.</li>
+<li><strong>Rebuilds.</strong> A projector bug leaves wrong rows behind. You fix the code, then rebuild the read model from the events or the write database.</li>
+<li><strong>Harder debugging.</strong> “Why is this row wrong?” now crosses the write side, the event and the projector.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Use it when</h4>
+<ul>
+<li>Reads far outnumber writes, and you want to scale them apart.</li>
+<li>Screens need shapes that the write tables can’t give cheaply: dashboards, search, feeds.</li>
+<li>Write rules are complex and read code keeps getting tangled in them.</li>
+<li>One part of the system has this problem. Use it there, not everywhere.</li>
+</ul>
+<h4>Skip it when</h4>
+<ul>
+<li>It is a CRUD app whose screens look like its tables.</li>
+<li>An index, a read replica or a cache already fixes the slow query.</li>
+<li>Users must see their own change the instant they save, on every screen.</li>
+<li>The team is small and nobody will own the projectors.</li>
+</ul>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Using it for the whole system.</strong> Most of an app is simple forms. Keep those simple and use CQRS only for the hot part.</li>
+<li><strong>Ignoring the lag in the UI.</strong> The user places an order and the list is empty. Show the result from the command’s own response, or read that one item from the write side.</li>
+<li><strong>Checking rules against the read model.</strong> It can be stale, so “is it in stock?” gets a wrong yes. Commands check the write model.</li>
+<li><strong>Publishing events outside the transaction.</strong> One lost event and the read model is wrong forever. Use an outbox.</li>
+<li><strong>Projectors that can’t take a repeat.</strong> Events get delivered twice, so counters double. Use upserts, or store handled event ids.</li>
+<li><strong>No way to rebuild.</strong> If you can’t recreate the read model from scratch, every projector bug is permanent.</li>
+</ul>
+
+<!-- section: relatedPatterns -->
+<ul>
+<li><strong>Outbox</strong> goes with it. It gets the event out reliably after the write. The Saga Pattern topic explains it.</li>
+<li><strong>Event sourcing</strong> is often paired with it, but answers a different question: how the write side stores data. CQRS is about splitting reads from writes.</li>
+<li><strong>Read replicas</strong> get confused with it. A replica is the same tables copied to another server. A read model has a different shape.</li>
+<li><strong>Materialised views</strong> are a read model the database maintains for you. Inside one database, that is the cheapest form of CQRS.</li>
+<li><strong>Caching</strong> also serves reads from a copy. A cache can be thrown away and refilled at any time. A read model is designed, stored and kept in sync on purpose.</li>
+<li><strong>Saga</strong> coordinates writes across several services. CQRS splits reads from writes inside one.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<p><strong>“What is CQRS, and when would you use it?”</strong><br>
+Separate models for writes and reads. Use it when reads need a different shape or scale from writes. Skip it for plain CRUD.</p>
+<p><strong>“How does the read model stay in sync?”</strong><br>
+The write side saves the change and an event in one transaction. A projector applies the event to the read model, and it has to be safe to run twice.</p>
+<p><strong>“The user saved, but doesn’t see the change. Now what?”</strong><br>
+That is the lag. Show the result from the command’s response, or read that one item from the write side.</p>
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>Do you need event sourcing? (No.)</li>
+<li>What if a projector falls behind or crashes? (Monitor the lag. It resumes from the last event it handled.)</li>
+<li>How do you rebuild a read model?</li>
+<li>How is it different from a read replica?</li>
+</ul>
+<h4>Where it fits in a design</h4>
+<p>It fits read-heavy parts with rich screens: order history, feeds, dashboards, search. Keep the write path small and strict, and prepare the read path ahead of time. Say out loud that the read side is eventually consistent, and how the UI copes with that.</p>
+
+<!-- section: revision -->
+<ul>
+<li>A command changes something. A query reads something.</li>
+<li>CQRS gives each its own model: a write model for rules, a read model shaped for screens.</li>
+<li>The problem it fixes: one model serving both, where heavy reads slow down writes.</li>
+<li>Commands save to the write database. An event then updates the read model through a projector.</li>
+<li>The read side lags a little. That is eventual consistency, and the UI has to handle it.</li>
+<li>Start by splitting the code only. Add a separate read store when reads need another shape or scale.</li>
+<li>Event sourcing is optional. CQRS works without it.</li>
+<li>Use an outbox so events are not lost, and make projectors safe to run twice.</li>
+<li>Commands check rules against the write model, never the read model.</li>
+<li>Skip it for plain CRUD, or when an index, replica or cache fixes the problem.</li>
+</ul>

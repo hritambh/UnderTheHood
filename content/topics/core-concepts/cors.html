@@ -1,0 +1,217 @@
+<!--
+title: CORS (Cross-Origin Resource Sharing)
+summary: The browser rule that stops a web page from reading another site’s responses, and the headers a server sends to allow it for the sites it trusts.
+category: Security
+order: 17
+related: authentication-authorisation
+-->
+
+<!-- section: what -->
+<p>An <strong>origin</strong> is scheme + host + port. Change any one of the three and it is a different origin:</p>
+<ul>
+<li><code>https://app.example.com</code> and <code>https://api.example.com</code>: the host differs.</li>
+<li><code>http://localhost:3000</code> and <code>http://localhost:4000</code>: the port differs.</li>
+</ul>
+<p>Browsers follow the <strong>same-origin policy</strong>: a script from one origin can’t read a response from another origin. Without it, any page you open could read your mail using the cookies already in your browser.</p>
+<p><strong>CORS</strong> is how a server makes an exception for origins it trusts. It adds headers such as <code>Access-Control-Allow-Origin</code> to its response. The browser reads them and decides whether the script gets the response. Only browsers do this check. curl, Postman, mobile apps and other servers don’t.</p>
+<p class="note">One-line version: the browser blocks cross-origin reads by default, and CORS headers are the server saying “this origin may read my responses”.</p>
+
+<!-- section: why -->
+<p>Say you are logged in to your bank, and you open another site in a new tab. Its script calls the bank’s API. The browser attaches your bank cookie, because that is what browsers do with cookies.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 150" role="img" aria-label="A page from another site calls the bank API with your cookie, and the browser refuses to hand the reply to the script">
+<defs><marker id="ah-cors-why" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="20" y="36" width="190" height="56" rx="8" class="box warn"/><text x="115" y="60" text-anchor="middle" class="lbl">Page from evil.example</text><text x="115" y="78" text-anchor="middle" class="sub">running in your browser</text>
+<rect x="430" y="36" width="190" height="56" rx="8" class="box"/><text x="525" y="60" text-anchor="middle" class="lbl">bank.example.com</text><text x="525" y="78" text-anchor="middle" class="sub">API</text>
+<line x1="210" y1="54" x2="428" y2="54" class="arr" marker-end="url(#ah-cors-why)"/>
+<line x1="430" y1="78" x2="212" y2="78" class="arr dim" marker-end="url(#ah-cors-why)"/>
+<text x="320" y="47" text-anchor="middle" class="sub">1. fetch, with your bank cookie</text>
+<text x="320" y="96" text-anchor="middle" class="sub">2. your statement comes back</text>
+<text x="320" y="132" text-anchor="middle" class="lbl">3. The browser does not give the reply to the script</text>
+</svg>
+</div>
+
+<p>Step 3 is the same-origin policy. But it is too strict for normal apps: your own frontend on <code>app.example.com</code> has to read your API on <code>api.example.com</code>. CORS is the controlled exception.</p>
+<p>So the question is: which origins may read this API, with which methods and headers, and with cookies or without?</p>
+
+<!-- section: realWorld -->
+<p>You hire an <strong>assistant</strong> who carries your bank card. Salespeople visit your house and hand the assistant notes: “go to her bank and bring me her statement”.</p>
+<ul>
+<li><strong>The assistant is the browser</strong>, the salespeople are web pages, the bank is an API, and the card is your cookie.</li>
+<li><strong>Simple errand</strong>: the assistant goes, but reads the reply to a salesperson only if the bank wrote “OK to share with them” on it. That note is <code>Access-Control-Allow-Origin</code>.</li>
+<li><strong>Risky errand</strong>, like closing an account: the assistant phones the bank first and asks if it accepts this from that salesperson. That call is the <strong>preflight</strong>.</li>
+<li><strong>Using your card</strong>: the bank must name the salesperson exactly. “Anyone” is not accepted.</li>
+</ul>
+<p>The costs show too. Every phone call takes time. And a thief who walks into the bank alone never meets the assistant, so the bank still needs its own ID check.</p>
+
+<!-- section: software -->
+<p>A React app on <code>https://app.example.com</code> calls a NestJS API on <code>https://api.example.com</code>. The first call fails in the browser console:</p>
+<pre><code>// browser console
+Access to fetch at 'https://api.example.com/orders' from origin
+'https://app.example.com' has been blocked by CORS policy: No
+'Access-Control-Allow-Origin' header is present on the
+requested resource.</code></pre>
+<p>The API never said who may read it. The fix is on the server, not in the frontend:</p>
+<pre><code>// main.ts
+const app = await NestFactory.create(AppModule);
+
+app.enableCors({
+  origin: ['https://app.example.com'],   // exact origins, no wildcard
+  methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,                     // allow cookies
+  maxAge: 600,                           // cache the preflight 10 min
+});
+
+await app.listen(3000);</code></pre>
+<p>What is now harder: the allow list is config you maintain. Every new frontend domain, preview URL and local port has to be added per environment, and a missing one looks like “the API is down” to the frontend team.</p>
+
+<!-- section: internals -->
+<p>A script on <code>app.example.com</code> sends <code>DELETE /orders/42</code> with an <code>Authorization</code> header.</p>
+<ol>
+<li>The browser sees a cross-origin call that is not “simple”, so it holds the real request.</li>
+<li>It sends a <strong>preflight</strong>: an <code>OPTIONS</code> request with <code>Origin</code>, <code>Access-Control-Request-Method</code> and <code>Access-Control-Request-Headers</code>. No cookies, no token, no body.</li>
+<li>The server answers with what it allows: origin, methods, headers, and <code>Access-Control-Max-Age</code>.</li>
+<li>If anything is missing, the real request is never sent. The script only gets a network error.</li>
+<li>Otherwise the browser sends the real request.</li>
+<li>That response needs <code>Access-Control-Allow-Origin</code> too. Only then does the script get the data.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 310" role="img" aria-label="A preflighted request: the browser asks permission with OPTIONS, then sends the real request, then hands the response to the script">
+<defs><marker id="ah-cors-flow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="20" y="20" width="140" height="50" rx="8" class="box"/><text x="90" y="42" text-anchor="middle" class="lbl">Page script</text><text x="90" y="59" text-anchor="middle" class="sub">app.example.com</text>
+<rect x="240" y="20" width="140" height="50" rx="8" class="box hi"/><text x="310" y="42" text-anchor="middle" class="lbl">Browser</text><text x="310" y="59" text-anchor="middle" class="sub">does the CORS check</text>
+<rect x="480" y="20" width="140" height="50" rx="8" class="box"/><text x="550" y="42" text-anchor="middle" class="lbl">API</text><text x="550" y="59" text-anchor="middle" class="sub">api.example.com</text>
+<line x1="90" y1="70" x2="90" y2="298" class="arr faint"/>
+<line x1="310" y1="70" x2="310" y2="298" class="arr faint"/>
+<line x1="550" y1="70" x2="550" y2="298" class="arr faint"/>
+<line x1="90" y1="110" x2="308" y2="110" class="arr" marker-end="url(#ah-cors-flow)"/>
+<text x="200" y="103" text-anchor="middle" class="sub">1. fetch DELETE /orders/42</text>
+<line x1="310" y1="146" x2="548" y2="146" class="arr" marker-end="url(#ah-cors-flow)"/>
+<text x="430" y="139" text-anchor="middle" class="sub">2. OPTIONS + Origin (preflight)</text>
+<line x1="550" y1="182" x2="312" y2="182" class="arr dim" marker-end="url(#ah-cors-flow)"/>
+<text x="430" y="175" text-anchor="middle" class="sub">3. 204 + Allow-Origin, Methods</text>
+<line x1="310" y1="218" x2="548" y2="218" class="arr" marker-end="url(#ah-cors-flow)"/>
+<text x="430" y="211" text-anchor="middle" class="sub">4. DELETE + Origin</text>
+<line x1="550" y1="254" x2="312" y2="254" class="arr dim" marker-end="url(#ah-cors-flow)"/>
+<text x="430" y="247" text-anchor="middle" class="sub">5. 200 + Allow-Origin</text>
+<line x1="310" y1="290" x2="92" y2="290" class="arr dim" marker-end="url(#ah-cors-flow)"/>
+<text x="200" y="283" text-anchor="middle" class="sub">6. the data, or a CORS error</text>
+</svg>
+</div>
+
+<!-- section: types -->
+<div class="diagram">
+<svg viewBox="0 0 640 310" role="img" aria-label="Three kinds of cross-origin request side by side: simple, preflighted, and with credentials">
+<defs><marker id="ah-cors-types" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<text x="20" y="18" class="lbl">Simple: one round trip</text>
+<rect x="20" y="28" width="110" height="48" rx="8" class="box"/><text x="75" y="57" text-anchor="middle" class="lbl">Browser</text>
+<rect x="510" y="28" width="110" height="48" rx="8" class="box"/><text x="565" y="57" text-anchor="middle" class="lbl">API</text>
+<line x1="130" y1="42" x2="508" y2="42" class="arr" marker-end="url(#ah-cors-types)"/><text x="320" y="37" text-anchor="middle" class="sub">GET /products + Origin</text>
+<line x1="510" y1="66" x2="132" y2="66" class="arr dim" marker-end="url(#ah-cors-types)"/><text x="320" y="61" text-anchor="middle" class="sub">200 + Allow-Origin</text>
+<text x="20" y="104" class="lbl">Preflighted: two round trips</text>
+<rect x="20" y="114" width="110" height="96" rx="8" class="box"/><text x="75" y="167" text-anchor="middle" class="lbl">Browser</text>
+<rect x="510" y="114" width="110" height="96" rx="8" class="box"/><text x="565" y="167" text-anchor="middle" class="lbl">API</text>
+<line x1="130" y1="128" x2="508" y2="128" class="arr" marker-end="url(#ah-cors-types)"/><text x="320" y="123" text-anchor="middle" class="sub">OPTIONS: may I send DELETE?</text>
+<line x1="510" y1="152" x2="132" y2="152" class="arr dim" marker-end="url(#ah-cors-types)"/><text x="320" y="147" text-anchor="middle" class="sub">204 + Allow-Origin, Allow-Methods</text>
+<line x1="130" y1="176" x2="508" y2="176" class="arr" marker-end="url(#ah-cors-types)"/><text x="320" y="171" text-anchor="middle" class="sub">DELETE /orders/42</text>
+<line x1="510" y1="200" x2="132" y2="200" class="arr dim" marker-end="url(#ah-cors-types)"/><text x="320" y="195" text-anchor="middle" class="sub">200 + Allow-Origin</text>
+<text x="20" y="238" class="lbl">With credentials: the origin must be exact</text>
+<rect x="20" y="248" width="110" height="48" rx="8" class="box"/><text x="75" y="277" text-anchor="middle" class="lbl">Browser</text>
+<rect x="510" y="248" width="110" height="48" rx="8" class="box hi"/><text x="565" y="277" text-anchor="middle" class="lbl">API</text>
+<line x1="130" y1="262" x2="508" y2="262" class="arr" marker-end="url(#ah-cors-types)"/><text x="320" y="257" text-anchor="middle" class="sub">GET /me + Origin + Cookie</text>
+<line x1="510" y1="286" x2="132" y2="286" class="arr dim" marker-end="url(#ah-cors-types)"/><text x="320" y="281" text-anchor="middle" class="sub">200 + exact Allow-Origin + Allow-Credentials: true</text>
+</svg>
+</div>
+
+<h4>Simple request</h4>
+<p>A <code>GET</code>, <code>HEAD</code> or form-style <code>POST</code> with no custom headers. The browser sends it straight away and only hides the response if the header is missing. Good: no extra trip. Bad: <strong>the server still ran the request</strong>.</p>
+<h4>Preflighted request</h4>
+<p>Anything else: <code>PUT</code>, <code>PATCH</code>, <code>DELETE</code>, a JSON body, or an <code>Authorization</code> header. Most JSON APIs land here. Good: the server can say no before anything runs. Bad: an extra round trip.</p>
+<h4>Request with credentials</h4>
+<p>The script asks for cookies to be sent (<code>credentials: 'include'</code>). The server must reply with <code>Access-Control-Allow-Credentials: true</code> and the exact origin. Use it for cookie sessions across origins.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Simple</th><th>Preflighted</th><th>With credentials</th></tr>
+<tr><td>Triggered by</td><td>GET, HEAD, form POST</td><td>Other methods, JSON, custom headers</td><td>Cookies sent cross-origin</td></tr>
+<tr><td>Round trips</td><td>1</td><td>2, or 1 while cached</td><td>Same as its base type</td></tr>
+<tr><td><code>Allow-Origin: *</code></td><td>Works</td><td>Works</td><td>Refused by the browser</td></tr>
+<tr><td>Watch out for</td><td>Request runs even if blocked</td><td>Preflight has no token</td><td>Trusting the wrong origin</td></tr>
+</table></div>
+
+<!-- section: numbers -->
+<p><strong>What preflights cost.</strong> Assumptions, made up for the example: a dashboard polls <code>GET /orders</code> every 10 s with an <code>Authorization</code> header, a round trip takes 80 ms, and 10,000 dashboards are open.</p>
+<ul>
+<li>Polls per dashboard per hour: 3,600 ÷ 10 = <strong>360</strong>.</li>
+<li>With no <code>Access-Control-Max-Age</code>, browsers cache a preflight for only 5 s. Every poll needs a new one: <strong>360 extra requests</strong>, and each poll takes 80 + 80 = <strong>160 ms</strong>.</li>
+<li>Across all dashboards: 10,000 × 360 = 3,600,000 <code>OPTIONS</code> an hour, which is <strong>1,000 a second</strong> of pure overhead.</li>
+<li>With <code>Max-Age: 600</code>: one preflight per 10 minutes, so <strong>6 an hour</strong> per dashboard. 10,000 × 6 = 60,000 an hour, about <strong>17 a second</strong>. Polls are back to 80 ms.</li>
+</ul>
+<p class="note">The cache is kept per URL, so <code>/orders/1</code> and <code>/orders/2</code> each need their own preflight. Browsers also cap the value: Chrome at 2 hours, Firefox at 24.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Wildcard vs allow list.</strong> <code>*</code> works for every caller at once, but can’t be used with cookies. A list is safe, but someone has to keep it up to date.</li>
+<li><strong>Long cache vs fast changes.</strong> A long <code>Max-Age</code> removes most preflights. A browser that cached the old answer keeps using it until it expires.</li>
+<li><strong>Separate API domain vs one origin.</strong> Two domains deploy and scale apart, and pay for CORS on every call. One origin behind a reverse proxy needs no CORS at all.</li>
+<li><strong>Cookies vs tokens.</strong> Cross-origin cookies need credentials mode and an exact origin. A token in a header skips that, but always triggers a preflight.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<p><strong>You need it when</strong> a browser page on one origin reads an API on another:</p>
+<ul>
+<li>a frontend on <code>app.</code> and an API on <code>api.</code></li>
+<li>local development, where the two run on different ports</li>
+<li>a public API or widget that other people’s pages call</li>
+</ul>
+<p><strong>You don’t need it when:</strong></p>
+<ul>
+<li>the caller is not a browser: another service, a mobile app, a script</li>
+<li>the frontend and the API share one origin, for example a reverse proxy that sends <code>/api</code> to the backend</li>
+</ul>
+<p>And never use it as access control. It decides which pages may <em>read</em> a response in a browser. Who may call the API is the job of login and permissions, covered in Authentication and Authorisation.</p>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Thinking CORS protects the API.</strong> Anything that is not a browser ignores it. Every endpoint still checks who is calling.</li>
+<li><strong>Echoing back any origin, with credentials on.</strong> Now every website can read a logged-in user’s data. Compare the origin against a fixed list.</li>
+<li><strong>Loose matching.</strong> <code>origin.endsWith('example.com')</code> also matches <code>evil-example.com</code>. Compare the whole string.</li>
+<li><strong>Putting the auth check before the preflight.</strong> <code>OPTIONS</code> carries no token, so it gets a 401 and every call fails. Answer preflights first.</li>
+<li><strong>No CORS headers on error responses.</strong> A 500 from a proxy shows up as a CORS error and hides the real one. Check the status in the Network tab.</li>
+<li><strong>Forgetting <code>Vary: Origin</code>.</strong> If the header changes per origin, a CDN can serve one origin’s copy to another.</li>
+<li><strong>Counting on it to stop CSRF.</strong> A simple cross-origin <code>POST</code> still runs on the server. Only the response is hidden.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<p><strong>“What is CORS, and why does it exist?”</strong><br>
+Browsers block scripts from reading other origins, so one site can’t read another using your cookies. CORS is the set of response headers a server uses to allow chosen origins.</p>
+<p><strong>“What is a preflight?”</strong><br>
+An <code>OPTIONS</code> request the browser sends before a non-simple call, asking if the method and headers are allowed. The real request goes out only if the answer says yes.</p>
+<p><strong>“Why does it work in Postman but not in the browser?”</strong><br>
+Only browsers apply the same-origin policy. The server answered both times. The browser refused to pass the answer to the script.</p>
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>Why can’t you use <code>*</code> with cookies?</li>
+<li>Does CORS stop CSRF? (No. Simple requests still run.)</li>
+<li>How do you cut preflight overhead? (<code>Max-Age</code>, or one origin.)</li>
+<li>What is <code>Vary: Origin</code> for?</li>
+</ul>
+<h4>How it fits a bigger design</h4>
+<p>In a design with a single-page app and an API gateway, CORS sits at the edge. The gateway answers preflights and adds the headers in one place, before authentication runs. Say which origins are on the list for each environment, or put the app and the API behind one domain and skip CORS.</p>
+
+<!-- section: revision -->
+<ul>
+<li>An origin is scheme + host + port. Change any one and it is a different origin.</li>
+<li>The same-origin policy stops a script from reading responses from another origin.</li>
+<li>CORS is the server’s exception list, sent as <code>Access-Control-Allow-*</code> response headers.</li>
+<li>Only browsers enforce it. curl, mobile apps and other servers are not affected.</li>
+<li>Simple requests are sent straight away. The server runs them even when the response is hidden.</li>
+<li>Other requests get an <code>OPTIONS</code> preflight first, with no cookies or token.</li>
+<li>Cookies need <code>Allow-Credentials: true</code> and an exact origin. <code>*</code> is refused.</li>
+<li><code>Access-Control-Max-Age</code> caches the preflight per URL and removes most of the overhead.</li>
+<li>Match origins against a fixed list. Never echo back whatever origin arrives.</li>
+<li>CORS is not access control and does not stop CSRF.</li>
+</ul>
