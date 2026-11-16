@@ -191,7 +191,7 @@ return { notificationId: id };</code></pre>
 <p><strong>The pick:</strong> at-least-once plus a check. Before calling the provider the sender writes <code>sent:{id}:{channel}</code> with <code>NX</code> and skips if it is there. One gap remains &mdash; a crash between key and call skips that send &mdash; so the key expires quickly and the retry goes through. For push we also pass the notification ID as the collapse key, so two copies show as one.</p>
 
 <h4>2. How do login codes stay fast during a marketing send?</h4>
-<p>A campaign adds 3,300/s on top of a 2,900/s peak. In one shared line a login code waits behind two million offers, and more workers don't help: it still waits its turn. <strong>The pick:</strong> one queue per priority, and the high queue's workers do nothing else.</p>
+<p>A campaign adds 3,300/s on top of a 2,900/s peak. In one shared line a login code waits behind two million offers, and more workers don't help. <strong>The pick:</strong> one queue per priority, and the high queue's workers do nothing else.</p>
 
 <div class="diagram">
 <svg viewBox="0 0 640 230" role="img" aria-label="Three priority queues fed by the API. The high queue holds almost nothing and its workers are idle, so a login code leaves at once. The normal queue holds a little. The low queue is deep with two million offers and drains slowly. Each queue has its own workers.">
