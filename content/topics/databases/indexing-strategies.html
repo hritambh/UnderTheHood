@@ -259,7 +259,7 @@ ORDER BY pg_relation_size(indexrelid) DESC;
 <li>In a composite index, equality columns go first. It can't help a query that skips its first column.</li>
 <li>A covering index holds every column the query needs, so the table isn't read. A partial index holds only the rows you ask for, so it stays tiny.</li>
 <li>An expression index is needed when the query wraps the column in a function. GIN fits JSON and text search; BRIN fits huge insert-ordered tables.</li>
-<li>Every index costs disk and slows writes: our eight took 2.3 times the space of the table.</li>
+<li>Every index costs disk and slows writes: our eight took 2.3 times the table.</li>
 <li>Use <code>EXPLAIN (ANALYZE, BUFFERS)</code> to see what a query does, and <code>pg_stat_user_indexes</code> to find indexes nobody uses.</li>
 <li>Build in production with <code>CONCURRENTLY</code>. Skip the index on small tables and queries matching most rows.</li>
 </ul>
