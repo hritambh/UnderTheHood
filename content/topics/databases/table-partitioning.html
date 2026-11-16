@@ -233,13 +233,13 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 <!-- section: revision -->
 <ul>
 <li>Partitioning splits one table into smaller tables in the same database. The app still uses one table name.</li>
-<li>The parent holds no rows, only the rules. Each partition is a normal table with its own indexes.</li>
-<li>An insert goes to the partition whose range matches the key. If none matches, it fails.</li>
+<li>The parent holds no rows, only the rules. Each partition is a normal table with its own index.</li>
+<li>An insert goes to the partition whose range matches the key, or fails if none does.</li>
 <li>Partition pruning skips partitions that can't match. It needs a plain condition on the key.</li>
 <li>A query without the key reads every partition, and can be slower than on a plain table.</li>
 <li>Range suits time-based data, list a few fixed groups, hash even pieces with no way to drop old data.</li>
 <li>Removing old data is a detach and a drop: instant, and it frees disk. A <code>DELETE</code> is slow and frees nothing.</li>
-<li>A unique rule must include the partition key, because no index covers all partitions.</li>
+<li>A unique rule must include the partition key, because no index spans all partitions.</li>
 <li>New partitions must exist before their rows arrive, and thousands slow query planning.</li>
 <li>Partitioning adds no capacity. When one machine is not enough, that is sharding.</li>
 </ul>
