@@ -16,8 +16,8 @@ related: indexing-strategies, database-sharding, sql-vs-nosql
 <p>A few million rows need none of this. Trouble starts at hundreds of millions and still growing, and it shows up in three places.</p>
 <ul>
 <li><strong>Deleting old data hurts.</strong> Removing a month means a <code>DELETE</code> over tens of millions of rows, one at a time. It writes heavily, runs long, and leaves the file the same size: PostgreSQL marks the rows dead and reuses the space rather than handing it back.</li>
-<li><strong>Indexes outgrow memory.</strong> An index on 600 million rows can be bigger than the server's RAM, so even a simple lookup reads from disk.</li>
-<li><strong>Every maintenance job is huge.</strong> Rebuilding an index or clearing dead rows runs over the whole table, though only last week's rows changed.</li>
+<li><strong>Indexes outgrow memory.</strong> An index on 600 million rows can exceed the server's RAM, so even a simple lookup reads from disk.</li>
+<li><strong>Every maintenance job is huge.</strong> Rebuilding an index or clearing dead rows runs over the whole table, though only last week changed.</li>
 </ul>
 <p>Measured small: a laptop table of 3.1 million rows, one month being 268,000. Deleting that month and cleaning up left the table at 316 MB &mdash; exactly what it was. In monthly partitions, dropping the month took <strong>9 milliseconds</strong> and gave 33 MB back at once.</p>
 
@@ -181,7 +181,7 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 <!-- section: tradeoffs -->
 <ul>
 <li><strong>Fast with the key vs slower without it.</strong> In a laptop test with 12 partitions, a lookup by user ID read 48 pages across 12 indexes. The same lookup on one plain table read 4.</li>
-<li><strong>Easy clean-up vs a job you must not forget.</strong> Dropping a month is instant. In return, new partitions must exist on time or inserts fail.</li>
+<li><strong>Easy clean-up vs a job you must not forget.</strong> Dropping a month is instant; in return, new partitions must exist on time or inserts fail.</li>
 <li><strong>Small indexes vs limited unique rules.</strong> Each index is small, but a unique rule must include the partition key, so &ldquo;this email is unique across the table&rdquo; can't be enforced when you partition by date.</li>
 <li><strong>Not a general speed-up.</strong> Counting one month's rows took about the same time either way, because the plain table had a good index. The payoff is clean-up and a small busy index, not single queries.</li>
 <li><strong>Hard to undo.</strong> The key and the split are fixed at creation; changing either means a new table and moving every row.</li>
@@ -224,8 +224,8 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 
 <h4>Follow-ups to expect</h4>
 <ul>
-<li><strong>An update changes the partition key?</strong> PostgreSQL moves the row: a delete plus an insert underneath.</li>
-<li><strong>How do you partition a table that is already huge?</strong> Not in place. Build a new partitioned table, copy rows in batches, swap the names &mdash; or attach the old table as one big partition and send new data to new ones.</li>
+<li><strong>An update changes the key?</strong> PostgreSQL moves the row: a delete plus an insert underneath.</li>
+<li><strong>Partitioning a table that is already huge?</strong> Not in place. Build a new partitioned table, copy rows in batches, swap the names &mdash; or attach the old table as one big partition and send new data elsewhere.</li>
 </ul>
 
 <h4>How it fits a bigger design</h4>
