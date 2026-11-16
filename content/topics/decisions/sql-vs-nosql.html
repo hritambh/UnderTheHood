@@ -115,7 +115,6 @@ related: database-sharding, notification-service
 <h4>Pick SQL when</h4>
 <ul>
 <li>You don't know yet what questions you'll ask.</li>
-<li>The data is full of links: this belongs to that, which belongs to something else.</li>
 <li>Money, stock or bookings, where a half-done change is a real problem.</li>
 <li>You need reports and admin screens off the live data.</li>
 <li>It fits one machine for years. Do the sum before assuming it won't.</li>
@@ -125,7 +124,6 @@ related: database-sharding, notification-service
 <ul>
 <li>You can write down the three or four reads you need, each by a key.</li>
 <li>The write rate or data size is past one machine, or soon will be.</li>
-<li>Items are self-contained and read whole: carts, sessions, events, messages.</li>
 <li>Fields differ a lot between items, like catalogue products.</li>
 <li>Staying up and fast matters more than every read being fresh.</li>
 </ul>
@@ -165,9 +163,9 @@ related: database-sharding, notification-service
 <li><strong>Choosing for scale you don't have.</strong> A cluster built for a billion rows is a lot of cost for a table with a million.</li>
 <li><strong>Thinking NoSQL means no schema.</strong> The data always has a structure. The only question is whether the database checks it or your code does.</li>
 <li><strong>Treating NoSQL as one thing.</strong> Redis, MongoDB and Cassandra have less in common with each other than MongoDB has with PostgreSQL. &ldquo;Should we use NoSQL?&rdquo; is not a full question.</li>
-<li><strong>Using a NoSQL store like a SQL one.</strong> Many linked collections joined in your code gives you the slow parts of both.</li>
+<li><strong>Using a NoSQL store like a SQL one.</strong> Linked collections joined in your code gives you the slow parts of both.</li>
 <li><strong>Believing SQL can't grow.</strong> A bigger machine, read copies and splitting old data off carry it a long way. Most apps never get past that.</li>
-<li><strong>Going by old labels.</strong> Several NoSQL stores now do transactions across items, and SQL databases store JSON. Check what the product does today.</li>
+<li><strong>Going by old labels.</strong> Several NoSQL stores now do transactions across items, and SQL databases store JSON.</li>
 </ul>
 
 <!-- section: interview -->
