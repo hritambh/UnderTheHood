@@ -190,8 +190,8 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 <!-- section: whenToUse -->
 <h4>Signals that it fits</h4>
 <ul>
-<li>The table is bigger than the server's memory, or clearly heading there.</li>
-<li>Nearly every query filters on the same column, usually a date or a tenant.</li>
+<li>The table is bigger than the server's memory, or heading there.</li>
+<li>Nearly every query filters on the same column, a date or a tenant.</li>
 <li>Recent data is busy, old data rarely read.</li>
 </ul>
 
@@ -199,8 +199,8 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 <ul>
 <li>The table and its indexes fit in memory &mdash; a plain table with the right index is simpler and just as fast.</li>
 <li>Queries reach the table many ways with no column in common, so most read every partition.</li>
-<li>You need a unique rule on a column that isn't the partition key.</li>
-<li>One machine can't hold the data or take the writes. That is sharding.</li>
+<li>You need a unique rule on a non-key column.</li>
+<li>One machine can't hold the data or take the writes &mdash; that is sharding.</li>
 </ul>
 
 <!-- section: mistakes -->
@@ -208,7 +208,7 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 <li><strong>Partitioning to fix a slow query.</strong> If it needed an index, it still does.</li>
 <li><strong>Leaving the key out of queries.</strong> Every partition is read, and the table is slower than before.</li>
 <li><strong>Wrapping the key in a function.</strong> <code>date_trunc('month', created_at) = ...</code> stops pruning. Use a plain range.</li>
-<li><strong>Forgetting the next partition.</strong> At midnight on the first, every insert starts failing. Create them ahead with a job, and alert when fewer than two future ones exist.</li>
+<li><strong>Forgetting the next partition.</strong> At midnight on the first, every insert fails. Create them ahead, and alert when fewer than two future ones exist.</li>
 <li><strong>Using a default partition to hide that.</strong> Rows pile up quietly, and later the real partition can't be created because its rows sit in the default. You must move them out first.</li>
 <li><strong>Too many partitions.</strong> Daily for ten years is 3,650 tables. Aim for tens or a few hundred.</li>
 </ul>
