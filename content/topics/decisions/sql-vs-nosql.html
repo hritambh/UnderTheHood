@@ -184,7 +184,6 @@ related: database-sharding, notification-service
 <li><strong>What does ACID mean?</strong> A transaction's four promises: all or nothing, the schema's rules always hold, transactions don't trip over each other, and once saved it stays saved.</li>
 <li><strong>Can SQL scale across machines?</strong> Yes: copies take the reads, sharding splits the writes. More work than in a store built for it.</li>
 <li><strong>Can NoSQL do transactions?</strong> One item always; across items some can, with limits and a speed cost.</li>
-<li><strong>What is eventual consistency?</strong> Copies agree in the end, but a read just after a write may get the old value.</li>
 </ul>
 
 <p>A strong answer puts the reads and the numbers before the choice, names a <em>kind</em> of NoSQL store, volunteers one cost of its own pick, and says what would flip it.</p>
