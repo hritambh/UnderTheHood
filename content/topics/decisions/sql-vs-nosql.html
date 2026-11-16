@@ -7,277 +7,199 @@ related: database-sharding, notification-service
 -->
 
 <!-- section: decision -->
-<p>Every app has to keep its data somewhere, and the first fork in the road is this one. Do you use a <strong>SQL</strong> database like PostgreSQL or MySQL? Or a <strong>NoSQL</strong> database like MongoDB, DynamoDB or Cassandra?</p>
-<p>The question comes up at three moments:</p>
+<p>Every app has to keep its data somewhere, and the first fork is this one. A <strong>SQL</strong> database like PostgreSQL or MySQL, or a <strong>NoSQL</strong> one like MongoDB, DynamoDB or Cassandra? It comes up at three moments:</p>
 <ul>
-<li>At the start of a project, when there is no data yet and everything is a guess.</li>
-<li>When a new feature brings data that looks nothing like the rest. Chat messages in a shopping app, say.</li>
-<li>When the current database is struggling, and someone says “we should have used the other kind”.</li>
+<li>At the start of a project, when there is no data yet.</li>
+<li>When a new feature brings data unlike the rest &mdash; chat messages in a shopping app.</li>
+<li>When the database is struggling and someone says &ldquo;we should have used the other kind&rdquo;.</li>
 </ul>
-<p>It is hard for one reason. At small size, both work fine. The differences only show up later: when the data is big, when the questions you ask of it change, or when two things must be updated together. By then, switching is expensive. So you are choosing based on a future you can’t fully see.</p>
-<p class="note">One-line version: SQL gives you any question and safe changes on one main machine. NoSQL gives you a few planned questions at almost any size. Pick by how you’ll read the data and how big it will really get.</p>
+<p>It is hard for one reason: at small size both work fine. The differences only show up when the data is big, when the questions change, or when two things must change together &mdash; and by then switching is expensive.</p>
+<p class="note">One-line version: SQL gives you any question and safe changes on one main machine. NoSQL gives you a few planned questions at almost any size. Pick by how you'll read the data and how big it will really get.</p>
 
 <!-- section: options -->
-<h4>SQL (relational databases)</h4>
-<p>Data lives in tables with fixed columns, and rows in one table point to rows in another. You ask questions in the SQL language, and a <strong>join</strong> lets one question pull matching rows from several tables. A <strong>transaction</strong> lets you change several rows as one step: all of it happens, or none of it. PostgreSQL, MySQL and SQL Server are the usual names. It is best at data with many links, questions you didn’t plan for, and changes that must never be half done.</p>
+<h4>SQL (relational)</h4>
+<p>Data lives in tables with fixed columns, and rows point at rows in other tables. A <strong>join</strong> pulls matching rows from several tables in one question; a <strong>transaction</strong> changes several rows as one step, all or nothing. Best at data with many links, questions you didn't plan for, and changes that must never be half done.</p>
 
-<h4>NoSQL (non-relational databases)</h4>
-<p>This is a family, not one thing. <strong>Key-value</strong> stores (Redis, DynamoDB) fetch a value by its key. <strong>Document</strong> stores (MongoDB) keep whole JSON-like objects. <strong>Wide-column</strong> stores (Cassandra) keep huge sorted lists of rows per key, and <strong>graph</strong> stores (Neo4j) keep things and the links between them. What most share: no joins, a shape you design around your queries, and data split across many machines from day one. It is best at simple lookups by key, at a size or write rate one machine can’t hold.</p>
+<h4>NoSQL (non-relational)</h4>
+<p>A family, not one thing. <strong>Key-value</strong> (Redis, DynamoDB) fetches a value by its key. <strong>Document</strong> (MongoDB) keeps whole JSON-like objects. <strong>Wide-column</strong> (Cassandra) keeps huge sorted lists of rows per key. <strong>Graph</strong> (Neo4j) keeps things and the links between them. What most share: no joins, a shape designed around your queries, data split across machines from day one. Best at simple lookups by key at a size one machine can't hold.</p>
 
 <!-- section: realWorld -->
-<p>Think about two ways to keep a town’s paperwork.</p>
-<p><strong>A records office.</strong> Every paper goes on a standard form and into the right cabinet. Forms point to each other: a house record names its owner, and the owner has a record of their own. A clerk can answer almost anything. “Which houses on this street changed owner in the last five years?” takes a few minutes of cross-checking. But nothing gets in without the right form. And it is one building. When it fills up, growing it is a real project.</p>
-<p><strong>A self-storage warehouse.</strong> You get a numbered unit and put in whatever you like, in any shape. Give the number and your box is in your hands in seconds. When the warehouse fills up, the company opens another one down the road, and nobody notices. But ask “which units have a red bicycle in them?” and the answer is to open every unit. Unless you kept your own list from the start.</p>
-<ul>
-<li>The records office is <strong>SQL</strong>: strict forms, cross-references, any question, one main building.</li>
-<li>The warehouse is <strong>NoSQL</strong>: any shape, instant by number, grows by adding buildings, and bad at questions you didn’t plan for.</li>
-</ul>
-<p>Neither is the better place. A land registry in a warehouse would be a mess. A records office for ten million boxes of household stuff would never keep up.</p>
+<p>Two ways to keep a town's paperwork. <strong>A records office:</strong> every paper on a standard form in the right cabinet, forms pointing at each other &mdash; a house record names its owner, who has a record of their own. A clerk can answer almost anything; &ldquo;which houses on this street changed owner in five years?&rdquo; is a few minutes of cross-checking. But nothing gets in without the right form, and it is one building that is a real project to grow.</p>
+<p><strong>A self-storage warehouse:</strong> a numbered unit holding whatever you like, any shape. Give the number and your box is in your hands in seconds, and when it fills the company opens another down the road. But ask &ldquo;which units hold a red bicycle?&rdquo; and the answer is to open every unit &mdash; unless you kept your own list from the start.</p>
+<p>The records office is SQL; the warehouse is NoSQL. Neither is better. A land registry in a warehouse would be a mess; a records office for ten million boxes of household stuff would never keep up.</p>
 
 <!-- section: criteria -->
-<p>Six questions decide this. For each one, here is which answer points which way.</p>
+<p>Six questions decide it. The first is by far the biggest.</p>
 
-<h4>1. How will you read the data?</h4>
-<p>This is the biggest one.</p>
-<ul>
-<li><strong>Many different questions, and new ones every month</strong> (reports, filters, admin screens, “show me all X where Y”): this points to <strong>SQL</strong>. You store the data once and ask anything later.</li>
-<li><strong>A few fixed questions, each by a known key</strong> (“get this user’s cart”, “latest 50 messages in this chat”): this points to <strong>NoSQL</strong>. You lay the data out for exactly those reads, and they stay fast at any size.</li>
-</ul>
+<div class="table-wrap"><table>
+<tr><th>Question</th><th>Points to SQL</th><th>Points to NoSQL</th></tr>
+<tr><td><strong>1. How will you read it?</strong></td><td>Many questions, new ones every month: reports, filters, admin screens</td><td>A few fixed reads by a known key: &ldquo;this user's cart&rdquo;, &ldquo;latest 50 in this chat&rdquo;</td></tr>
+<tr><td><strong>2. What shape is it?</strong></td><td>Many kinds of thing pointing at each other: customers, orders, payments</td><td>Self-contained items read whole, often with different fields each</td></tr>
+<tr><td><strong>3. Must things change together?</strong></td><td>Yes, across records: move money, or reduce stock and create the order</td><td>No, each write touches one item</td></tr>
+<tr><td><strong>4. How big, how many writes?</strong></td><td>Fits one good machine for years</td><td>Past what one machine can take</td></tr>
+<tr><td><strong>5. How settled is the structure?</strong></td><td>Known, and many programs write to it, so bad data is refused at the door</td><td>Still moving, or different per item. Your code checks</td></tr>
+<tr><td><strong>6. What can the team run?</strong></td><td>A small team with general skills &mdash; everyone has used SQL</td><td>A team already running one well, or a cloud service that does</td></tr>
+</table></div>
 
-<h4>2. What shape is the data?</h4>
-<ul>
-<li><strong>Many kinds of things that point to each other</strong> (customers, orders, products, payments): <strong>SQL</strong>. Links and joins are what it is built around.</li>
-<li><strong>Self-contained items that are read whole</strong>, often with different fields per item (a product page, a user’s settings, a sensor reading): <strong>NoSQL</strong>, usually a document store.</li>
-</ul>
-<p>Here is one order, stored both ways.</p>
-<pre><code>-- SQL: the order is rows in three tables, joined when read
-SELECT o.id, c.name, i.product_id, i.qty
-FROM orders o
-JOIN customers c   ON c.id = o.customer_id
-JOIN order_items i ON i.order_id = o.id
-WHERE o.id = 8812;</code></pre>
-<pre><code>// Document store: the same order is one document, read in one go
-{
-  "_id": 8812,
-  "status": "paid",
-  "customer": { "id": 42, "name": "Asha", "city": "Pune" },
-  "items": [
-    { "productId": 7,  "name": "Desk lamp", "qty": 2 },
-    { "productId": 19, "name": "USB cable", "qty": 1 }
-  ]
-}</code></pre>
-<p>The document has a copy of the customer’s name inside it. Keeping copies like this is called <strong>denormalising</strong>. The read is one fast lookup. The price: if Asha changes her name, every order holding a copy still has the old one, until your code updates them all.</p>
+<p>Question 2 is worth a picture: one order, stored both ways.</p>
 
-<h4>3. Must several things change together?</h4>
-<ul>
-<li><strong>Yes, across different records</strong> (take money from one account and add it to another, reduce stock and create the order): <strong>SQL</strong>. Transactions across any rows are its normal mode.</li>
-<li><strong>No, each write touches one item</strong> (save this message, update this profile): <strong>NoSQL</strong> is fine. Every NoSQL store can update one item safely.</li>
-</ul>
-<p>The same question covers reads. A SQL database answers from one main machine by default, so you read what you just wrote. Many NoSQL stores keep copies on several machines and may answer from one that is a moment behind. That is <strong>eventual consistency</strong>: all copies agree in the end, but not at every instant. If a stale read would be a bug, that pushes towards SQL. If a short delay is harmless, it doesn’t matter.</p>
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="On the left, one order split across three SQL tables - orders, customers and order items - joined when read. On the right, the same order as a single document holding the customer name and both items inside it, read in one lookup.">
+<defs><marker id="ah-sql-vs-nosql" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
 
-<h4>4. How big, and how many writes?</h4>
-<ul>
-<li><strong>It fits on one good machine</strong>, now and for the next few years: <strong>SQL</strong>. One machine is the simplest thing to run, and SQL gets everything out of it.</li>
-<li><strong>More writes or more data than one machine can take</strong>: <strong>NoSQL</strong>. It splits data across machines by itself, and you grow by adding machines. SQL can be split too, but you do the work. The topic “Database Sharding” shows how much work that is.</li>
-</ul>
+<text x="20" y="20" class="lbl">SQL: three tables, joined on read</text>
+<rect x="20" y="34" width="110" height="40" rx="6" class="box hi"/><text x="75" y="52" text-anchor="middle" class="lbl">orders</text><text x="75" y="67" text-anchor="middle" class="sub">id 8812</text>
+<rect x="20" y="104" width="110" height="40" rx="6" class="box"/><text x="75" y="122" text-anchor="middle" class="lbl">customers</text><text x="75" y="137" text-anchor="middle" class="sub">id 42, Asha</text>
+<rect x="20" y="166" width="110" height="40" rx="6" class="box"/><text x="75" y="184" text-anchor="middle" class="lbl">order_items</text><text x="75" y="199" text-anchor="middle" class="sub">2 rows</text>
+<line x1="140" y1="54" x2="175" y2="54" class="arr" marker-end="url(#ah-sql-vs-nosql)"/>
+<line x1="140" y1="124" x2="175" y2="124" class="arr" marker-end="url(#ah-sql-vs-nosql)"/>
+<line x1="140" y1="186" x2="175" y2="186" class="arr" marker-end="url(#ah-sql-vs-nosql)"/>
+<rect x="180" y="95" width="75" height="54" rx="6" class="box"/><text x="217" y="118" text-anchor="middle" class="lbl">JOIN</text><text x="217" y="134" text-anchor="middle" class="sub">on read</text>
 
-<h4>5. How often does the structure change?</h4>
-<ul>
-<li><strong>The structure is known and many programs write to it</strong>: <strong>SQL</strong>. The database checks every write against the <strong>schema</strong>, the declared list of tables, columns and types. Bad data is refused at the door.</li>
-<li><strong>The structure is still moving, or differs per item</strong>: <strong>NoSQL</strong>. You can save a new field today without changing anything first. Your code now does the checking.</li>
-</ul>
+<text x="350" y="20" class="lbl">Document: one item, one lookup</text>
+<rect x="350" y="34" width="270" height="172" rx="8" class="box hi"/>
+<text x="365" y="56" class="sub">_id: 8812, status: "paid"</text>
+<rect x="362" y="66" width="246" height="38" rx="5" class="box"/><text x="374" y="82" class="sub">customer: { id: 42,</text><text x="374" y="97" class="sub">  name: "Asha", city: "Pune" }   &#8592; a copy</text>
+<rect x="362" y="112" width="246" height="56" rx="5" class="box"/><text x="374" y="130" class="sub">items: [</text><text x="374" y="145" class="sub">  { productId: 7, qty: 2 },</text><text x="374" y="160" class="sub">  { productId: 19, qty: 1 } ]</text>
+<text x="365" y="192" class="sub">one read, no joins</text>
+</svg>
+</div>
 
-<h4>6. What does the team know, and what can it run?</h4>
-<ul>
-<li><strong>A small team with general skills</strong>: <strong>SQL</strong>. Nearly every developer has used it, and the tools are decades old.</li>
-<li><strong>A team that already runs a NoSQL store well</strong>, or uses a cloud service that runs it for them: <strong>NoSQL</strong> costs them much less than it would cost a team starting cold.</li>
-</ul>
-
+<p>The document holds a <em>copy</em> of the customer's name &mdash; <strong>denormalising</strong>. The read is one fast lookup; the price is that if Asha changes her name, every order shows the old one until your code updates them all.</p>
 <!-- section: compare -->
 <div class="table-wrap"><table>
-<tr><th>Question</th><th>SQL</th><th>NoSQL</th></tr>
-<tr><td>How you read the data</td><td>Any question, including ones you think of later. Joins across tables.</td><td>The few questions you designed for, by key. Very fast at any size. A new question often needs a new layout.</td></tr>
-<tr><td>Shape of the data</td><td>Many linked things, each stored once.</td><td>Whole items stored together. Fields can differ per item. Copies instead of links.</td></tr>
-<tr><td>Changes that go together</td><td>Transactions across any rows. You read what you just wrote.</td><td>Safe for one item at a time. Across items it is limited or slower. Reads can be a moment old.</td></tr>
-<tr><td>Size and write load</td><td>Simple up to one big machine, plus copies for reads. Past that, you split it yourself.</td><td>Splits across machines by design. Grows by adding machines. More machines to run even when small.</td></tr>
-<tr><td>Changing the structure</td><td>The database enforces it. Changes need a planned step, which can be slow on huge tables.</td><td>Add fields any time. Old and new shapes live side by side, and your code handles both.</td></tr>
-<tr><td>Team and running it</td><td>Skills are everywhere. One main machine to look after.</td><td>Each product is its own skill. A cluster to look after, unless a cloud service does it.</td></tr>
+<tr><th></th><th>SQL</th><th>NoSQL</th></tr>
+<tr><td>Reading it</td><td>Any question, including ones you think of later. Joins across tables</td><td>The few you designed for, by key, fast at any size. A new question often needs a new layout</td></tr>
+<tr><td>Shape</td><td>Many linked things, each stored once</td><td>Whole items together, fields differing per item. Copies, not links</td></tr>
+<tr><td>Changes together</td><td>Transactions across any rows, answered from one main machine, so you read what you just wrote</td><td>Safe for one item; across items limited or slower. A read may come from a copy a moment behind &mdash; <strong>eventual consistency</strong></td></tr>
+<tr><td>Size and writes</td><td>Simple up to one big machine, plus read copies. Past that you split it yourself</td><td>Splits by design, grows by adding machines. More machines to run even when small</td></tr>
+<tr><td>Structure and running it</td><td>The database enforces the schema; changes need a planned step. Skills are everywhere, and one main machine to look after</td><td>Add fields any time, with your code handling old and new shapes. Each product is its own skill, plus a cluster unless a service runs it</td></tr>
 </table></div>
 
 <!-- section: numbers -->
-<p>Let’s take one feature and one number, and watch the answer change. The feature is chat inside an app. The number is how many people use it.</p>
-<p><strong>Assumptions</strong> (made up for this example, not benchmarks):</p>
-<ul>
-<li>Each active user sends 20 messages a day. A stored message is about 300 bytes.</li>
-<li>The busiest moment is 5 times the average.</li>
-<li>One well-sized SQL machine is comfortable up to 5,000 small writes a second and 2 TB of data. Real limits depend on the hardware and the queries.</li>
-<li>The main read is always the same: the latest messages in one conversation.</li>
-</ul>
+<p>One feature &mdash; in-app chat &mdash; and one number changing. <strong>Assumptions</strong>, made up: 20 messages per active user per day at 300 bytes, peak 5&times; average, one SQL machine comfortable to 5,000 small writes a second and 2 TB, and the main read always &ldquo;latest messages in this conversation&rdquo;.</p>
 
-<h4>Case 1: 50,000 daily users</h4>
-<ul>
-<li>Messages: 50,000 × 20 = 1 million a day.</li>
-<li>Writes: 1,000,000 ÷ 86,400 ≈ 12 a second. At the peak, 12 × 5 ≈ <strong>58 a second</strong>.</li>
-<li>Storage: 1,000,000 × 300 bytes = 300 MB a day, so about <strong>110 GB a year</strong>.</li>
-</ul>
-<p><strong>With SQL:</strong> 58 writes a second is about 1% of what one machine can take. 2 TB ÷ 110 GB means the disk lasts 18 years. One table, with an index on conversation and time, does the job. And you get extras for free. Show sender names with a join. Let a moderator search one user’s messages. Delete everything a user wrote with one statement.</p>
-<p><strong>With NoSQL:</strong> it works, but you are paying for size you don’t have. A wide-column store wants at least three machines, here to hold 110 GB. The moderator’s search needs a second copy of the data laid out by user, planned ahead. Sender names need a second lookup from your code.</p>
-<p><strong>At this size, SQL is the easy pick.</strong></p>
+<div class="table-wrap"><table>
+<tr><th></th><th>50,000 daily users</th><th>50 million daily users</th></tr>
+<tr><td>Messages a day</td><td>1 million</td><td>1 billion</td></tr>
+<tr><td>Writes at peak</td><td><strong>58/s</strong> &mdash; about 1% of one machine</td><td><strong>58,000/s</strong> &mdash; about 12 machines' worth</td></tr>
+<tr><td>Storage a year</td><td><strong>110 GB</strong> &mdash; the 2 TB disk lasts 18 years</td><td><strong>110 TB</strong> &mdash; 55 machines' worth <em>every year</em></td></tr>
+<tr><td>The easy pick</td><td><strong>SQL.</strong> One table indexed on conversation and time. Sender names by join, moderator search free, delete a user's messages in one statement</td><td><strong>NoSQL.</strong> Conversation ID as partition key, writes spreading themselves, the main read hitting one machine with rows already in order</td></tr>
+<tr><td>What the other costs</td><td>NoSQL wants three machines for 110 GB and a second copy of the data per extra question</td><td>SQL means sharding it yourself, after which joins and transactions only work inside one shard</td></tr>
+</table></div>
 
-<h4>Case 2: 50 million daily users</h4>
-<p>Same feature. One number changed: a thousand times the users.</p>
-<ul>
-<li>Messages: 50,000,000 × 20 = 1 billion a day.</li>
-<li>Writes: 1,000,000,000 ÷ 86,400 ≈ 11,600 a second. At the peak, about <strong>58,000 a second</strong>.</li>
-<li>Storage: 300 GB a day, so about <strong>110 TB a year</strong>.</li>
-</ul>
-<p><strong>With SQL:</strong> 58,000 ÷ 5,000 means about 12 machines just for the writes. Storage is worse: 110 TB ÷ 2 TB is <strong>55 more machines’ worth every year</strong>. So you split the table by conversation across a growing fleet, and build the routing and the moving of data yourself. It can be done, and tools exist to help. But joins and transactions now only work inside one piece. Those were the reasons to pick SQL.</p>
-<p><strong>With NoSQL:</strong> this is the job a wide-column store was built for. The conversation ID is the <strong>partition key</strong>, the value that decides which machine holds a row. Writes spread across the machines by themselves. The main read hits one machine and finds the rows already sorted by time. To grow, you add machines. The costs are still there: the moderator’s search needs its own layout or a search system, and a message may show up a moment late on another copy.</p>
-<p><strong>At this size, NoSQL is the easy pick.</strong></p>
+<p>Where does it flip? Storage first, writes later.</p>
 
-<h4>Where does it flip?</h4>
-<ul>
-<li>Storage flips first. 2 TB a year is 2,000 ÷ 110 ≈ 18 times case 1, so about <strong>900,000 daily users</strong>. From there, one machine fills up within a year.</li>
-<li>Writes flip later. 5,000 a second at peak is 5,000 ÷ 58 ≈ 86 times case 1, so about <strong>4.3 million daily users</strong>.</li>
-</ul>
-<p>So below a few hundred thousand users, SQL without a second thought. Above a few million, NoSQL. In between, it depends on how fast you are growing and how much you use joins on this data. Notice what never changed: the feature. Only the number did.</p>
+<div class="diagram">
+<svg viewBox="0 0 640 150" role="img" aria-label="A scale from 50,000 to 50 million daily users. Below about 900,000 users SQL is the clear pick. At 900,000 the storage limit is reached and one machine fills within a year. At 4.3 million the write limit is reached. Above a few million NoSQL is the clear pick, with a judgement zone in between.">
+<line x1="40" y1="95" x2="615" y2="95" class="arr"/>
+<rect x="40" y="52" width="220" height="34" rx="6" class="box hi"/><text x="150" y="74" text-anchor="middle" class="lbl">SQL, no second thought</text>
+<rect x="266" y="52" width="150" height="34" rx="6" class="box warn"/><text x="341" y="74" text-anchor="middle" class="lbl">it depends</text>
+<rect x="422" y="52" width="193" height="34" rx="6" class="box hi"/><text x="518" y="74" text-anchor="middle" class="lbl">NoSQL, no second thought</text>
+
+<line x1="263" y1="88" x2="263" y2="102" class="arr warnline"/>
+<line x1="419" y1="88" x2="419" y2="102" class="arr warnline"/>
+<text x="263" y="118" text-anchor="middle" class="sub">~900k users</text>
+<text x="263" y="133" text-anchor="middle" class="sub">storage flips</text>
+<text x="419" y="118" text-anchor="middle" class="sub">~4.3m users</text>
+<text x="419" y="133" text-anchor="middle" class="sub">writes flip</text>
+<text x="45" y="118" class="sub">50k</text>
+<text x="612" y="118" text-anchor="end" class="sub">50m</text>
+<text x="330" y="32" text-anchor="middle" class="sub">daily users &mdash; the only thing that changed</text>
+</svg>
+</div>
+
+<p>Storage flips at 2,000 &divide; 110 &asymp; 18 times case 1, about 900,000 users. Writes flip at 5,000 &divide; 58 &asymp; 86 times, about 4.3 million. In between it depends on how fast you are growing and how much you join on this data. Notice what never changed: the feature.</p>
 
 <!-- section: whenEach -->
 <h4>Pick SQL when</h4>
 <ul>
-<li>You don’t know yet what questions you’ll ask of the data.</li>
+<li>You don't know yet what questions you'll ask.</li>
 <li>The data is full of links: this belongs to that, which belongs to something else.</li>
-<li>Money, stock, bookings, or anything where a half-done change is a real problem.</li>
-<li>You need reports and admin screens straight from the live data.</li>
-<li>The data will fit on one machine for years. Do the sum before you assume it won’t.</li>
-<li>Several services or teams write to the same data, and you want one place to enforce the rules.</li>
+<li>Money, stock or bookings, where a half-done change is a real problem.</li>
+<li>You need reports and admin screens off the live data.</li>
+<li>It fits one machine for years. Do the sum before assuming it won't.</li>
 </ul>
 
 <h4>Pick NoSQL when</h4>
 <ul>
-<li>You can write down the three or four reads you need, and each one is by a key.</li>
-<li>The write rate or the data size is past one machine, or the sum says it will be soon.</li>
-<li>Items are self-contained and read whole: carts, sessions, profiles, events, messages, sensor readings.</li>
-<li>Fields differ a lot from item to item, like products in a catalogue.</li>
-<li>Staying up and fast matters more than every read being perfectly fresh.</li>
-<li>The data is naturally a graph, like who follows whom. That points to a graph store.</li>
+<li>You can write down the three or four reads you need, each by a key.</li>
+<li>The write rate or data size is past one machine, or soon will be.</li>
+<li>Items are self-contained and read whole: carts, sessions, events, messages.</li>
+<li>Fields differ a lot between items, like catalogue products.</li>
+<li>Staying up and fast matters more than every read being fresh.</li>
 </ul>
 
-<h4>Pick both when</h4>
-<p>One product often has two kinds of data. Then use two databases, each for the part it suits. The “Notification Service” design does this: PostgreSQL for the small settings tables, Cassandra for the huge inbox.</p>
-
-<h4>When it doesn’t matter much</h4>
-<ul>
-<li><strong>A small app with a few GB of simple data.</strong> Either will run it for years. Pick the one your team knows.</li>
-<li><strong>You only need a few flexible fields.</strong> PostgreSQL and MySQL have a JSON column type. One loose column inside a normal table covers this without changing database.</li>
-<li><strong>A prototype you’ll throw away.</strong> Use whatever gets it running today.</li>
-</ul>
+<h4>Pick both, or neither</h4>
+<p>One product often has two kinds of data, so use two databases: the Notification Service design uses PostgreSQL for the settings tables and Cassandra for the huge inbox. And sometimes it barely matters &mdash; a few GB of simple data runs on either for years, a prototype should use whatever ships today, and &ldquo;a few flexible fields&rdquo; is answered by a JSON column in a normal table.</p>
 
 <!-- section: hiddenCosts -->
 <h4>SQL costs that show up later</h4>
 <ul>
-<li><strong>Changing a huge table.</strong> Adding a column or an index to a table with a billion rows can take hours and may block writes. Teams end up using special tools and planning it like a release.</li>
-<li><strong>The day one machine is not enough.</strong> Splitting a SQL database across machines is a project of months, and it takes away some joins and transactions.</li>
-<li><strong>One main machine for writes.</strong> When it fails, a copy takes over. Writes stop for seconds to minutes while that happens, and someone has to have tested it.</li>
-<li><strong>Slow queries you didn’t know you wrote.</strong> “Any question” includes very expensive ones. One careless report can slow the whole app.</li>
-<li><strong>Code shaped like objects, data shaped like tables.</strong> The tools that map one to the other are handy, and they quietly fire hundreds of small queries when you’re not looking.</li>
+<li><strong>Changing a huge table.</strong> Adding a column or index to a billion rows can take hours and block writes.</li>
+<li><strong>The day one machine isn't enough.</strong> Splitting across machines is months of work, and takes away some joins and transactions.</li>
+<li><strong>One main machine for writes.</strong> When it fails a copy takes over, and writes stop for seconds to minutes &mdash; so someone must have tested it.</li>
 </ul>
 
 <h4>NoSQL costs that show up later</h4>
 <ul>
-<li><strong>The question nobody planned for.</strong> A new way to read the data often means a new table or index, plus a job to fill it from all the old data.</li>
-<li><strong>Copies that drift apart.</strong> The same fact is stored in several places for speed. Your code has to update every copy, and when it misses one, nothing complains.</li>
-<li><strong>The schema didn’t go away.</strong> It moved into your code. Five years of items in five slightly different shapes are all still there, and every reader has to handle each one.</li>
-<li><strong>Stale-read bugs.</strong> They don’t show up on a laptop. They show up under load, once in ten thousand requests.</li>
-<li><strong>Reports need another system.</strong> Without joins, analysis usually means copying the data out to a warehouse first.</li>
-<li><strong>One busy key.</strong> If one partition key gets most of the traffic, one machine is overloaded while the rest sit idle. Adding machines doesn’t help.</li>
+<li><strong>The question nobody planned for.</strong> A new way to read means a new table or index, plus a job to fill it from all the old data.</li>
+<li><strong>Copies that drift apart.</strong> The same fact lives in several places for speed. Your code updates every copy, and when it misses one, nothing complains.</li>
+<li><strong>The schema didn't go away</strong>, it moved into your code. Five years of items in five slightly different shapes are all still there, and every reader handles each one.</li>
+<li><strong>One busy key.</strong> If one partition key takes most of the traffic, one machine is overloaded while the rest idle.</li>
 </ul>
 
 <!-- section: changing -->
-<p>Moving is possible in both directions. It is never quick, and one direction is harder.</p>
+<p>Moving is possible both ways. Neither is quick, and one is harder.</p>
 
 <h4>From SQL to NoSQL</h4>
-<p>You rarely move everything. You move the one table that has outgrown the machine, and the rest stays.</p>
-<ol>
-<li>Rewrite the code that joins to that table, or uses it in transactions, so it no longer does. This is most of the work.</li>
-<li>Design the new layout around the reads you actually have.</li>
-<li>Write to both databases for a while. Copy the old data across. Compare the two.</li>
-<li>Switch reads to the new store, then stop writing to the old table.</li>
-</ol>
-<p>What helps: the data you are moving is clean. The schema made sure every row has the same shape and every link points at something real.</p>
+<p>You rarely move everything &mdash; only the table that outgrew the machine. Rewrite the code that joins to it or uses it in transactions, which is most of the work. Design the new layout around the reads you have, write to both stores while you copy the old data across and compare, switch reads over, stop writing to the old table. What helps: the data is clean, because the schema made sure of it.</p>
 
 <h4>From NoSQL to SQL</h4>
-<p>The steps are the same, with one extra job in front: cleaning.</p>
-<ul>
-<li>Items written over the years have different shapes. Each one has to be mapped to the new columns.</li>
-<li>Copies of the same fact disagree. You have to decide which one is right.</li>
-<li>Some items point at things that were deleted long ago. A SQL database will refuse those rows.</li>
-</ul>
-<p>In return, once the data is in, the database guards all of this for you from then on.</p>
+<p>Same steps, with a cleaning job in front. Items written over the years have different shapes, each needing a mapping. Copies of the same fact disagree and you must decide which is right. Some point at things deleted long ago, and SQL will refuse those rows. In return, once it is in, the database guards all of that.</p>
 
-<h4>Which way is easier?</h4>
-<p><strong>SQL to NoSQL is the easier direction</strong>, for one table at a time. You start from clean data and a known list of reads. Going the other way, you find out how messy the data is while you move it.</p>
-<p>So when you can’t tell which you need, that is a reason to start with SQL: it is the easier side to leave. When you can tell, because the size and the reads are clear from day one, this doesn’t apply. Start where you’ll end up.</p>
-
-<h4>Keeping the door open</h4>
-<ul>
-<li>Keep all database calls for one kind of data in one place in the code. Then a move changes one file, not two hundred.</li>
-<li>Make your own IDs, like UUIDs. Don’t depend on an ID format only one database produces.</li>
-<li>In NoSQL, check the shape of every item before you save it, and store a version number in each one.</li>
-<li>In SQL, go easy on joins to a table you think may have to move out one day.</li>
-</ul>
+<p><strong>SQL to NoSQL is the easier direction</strong>: you start from clean data and a known list of reads. So when you can't tell which you need, that is a reason to start with SQL &mdash; it is the easier side to leave. To keep the door open: hold all database calls for one kind of data in one place, make your own IDs, check the shape of every item before saving it, and go easy on joins to a table that may move out one day.</p>
 
 <!-- section: mistakes -->
 <ul>
-<li><strong>Choosing for scale you don’t have.</strong> A cluster built for a billion rows is a lot of running cost for a table with a million. Do the sum first, as in the chat example.</li>
+<li><strong>Choosing for scale you don't have.</strong> A cluster built for a billion rows is a lot of cost for a table with a million.</li>
 <li><strong>Thinking NoSQL means no schema.</strong> The data always has a structure. The only question is whether the database checks it or your code does.</li>
-<li><strong>Treating NoSQL as one thing.</strong> Redis, MongoDB and Cassandra have less in common with each other than MongoDB has with PostgreSQL. “Should we use NoSQL?” is not a full question. Which kind?</li>
-<li><strong>Using a NoSQL store like a SQL one.</strong> Splitting data into many linked collections and joining them in your code gives you the slow parts of both.</li>
-<li><strong>Believing SQL can’t grow.</strong> A bigger machine, copies for reads, and splitting old data off carry a SQL database a very long way. Most apps never get past that.</li>
-<li><strong>Going by old labels.</strong> Several NoSQL stores now have transactions across items. SQL databases store JSON. Check what the actual product does today.</li>
-<li><strong>Forcing one database to do everything.</strong> When two parts of the app have very different data, two databases can be simpler than one bent out of shape.</li>
-<li><strong>Picking by fashion.</strong> “That big company uses it” says nothing about your data. Their problem is probably not yours.</li>
+<li><strong>Treating NoSQL as one thing.</strong> Redis, MongoDB and Cassandra have less in common with each other than MongoDB has with PostgreSQL. &ldquo;Should we use NoSQL?&rdquo; is not a full question.</li>
+<li><strong>Using a NoSQL store like a SQL one.</strong> Many linked collections joined in your code gives you the slow parts of both.</li>
+<li><strong>Believing SQL can't grow.</strong> A bigger machine, read copies and splitting old data off carry it a long way. Most apps never get past that.</li>
+<li><strong>Going by old labels.</strong> Several NoSQL stores now do transactions across items, and SQL databases store JSON. Check what the product does today.</li>
 </ul>
 
 <!-- section: interview -->
-<h4>How to answer “which would you pick?”</h4>
-<p>Don’t name a database first. Go in this order:</p>
+<h4>How to answer &ldquo;which would you pick?&rdquo;</h4>
+<p>Don't name a database first. Go in this order:</p>
 <ol>
-<li><strong>Ask about the reads.</strong> “What are the main queries? Are they by key, or do we need filters and joins?”</li>
-<li><strong>Ask about the size.</strong> Work out writes per second and storage per year, out loud.</li>
-<li><strong>Ask what must be exact.</strong> “Is there anything here where a half-done change or a stale read is a real problem?”</li>
-<li><strong>Then pick, and give the reason.</strong> “Orders and payments go in PostgreSQL, because they need transactions and fit on one machine. The activity feed goes in Cassandra, because it is 50,000 writes a second and always read by user.”</li>
-<li><strong>Say what would change your mind.</strong> “If the feed were a hundred times smaller, I’d keep it in PostgreSQL too.”</li>
+<li><strong>The reads.</strong> &ldquo;What are the main queries? By key, or filters and joins?&rdquo;</li>
+<li><strong>The size.</strong> Work out writes per second and storage per year, out loud.</li>
+<li><strong>What must be exact.</strong> &ldquo;Is a half-done change or a stale read a real problem?&rdquo;</li>
+<li><strong>Then pick, with the reason.</strong> &ldquo;Orders in PostgreSQL, because they need transactions and fit on one machine. The feed in Cassandra, because it is 50,000 writes a second and always read by user.&rdquo;</li>
+<li><strong>Say what would change your mind.</strong> &ldquo;A hundred times smaller and I'd keep the feed in PostgreSQL too.&rdquo;</li>
 </ol>
 
 <h4>Follow-ups to expect</h4>
 <ul>
-<li><strong>What does ACID mean?</strong> The four promises of a SQL transaction. All of it happens or none of it. The rules of the schema always hold. Two transactions don’t trip over each other. And once it says “saved”, it stays saved.</li>
-<li><strong>Can SQL scale across machines?</strong> Yes. Copies take the reads, and sharding splits the writes. It is more work than in a store built for it.</li>
-<li><strong>Can NoSQL do transactions?</strong> One item, always. Across items, some products can, with limits and a speed cost.</li>
-<li><strong>Why are NoSQL writes fast?</strong> Each write touches one item on one machine, with no links to check and usually no waiting for every copy.</li>
-<li><strong>What is eventual consistency?</strong> Copies of the data agree in the end, but a read just after a write may get the old value.</li>
-<li><strong>Would you ever use both?</strong> Often. Different data in one product can suit different stores.</li>
+<li><strong>What does ACID mean?</strong> A transaction's four promises: all or nothing, the schema's rules always hold, transactions don't trip over each other, and once saved it stays saved.</li>
+<li><strong>Can SQL scale across machines?</strong> Yes: copies take the reads, sharding splits the writes. More work than in a store built for it.</li>
+<li><strong>Can NoSQL do transactions?</strong> One item always; across items some can, with limits and a speed cost.</li>
+<li><strong>What is eventual consistency?</strong> Copies agree in the end, but a read just after a write may get the old value.</li>
 </ul>
 
-<h4>What a strong answer includes</h4>
-<ul>
-<li>The reads and the numbers come before the choice.</li>
-<li>A named kind of NoSQL store, not “NoSQL” in general.</li>
-<li>One cost of the option you picked, said without being asked.</li>
-<li>The signal that would flip the decision.</li>
-<li>No claim that one side is always better.</li>
-</ul>
+<p>A strong answer puts the reads and the numbers before the choice, names a <em>kind</em> of NoSQL store, volunteers one cost of its own pick, and says what would flip it.</p>
 
 <!-- section: revision -->
 <ul>
-<li>SQL keeps data in linked tables with a schema the database enforces. It can answer almost any question, and can change many rows as one step.</li>
-<li>NoSQL is a family: key-value, document, wide-column and graph stores. Most drop joins and spread data across many machines by design.</li>
-<li>The biggest question is how you’ll read the data. Many changing questions point to SQL. A few fixed reads by key point to NoSQL.</li>
-<li>Linked data and changes that must happen together point to SQL. Self-contained items, read whole, point to NoSQL.</li>
-<li>If the data fits on one machine for years, SQL is simpler. Past one machine, NoSQL grows by adding machines, while SQL has to be split by hand.</li>
-<li>The same chat feature is an easy SQL pick at 50,000 users and an easy NoSQL pick at 50 million. Do the sum before choosing.</li>
-<li>NoSQL still has a schema. It lives in your code, along with the job of keeping copied data in step.</li>
-<li>Moving one table from SQL to NoSQL is easier than the reverse, because SQL data is already clean. So SQL is the safer start when you can’t tell.</li>
+<li>SQL keeps data in linked tables with an enforced schema: almost any question, and many rows changed as one step.</li>
+<li>NoSQL is a family &mdash; key-value, document, wide-column, graph. Most drop joins and spread data across machines by design.</li>
+<li>The biggest question is how you'll read it: many changing questions point to SQL, a few fixed reads by key to NoSQL.</li>
+<li>Linked data and changes that go together point to SQL; self-contained items read whole point to NoSQL.</li>
+<li>If it fits one machine for years, SQL is simpler. Past that, NoSQL grows by adding machines; SQL must be split by hand.</li>
+<li>The same chat feature is an easy SQL pick at 50,000 users and an easy NoSQL pick at 50 million.</li>
+<li>NoSQL still has a schema; it lives in your code, with the job of keeping copies in step.</li>
+<li>Moving one table from SQL to NoSQL is easier than the reverse, because SQL data is already clean. So SQL is the safer start when you can't tell.</li>
 <li>One product can use both, each for the data it suits.</li>
 </ul>
