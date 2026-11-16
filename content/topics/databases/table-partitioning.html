@@ -205,7 +205,6 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 
 <!-- section: mistakes -->
 <ul>
-<li><strong>Partitioning to fix a slow query.</strong> If it needed an index, it still does.</li>
 <li><strong>Leaving the key out of queries.</strong> Every partition is read, and the table is slower than before.</li>
 <li><strong>Wrapping the key in a function.</strong> <code>date_trunc('month', created_at) = ...</code> stops pruning. Use a plain range.</li>
 <li><strong>Forgetting the next partition.</strong> At midnight on the first, every insert fails. Create them ahead, and alert when fewer than two future ones exist.</li>
@@ -236,7 +235,7 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 <li>Partitioning splits one table into smaller tables in the same database. The app still uses one table name.</li>
 <li>The parent holds no rows, only the rules. Each partition is a normal table with its own indexes.</li>
 <li>An insert goes to the partition whose range matches the key. If none matches, it fails.</li>
-<li>Partition pruning skips partitions that can't match, and needs a plain condition on the partition key.</li>
+<li>Partition pruning skips partitions that can't match. It needs a plain condition on the key.</li>
 <li>A query without the key reads every partition, and can be slower than on a plain table.</li>
 <li>Range suits time-based data, list a few fixed groups, hash even pieces with no way to drop old data.</li>
 <li>Removing old data is a detach and a drop: instant, and it frees disk. A <code>DELETE</code> is slow and frees nothing.</li>
