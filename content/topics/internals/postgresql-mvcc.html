@@ -62,17 +62,17 @@ related: indexing-strategies, table-partitioning, connection-pooling, sql-vs-nos
 <p>The <strong>index</strong> matters because it points at row versions and knows nothing about who can see them.</p>
 
 <!-- section: walkthrough -->
-<p>Asha's row holds 500, created by transaction 100 long ago. A writer updates it while a <strong>reader</strong> runs a report on the same row.</p>
+<p>Asha's row holds 500, created by transaction 100 long ago. A writer updates it while a <strong>reader</strong> reports on the same row.</p>
 <pre><code>-- the writer, which becomes transaction 101
 UPDATE accounts SET balance = balance - 100 WHERE id = 1;</code></pre>
 <ol>
-<li><strong>The reader takes a snapshot:</strong> everything below 101 is finished, 101 and up hasn't happened. A read-only transaction gets no ID of its own.</li>
+<li><strong>The reader takes a snapshot:</strong> everything below 101 is finished, 101 and up hasn't happened. Read-only transactions get no ID.</li>
 <li><strong>The writer gets ID 101</strong> and finds the row through the index: page 0, slot 1, <code>xmin</code> 100 committed and <code>xmax</code> 0, so it is current.</li>
-<li><strong>It stamps slot 1</strong> with <code>xmax = 101</code>, which doubles as the row lock: another writer sees that and waits.</li>
+<li><strong>It stamps slot 1</strong> with <code>xmax = 101</code>, which doubles as the row lock: another writer sees it and waits.</li>
 <li><strong>It writes a new version</strong> into slot 3 (balance 400, <code>xmin = 101</code>), points slot 1's <code>ctid</code> at it, and logs the change. Slot 1 still holds the 500.</li>
-<li><strong>No index entry is added</strong>, because <code>balance</code> is in no index and the version fits on the page: a <strong>HOT update</strong>. Change an indexed column, or fill the page, and every index gets an entry.</li>
+<li><strong>No index entry is added</strong>, because <code>balance</code> is in no index and the version fits on the page: a <strong>HOT update</strong>. Change an indexed column, or fill the page, and every index gets one.</li>
 <li><strong>The reader reads, while 101 still runs.</strong> Slot 1 was created before my snapshot and replaced by a transaction unfinished in it, so that replacement hasn't happened for me. It returns <strong>500</strong> and never waits.</li>
-<li><strong>The writer commits:</strong> a WAL record, then a mark in the commit log. No row is touched, so commit costs the same for one row or a million. A new transaction now reads 400, and slot 1 is a dead row &mdash; but vacuum can only take it once no running snapshot needs it, and our reader's does.</li>
+<li><strong>The writer commits:</strong> a WAL record, then a mark in the commit log. No row is touched, so commit costs the same for one row or a million. A new transaction now reads 400. Slot 1 is a dead row, but vacuum can only take it once no snapshot needs it &mdash; and our reader's does.</li>
 </ol>
 
 <div class="diagram">
