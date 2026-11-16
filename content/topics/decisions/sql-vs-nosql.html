@@ -142,8 +142,8 @@ related: database-sharding, notification-service
 <h4>NoSQL costs that show up later</h4>
 <ul>
 <li><strong>The question nobody planned for.</strong> A new way to read means a new table or index, plus a job to fill it from all the old data.</li>
-<li><strong>Copies that drift apart.</strong> The same fact lives in several places for speed. Your code updates every copy, and when it misses one, nothing complains.</li>
-<li><strong>The schema didn't go away</strong>, it moved into your code. Five years of items in five slightly different shapes are all still there, and every reader handles each one.</li>
+<li><strong>Copies that drift apart.</strong> The same fact lives in several places for speed, and when your code misses one, nothing complains.</li>
+<li><strong>The schema didn't go away</strong>, it moved into your code. Five years of items in five shapes are all still there, and every reader handles each one.</li>
 <li><strong>One busy key.</strong> If one partition key takes most of the traffic, one machine is overloaded while the rest idle.</li>
 </ul>
 
@@ -154,7 +154,7 @@ related: database-sharding, notification-service
 <p>You rarely move everything &mdash; only the table that outgrew the machine. Rewrite the code that joins to it or uses it in transactions, which is most of the work. Design the new layout around the reads you have, write to both stores while you copy the old data across and compare, switch reads over, stop writing to the old table. What helps: the data is clean, because the schema made sure of it.</p>
 
 <h4>From NoSQL to SQL</h4>
-<p>Same steps, with a cleaning job in front. Items written over the years have different shapes, each needing a mapping. Copies of the same fact disagree and you must decide which is right. Some point at things deleted long ago, and SQL will refuse those rows. In return, once it is in, the database guards all of that.</p>
+<p>Same steps, with a cleaning job in front. Items written over the years have different shapes, each needing a mapping. Copies of the same fact disagree. Some point at things deleted long ago, which SQL will refuse. In return, once it is in, the database guards all of that.</p>
 
 <p><strong>SQL to NoSQL is the easier direction</strong>: you start from clean data and a known list of reads. So when you can't tell which you need, that is a reason to start with SQL &mdash; it is the easier side to leave. To keep the door open: hold all database calls for one kind of data in one place, make your own IDs, check the shape of every item before saving it, and go easy on joins to a table that may move out one day.</p>
 
