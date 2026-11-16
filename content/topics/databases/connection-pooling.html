@@ -13,13 +13,13 @@ related: postgresql-mvcc, database-sharding, load-balancer
 <ul>
 <li>Ten connections means your app never runs more than ten queries at once. The eleventh request waits.</li>
 <li>That is the point. The database never sees more load than it agreed to.</li>
-<li>Examples here use <strong>PostgreSQL 14</strong>. MySQL uses a thread per connection rather than a whole process, so each is lighter, but pooling still helps.</li>
+<li>Examples use <strong>PostgreSQL 14</strong>. MySQL uses a thread per connection, so each is lighter, but pooling still helps.</li>
 </ul>
 <p class="note">One-line version: open a few connections once, lend them out, take them back. Faster for every request, and your app can’t ask the database for more than it can give.</p>
 
 <!-- section: why -->
 <p>Without a pool two things go wrong. One is slow, the other is an outage.</p>
-<p><strong>Every request pays the setup cost.</strong> A query taking a fraction of a millisecond sits behind several milliseconds of connecting, so most of the database time is spent saying hello.</p>
+<p><strong>Every request pays the setup cost.</strong> A query taking a fraction of a millisecond sits behind several milliseconds of connecting — most of the database time is spent saying hello.</p>
 <p><strong>The database runs out of connections.</strong> PostgreSQL allows 100 by default, and a normal day turns into an incident like this:</p>
 <ol>
 <li>The app opens a connection per request. Traffic is low, few are open, everything works.</li>
@@ -67,7 +67,7 @@ latency average = 2.818 ms  (2.333 ms of it connecting)   tps = 355</code></pre>
 </svg>
 </div>
 
-<p><strong>37 times fewer queries per second</strong> for the same query, 83% of it spent connecting. One laptop run, and the kindest case: no network, no encryption.</p>
+<p><strong>37 times fewer queries per second</strong> for the same query. One laptop run, and the kindest case: no network, no encryption.</p>
 
 <!-- section: internals -->
 <p>What PostgreSQL does on every connect:</p>
@@ -109,7 +109,7 @@ latency average = 2.818 ms  (2.333 ms of it connecting)   tps = 355</code></pre>
 <tr><td>Pooler, transaction mode</td><td>A separate program</td><td>One transaction</td><td>Session settings, <code>LISTEN</code>, session locks</td><td>Many instances share one database</td></tr>
 <tr><td>Pooler, statement mode</td><td>A separate program</td><td>One statement</td><td>Multi-statement transactions</td><td>Rarely</td></tr>
 </table></div>
-<p><strong>The app pool</strong> is the starting point for every server app: nothing extra to run, and requests wait where you can log them. Its weakness is that pools don’t know about each other — ten instances with a pool of 20 can ask for 200 connections.</p>
+<p><strong>The app pool</strong> is the starting point for every server app: nothing extra to run, requests wait where you can log them. Its weakness is that pools don’t know about each other — ten instances with a pool of 20 can ask for 200.</p>
 <p><strong>Session mode</strong> behaves exactly like PostgreSQL, but a client that stays connected keeps its real connection busy or not — so long-lived apps hold as many as before.</p>
 <p><strong>Transaction mode</strong> is where the sharing happens: a real connection is held only between <code>BEGIN</code> and <code>COMMIT</code>, so a thousand mostly-idle clients share twenty real ones. The price is that anything living on the connection past a transaction breaks — session <code>SET</code> (use <code>SET LOCAL</code>), <code>LISTEN</code>, session locks, temp tables, SQL <code>PREPARE</code>.</p>
 <p>The usual large setup is both: a small pool per instance, pointed at a pooler in transaction mode.</p>
@@ -119,9 +119,9 @@ latency average = 2.818 ms  (2.333 ms of it connecting)   tps = 355</code></pre>
 <ul>
 <li><strong>Work needed:</strong> 1,000 × 3 × 5 ms = 15,000 ms of query time a second. One connection gives 1,000 ms a second, so <strong>15 busy on average</strong>.</li>
 <li><strong>What the pools can ask for:</strong> 12 × 20 = <strong>240</strong>, against 97 available. Quiet days hide it; busy days bring “too many clients”.</li>
-<li><strong>Right size:</strong> keep 7 back for migrations and a human with <code>psql</code> → 90 ÷ 12 = <strong>a pool of 7 each</strong>, 84 in total, with room for bursts. Backend memory drops from 2.4 GB to <strong>840 MB</strong>.</li>
+<li><strong>Right size:</strong> keep 7 back for migrations and a human with <code>psql</code> → 90 ÷ 12 = <strong>a pool of 7 each</strong>. Backend memory drops from 2.4 GB to <strong>840 MB</strong>.</li>
 </ul>
-<p>Would raising the limit help? No. A common rule is twice the cores plus one — <strong>17 concurrent queries</strong> is about what this server does well, and the work needs 15. More connections would just take turns on the same cores.</p>
+<p>Raising the limit wouldn’t help. A common rule is twice the cores plus one — <strong>17 concurrent queries</strong> is about what this server does well, and the work needs 15. More would just take turns on the same cores.</p>
 <p><strong>At 40 instances</strong>, 40 × 7 = 280 breaks the limit again, and shrinking to 2 each means two slow queries block an instance. PgBouncer in transaction mode takes those 280 clients onto <strong>20 real</strong> connections: a 15 ms transaction means each serves 66 requests/s, so 20 × 66 = <strong>1,320/s</strong>, above our 1,000.</p>
 <p><strong>One slow call inside the borrow</strong> ruins it. Hold the connection through a 300 ms payment call and a pool of 7 serves 7 ÷ 0.315 ≈ <strong>22 requests/s</strong> instead of 466 — while the database sits idle.</p>
 
@@ -136,7 +136,7 @@ GROUP BY state;
 --  idle in transaction |     1</code></pre>
 <ul>
 <li><code>idle</code>: open, waiting for work. Normal for a pooled connection.</li>
-<li><code>active</code>: running a query. Staying near your pool total means the pool is too small or the queries too slow.</li>
+<li><code>active</code>: running a query. Staying near the pool total means it is too small, or the queries are too slow.</li>
 <li><code>idle in transaction</code>: a <code>BEGIN</code> that was never finished. It does nothing, can’t be lent out, and still holds its locks. These are bugs.</li>
 </ul>
 <pre><code>-- find the stuck one (open_for = how long, last_query = which code), end it
@@ -155,12 +155,12 @@ export const pool = new Pool({ max: 7,
 const client = await this.pool.connect();       // borrow
 try { /* BEGIN, updates, COMMIT */ }
 finally { client.release(); }                   // always give it back</code></pre>
-<p>Release in <code>finally</code>, so a throwing query still returns the connection, and log <code>pool.waitingCount</code> — above zero for long means requests are queuing. For PgBouncer, set <code>pool_mode = transaction</code> and <code>default_pool_size = 20</code>, then watch <code>SHOW POOLS;</code>: <code>cl_waiting</code> and <code>maxwait</code> above zero mean the real pool is too small or transactions too long.</p>
+<p>Release in <code>finally</code>, so a throwing query still returns the connection, and log <code>pool.waitingCount</code> — above zero for long means requests are queuing. On PgBouncer, <code>SHOW POOLS;</code> tells you the same thing: <code>cl_waiting</code> and <code>maxwait</code> above zero mean the real pool is too small.</p>
 
 <!-- section: tradeoffs -->
 <ul>
 <li><strong>Small pool vs big pool.</strong> Small keeps the database fast and makes requests wait in your app. Big lets everyone in at once, and then they all slow each other down inside the database.</li>
-<li><strong>Waiting vs failing fast.</strong> A long wait hides short bursts, and lets requests pile up until everything times out together. A short wait sheds some requests early and keeps the rest healthy.</li>
+<li><strong>Waiting vs failing fast.</strong> A long wait hides short bursts, and lets requests pile up until everything times out together. A short wait sheds some early and keeps the rest healthy.</li>
 <li><strong>App pool vs pooler.</strong> The app pool is free and simple but only knows itself. A pooler gives one shared cap, at the cost of another program, another hop and another thing that fails.</li>
 <li><strong>Transaction mode vs session mode.</strong> Transaction mode shares far better and takes away session features — and those bugs show up as odd behaviour, not clear errors.</li>
 </ul>
@@ -175,9 +175,9 @@ finally { client.release(); }                   // always give it back</code></p
 <!-- section: mistakes -->
 <ul>
 <li><strong>Forgetting to multiply by instances.</strong> A pool of 20 looks small until there are 12 copies. Work out instances × pool size and keep it under the limit with room to spare.</li>
-<li><strong>Growing the pool when things are slow.</strong> On a busy database that just adds queries fighting for the same cores. Find the slow queries first.</li>
-<li><strong>Not giving the connection back.</strong> One path that throws before <code>release()</code> loses a connection for good, and hours later the pool is empty. Release in <code>finally</code>.</li>
-<li><strong>Holding a connection during slow non-database work.</strong> As the numbers showed, one 300 ms API call cuts a pool’s throughput twentyfold. Do the slow work first, then borrow.</li>
+<li><strong>Growing the pool when things are slow.</strong> On a busy database that just adds queries fighting for the same cores.</li>
+<li><strong>Not giving the connection back.</strong> One path that throws before <code>release()</code> loses a connection for good. Release in <code>finally</code>.</li>
+<li><strong>Holding a connection during slow non-database work.</strong> One 300 ms API call cuts throughput twentyfold. Do the slow work first, then borrow.</li>
 <li><strong>Creating a pool per request.</strong> That is having no pool. One pool, made at start-up.</li>
 <li><strong>No wait timeout.</strong> Requests waiting forever make a full pool look like a frozen app.</li>
 <li><strong>Leaving transactions open.</strong> <code>BEGIN</code> with no <code>COMMIT</code> holds a connection and its locks. Set <code>idle_in_transaction_session_timeout</code> and treat every hit as a bug.</li>
@@ -187,7 +187,7 @@ finally { client.release(); }                   // always give it back</code></p
 <!-- section: interview -->
 <h4>Common questions</h4>
 <ul>
-<li><strong>What is a pool, and why?</strong> Open connections that requests borrow and return. Connecting costs far more than a small query, and the database has a hard limit.</li>
+<li><strong>What is a pool?</strong> Open connections that requests borrow and return. Connecting costs far more than a small query, and the database has a hard limit.</li>
 <li><strong>How do you size it?</strong> Database side: limit minus reserve, divided by instances. Work side: requests/s × hold time. If the first is smaller, add a pooler or cut the hold time.</li>
 <li><strong>When it’s empty?</strong> The request queues, then gets a connection or times out.</li>
 <li><strong>Session or transaction pooling?</strong> Session holds a connection for the whole client connection; transaction holds it per transaction, so many more clients share — at the price of connection-level features.</li>
@@ -199,7 +199,7 @@ finally { client.release(); }                   // always give it back</code></p
 <li>What about serverless? (Each copy opens its own connection, so put a pooler in transaction mode in front.)</li>
 </ul>
 <h4>How it fits a bigger design</h4>
-<p>In a diagram, the pool is the arrow between your service and the database. Every time you add instances, check instances × pool size against the limit — and with sharding, each instance keeps a pool per shard, so the sum multiplies again.</p>
+<p>In a diagram, the pool is the arrow between your service and the database. Every time you add instances, check instances × pool size against the limit — and with sharding each instance keeps a pool per shard, so it multiplies again.</p>
 
 <!-- section: revision -->
 <ul>
