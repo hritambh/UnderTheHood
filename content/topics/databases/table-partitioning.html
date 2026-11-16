@@ -224,7 +224,7 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 <h4>Follow-ups to expect</h4>
 <ul>
 <li><strong>An update changes the key?</strong> PostgreSQL moves the row: a delete plus an insert underneath.</li>
-<li><strong>Partitioning a table that is already huge?</strong> Not in place. Build a new partitioned table, copy rows in batches, swap the names &mdash; or attach the old table as one big partition and send new data elsewhere.</li>
+<li><strong>Partitioning a table that is already huge?</strong> Not in place. Build a new partitioned table, copy rows in batches, swap the names.</li>
 </ul>
 
 <h4>How it fits a bigger design</h4>
@@ -236,7 +236,7 @@ WHERE created_at &gt;= to_timestamp('2026-04-10', 'YYYY-MM-DD');
 <li>The parent holds no rows, only the rules. Each partition is a normal table with its own index.</li>
 <li>An insert goes to the partition whose range matches the key, or fails if none does.</li>
 <li>Partition pruning skips partitions that can't match, and needs a plain condition on the key. A query without it reads every partition, and can be slower than a plain table.</li>
-<li>Range suits time-based data, list a few fixed groups, hash even pieces with no way to drop old data.</li>
+<li>Range suits time-based data, list fixed groups, hash even pieces you can't age out.</li>
 <li>Removing old data is a detach and a drop: instant, and it frees disk. A <code>DELETE</code> is slow and frees nothing.</li>
 <li>A unique rule must include the partition key, because no index spans all partitions.</li>
 <li>New partitions must exist before their rows arrive, and thousands slow query planning.</li>
