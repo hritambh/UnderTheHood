@@ -15,7 +15,7 @@ related: indexing-strategies, table-partitioning, connection-pooling, sql-vs-nos
 <!-- section: why -->
 <p>Most PostgreSQL surprises in production come back to this one design. Once you know it, these make sense:</p>
 <ul>
-<li><strong>The table keeps growing but the row count is flat.</strong> Old versions pile up faster than they are cleaned.</li>
+<li><strong>The table grows but the row count is flat.</strong> Old versions pile up faster than they are cleaned.</li>
 <li><strong>A report shows numbers a few seconds old</strong>, or two queries in a transaction disagree.</li>
 <li><strong>One forgotten open transaction slows the database down</strong> hours later.</li>
 <li><strong><code>SELECT count(*)</code> is slow</strong> on a big table, even with an index.</li>
