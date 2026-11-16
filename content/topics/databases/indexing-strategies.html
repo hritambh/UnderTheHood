@@ -227,7 +227,7 @@ ORDER BY pg_relation_size(indexrelid) DESC;
 <ul>
 <li><strong>One index per column.</strong> Five single-column indexes are not one shaped for the query: you pay five write costs and still sort.</li>
 <li><strong>Wrong column order.</strong> <code>(created_at, customer_id)</code> is nearly useless for &ldquo;this customer's orders&rdquo;, as the diagram above shows.</li>
-<li><strong>Wrapping the column in a function.</strong> <code>WHERE created_at::date = '2026-03-01'</code> fell back to a <code>Seq Scan</code>. Write it as a range and the index is used.</li>
+<li><strong>Wrapping the column in a function.</strong> <code>WHERE created_at::date = '2026-03-01'</code> fell back to a <code>Seq Scan</code>; write it as a range instead.</li>
 <li><strong>A wildcard at the front.</strong> <code>LIKE '%4242@Example.com'</code> also gave a <code>Seq Scan</code>: a sorted list can't help when you don't know how the value starts.</li>
 <li><strong>Building without <code>CONCURRENTLY</code> in production</strong>, which stops writes until it finishes.</li>
 <li><strong>Never removing indexes.</strong> Queries change, old indexes stay and slow writes. Check <code>pg_stat_user_indexes</code> a few times a year.</li>
@@ -255,7 +255,7 @@ ORDER BY pg_relation_size(indexrelid) DESC;
 <ul>
 <li>An index is a sorted copy of some columns pointing back at the rows. Without one the database reads the whole table.</li>
 <li>The default is a B-tree: one page per level, and a million rows needed three levels.</li>
-<li>Shape the index like the query. Filter column then sort column removed both the scan and the sort.</li>
+<li>Shape the index like the query: filter column then sort column removed both the scan and the sort.</li>
 <li>In a composite index, equality columns go first. It can't help a query that skips its first column.</li>
 <li>A covering index holds every column the query needs, so the table isn't read. A partial index holds only the rows you ask for, so it stays tiny.</li>
 <li>An expression index is needed when the query wraps the column in a function. GIN fits JSON and text search; BRIN fits huge insert-ordered tables.</li>
