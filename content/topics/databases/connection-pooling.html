@@ -18,7 +18,7 @@ related: postgresql-mvcc, database-sharding, load-balancer
 <p class="note">One-line version: open a few connections once, lend them out, take them back. Faster for every request, and your app can’t ask the database for more than it can give.</p>
 
 <!-- section: why -->
-<p>Without a pool two things go wrong. One is slow, the other is an outage.</p>
+<p>Without a pool, two things go wrong: one slow, one an outage.</p>
 <p><strong>Every request pays the setup cost.</strong> A query taking a fraction of a millisecond sits behind several milliseconds of connecting — most of the database time is spent saying hello.</p>
 <p><strong>The database runs out of connections.</strong> PostgreSQL allows 100 by default, and a normal day turns into an incident like this:</p>
 <ol>
