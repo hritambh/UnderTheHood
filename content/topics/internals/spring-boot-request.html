@@ -1,0 +1,197 @@
+<!--
+title: How Spring Boot Serves a Request
+summary: Spring Boot builds every object once at startup and keeps them in one container. A request is then one thread walking through those objects and back — the opposite shape to Node, where one thread handles everything.
+category: Spring
+order: 30
+related: connection-pooling, authentication-authorisation, realtime-communication
+-->
+
+<!-- section: what -->
+<p><strong>Spring Boot</strong> is the Spring Framework plus two conveniences: <strong>auto-configuration</strong> (it guesses your setup from what is on the classpath) and an <strong>embedded server</strong> (Tomcat ships inside your JAR, so you run <code>java -jar app.jar</code>).</p>
+<p>This topic looks inside one part: what happens between the TCP socket and your controller method. Everything here is <strong>Spring Boot 4.1</strong> on Java 17 or newer, with embedded <strong>Tomcat 11</strong>.</p>
+<pre><code>// OrderController.java
+@RestController
+class OrderController {
+  private final OrderService service;
+  OrderController(OrderService service) { this.service = service; }
+
+  @GetMapping("/orders/{id}")
+  Order get(@PathVariable long id) { return service.find(id); }
+}</code></pre>
+<p>In Express you write <code>app.get(path, fn)</code> and the function <em>is</em> the route. Here the route is an annotation on a method of an object you never created. Spring created it at startup and holds it forever. Nearly every Spring surprise comes from that one difference.</p>
+<p class="note">One-line version: Spring builds every object once at startup and keeps them in a container. A request is one thread walking through those objects and back out.</p>
+
+<!-- section: why -->
+<p>“Walk me through what happens when a request hits your app” is the question every Spring interview opens with. It is this whole topic, and the follow-ups come from the same picture:</p>
+<ul>
+<li><strong>“Why is my injected field null?”</strong> Because something made that object with <code>new</code>. Spring only wires objects it built.</li>
+<li><strong>“Why did the app fall over at a few hundred users when the CPU was idle?”</strong> Because it ran out of threads, not CPU. See <em>performance</em>.</li>
+<li><strong>“Why didn’t my rollback happen?”</strong> Because the method was called from inside the same class and skipped the proxy.</li>
+<li><strong>“Why is startup slow but the first request fast?”</strong> Because all the wiring happens before any traffic arrives.</li>
+</ul>
+<p>Coming from Node, the useful move is to stop reading Spring as magic and start reading it as “a map of pre-built objects, plus a thread”.</p>
+
+<!-- section: bigPicture -->
+<div class="diagram">
+<svg viewBox="0 0 640 285" role="img" aria-label="A request arrives at Tomcat's worker thread pool, passes through the filter chain to the DispatcherServlet, which calls the controller, service proxy and repository beans held in the application context, and from there to the Hikari connection pool and the database">
+<defs><marker id="ah-spring-boot-request" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="10" y="24" width="80" height="48" rx="8" class="box"/><text x="50" y="53" text-anchor="middle" class="lbl">Client</text>
+<rect x="130" y="24" width="150" height="48" rx="8" class="box hi"/><text x="205" y="45" text-anchor="middle" class="lbl">Tomcat 11</text><text x="205" y="62" text-anchor="middle" class="sub">200 worker threads</text>
+<rect x="320" y="24" width="110" height="48" rx="8" class="box"/><text x="375" y="45" text-anchor="middle" class="lbl">Filter chain</text><text x="375" y="62" text-anchor="middle" class="sub">security, CORS</text>
+<rect x="470" y="24" width="160" height="48" rx="8" class="box hi"/><text x="550" y="45" text-anchor="middle" class="lbl">DispatcherServlet</text><text x="550" y="62" text-anchor="middle" class="sub">one servlet, mapped to /</text>
+<line x1="90" y1="48" x2="128" y2="48" class="arr" marker-end="url(#ah-spring-boot-request)"/>
+<line x1="280" y1="48" x2="318" y2="48" class="arr" marker-end="url(#ah-spring-boot-request)"/>
+<line x1="430" y1="48" x2="468" y2="48" class="arr" marker-end="url(#ah-spring-boot-request)"/>
+<rect x="8" y="152" width="502" height="96" rx="10" class="box faintbox"/>
+<rect x="20" y="175" width="130" height="50" rx="8" class="box"/><text x="85" y="197" text-anchor="middle" class="lbl">Controller</text><text x="85" y="214" text-anchor="middle" class="sub">@RestController</text>
+<rect x="185" y="175" width="140" height="50" rx="8" class="box hi"/><text x="255" y="197" text-anchor="middle" class="lbl">Service proxy</text><text x="255" y="214" text-anchor="middle" class="sub">@Transactional wrapper</text>
+<rect x="360" y="175" width="130" height="50" rx="8" class="box"/><text x="425" y="197" text-anchor="middle" class="lbl">Repository</text><text x="425" y="214" text-anchor="middle" class="sub">JPA or JDBC</text>
+<rect x="525" y="175" width="105" height="50" rx="8" class="box"/><text x="577" y="197" text-anchor="middle" class="lbl">Hikari pool</text><text x="577" y="214" text-anchor="middle" class="sub">10 connections</text>
+<line x1="150" y1="200" x2="183" y2="200" class="arr" marker-end="url(#ah-spring-boot-request)"/>
+<line x1="325" y1="200" x2="358" y2="200" class="arr" marker-end="url(#ah-spring-boot-request)"/>
+<line x1="490" y1="200" x2="523" y2="200" class="arr" marker-end="url(#ah-spring-boot-request)"/>
+<path d="M550 74 C 550 124, 300 118, 88 172" class="arr" fill="none" marker-end="url(#ah-spring-boot-request)"/>
+<text x="330" y="140" text-anchor="middle" class="sub">looks up the handler for GET /orders/{id}</text>
+<text x="259" y="242" text-anchor="middle" class="sub">ApplicationContext — one shared instance of each, built at startup</text>
+</svg>
+</div>
+<p>Most of it has a name you already know:</p>
+<div class="table-wrap"><table>
+<tr><th>In Node</th><th>In Spring Boot</th></tr>
+<tr><td><code>app.listen()</code></td><td>Embedded Tomcat, started by <code>SpringApplication.run</code></td></tr>
+<tr><td>Express middleware</td><td>Filters (and interceptors)</td></tr>
+<tr><td>The router</td><td><code>DispatcherServlet</code> plus its handler mapping</td></tr>
+<tr><td>A Nest controller class</td><td>A <code>@RestController</code> bean</td></tr>
+<tr><td>A Nest module’s providers</td><td><code>@Service</code> and <code>@Component</code> beans in the ApplicationContext</td></tr>
+<tr><td>The module cache: one instance per file</td><td>Singleton scope: one instance per bean</td></tr>
+<tr><td>A <code>pg</code> Pool</td><td>HikariCP</td></tr>
+</table></div>
+
+<!-- section: walkthrough -->
+<p>Follow one <code>GET /orders/42</code>.</p>
+<ol>
+<li>Tomcat accepts the connection and hands it to a free <strong>worker thread</strong>, named something like <code>http-nio-8080-exec-7</code>. That thread belongs to this request until the response is written.</li>
+<li>The <strong>filter chain</strong> runs. Spring Security, if you have it, is one filter. Same job and same ordering traps as Express middleware.</li>
+<li>The <strong>DispatcherServlet</strong> takes over. It is the single servlet mapped to <code>/</code>.</li>
+<li>It looks up <code>GET /orders/{id}</code> in a table of routes built at startup, and finds <code>OrderController.get</code>. Nothing is scanned now.</li>
+<li>Argument resolvers turn the <code>42</code> into a <code>long</code>. A JSON body would become an object here, via Jackson.</li>
+<li>Your method runs — on the one shared <code>OrderController</code> instance that every other thread is also using.</li>
+<li>It calls <code>service.find(42)</code>. That object is not your class: it is a <strong>proxy</strong> wrapping it. <code>@Transactional</code> makes the proxy borrow a connection from Hikari, open a transaction, call your method, then commit and hand the connection back.</li>
+<li>The returned <code>Order</code> goes back to the DispatcherServlet, which writes it as JSON. The thread writes the bytes and returns to the pool.</li>
+</ol>
+<p>The difference you can feel is step 7. The thread does not go anywhere while the database thinks.</p>
+<div class="diagram">
+<svg viewBox="0 0 640 215" role="img" aria-label="Two timelines of the same 100 millisecond request. In Spring Boot one worker thread is held for the whole time, including the 80 milliseconds spent waiting for the database. In Node the thread is handed back during the wait and serves other requests.">
+<text x="18" y="30" class="lbl">Spring Boot: the thread stays with the request</text>
+<rect x="60" y="42" width="70" height="28" rx="5" class="box"/><text x="95" y="61" text-anchor="middle" class="sub">route</text>
+<rect x="130" y="42" width="70" height="28" rx="5" class="box hi"/><text x="165" y="61" text-anchor="middle" class="sub">your code</text>
+<rect x="200" y="42" width="270" height="28" rx="5" class="box warn"/><text x="335" y="61" text-anchor="middle" class="sub">held, waiting for the database</text>
+<rect x="470" y="42" width="90" height="28" rx="5" class="box"/><text x="515" y="61" text-anchor="middle" class="sub">JSON</text>
+<text x="60" y="90" class="sub">one of the 200 worker threads, busy for the whole 100 ms</text>
+<text x="18" y="135" class="lbl">Node: the thread is handed back while waiting</text>
+<rect x="60" y="147" width="70" height="28" rx="5" class="box"/><text x="95" y="166" text-anchor="middle" class="sub">route</text>
+<rect x="130" y="147" width="70" height="28" rx="5" class="box hi"/><text x="165" y="166" text-anchor="middle" class="sub">your code</text>
+<rect x="200" y="147" width="270" height="28" rx="5" class="box faintbox"/><text x="335" y="166" text-anchor="middle" class="sub">free — serving other requests</text>
+<rect x="470" y="147" width="90" height="28" rx="5" class="box"/><text x="515" y="166" text-anchor="middle" class="sub">callback</text>
+<text x="60" y="195" class="sub">the same single thread; waiting is free, but your own CPU work blocks everyone</text>
+</svg>
+</div>
+
+<!-- section: storage -->
+<p>Nothing above is built per request. It all exists before the first client connects:</p>
+<div class="table-wrap"><table>
+<tr><th>What</th><th>Where</th><th>Holds</th></tr>
+<tr><td>ApplicationContext</td><td>Heap, for the app’s life</td><td>Every bean, looked up by name and by type</td></tr>
+<tr><td>Singleton cache</td><td>Inside the context</td><td>The built objects, so a lookup is a map read</td></tr>
+<tr><td>Proxies</td><td>Heap</td><td>The wrappers that add transactions, security and caching</td></tr>
+<tr><td>Handler mapping</td><td>Heap</td><td>Every URL pattern → controller method, built at startup</td></tr>
+<tr><td>Worker pool</td><td>OS threads</td><td>Up to 200 threads, each with its own stack</td></tr>
+<tr><td>Hikari pool</td><td>Heap + sockets</td><td>Open database connections, 10 by default</td></tr>
+</table></div>
+<p>The line that matters: <strong>a bean is a singleton</strong>. One <code>OrderService</code> object serves every request. So a field on it is shared by up to 200 threads at the same instant. In Node a module-level variable is shared too, but one thread means two requests never touch it in the same moment. In Spring they do. Keep request state in method parameters and local variables, never in fields.</p>
+
+<!-- section: guarantees -->
+<p><strong>You can rely on:</strong></p>
+<ul>
+<li>Every singleton bean is fully built before the first request. A missing dependency fails the startup, not a request at 3 a.m.</li>
+<li>Constructor injection hands you a complete object, so the field can be <code>final</code> and never null.</li>
+<li><code>@Transactional</code> on a public method called from outside the class commits when the method returns, and rolls back on a <code>RuntimeException</code>.</li>
+<li>One thread per request, so <code>ThreadLocal</code> works. That is how the current user and the logging context follow the request without being passed around.</li>
+</ul>
+<p><strong>People wrongly rely on:</strong></p>
+<ul>
+<li><strong>“<code>@Transactional</code> always applies.”</strong> Calling another method on <code>this</code> goes straight to the object and skips the proxy. No proxy, no transaction.</li>
+<li><strong>“Any exception rolls back.”</strong> By default only unchecked exceptions do. A checked one commits unless you set <code>rollbackFor</code>.</li>
+<li><strong>“Injection works on an object I made with <code>new</code>.”</strong> Spring wires what Spring built. Everything else gets null fields.</li>
+<li><strong>“The thread-local context follows my <code>@Async</code> call.”</strong> That runs on a different thread, which has its own empty one.</li>
+</ul>
+
+<!-- section: performance -->
+<p>From the steps above, with <strong>made-up numbers to show the shape, not benchmarks</strong>:</p>
+<ul>
+<li><strong>Steps 3 to 5 are nearly free.</strong> Routing is a map read, because the wiring was done at startup.</li>
+<li><strong>Step 7 is the whole cost</strong>, and mostly as waiting, not work.</li>
+<li><strong>The ceiling is threads, not CPU.</strong> Say a request takes 100 ms, 80 ms of it waiting on the database. 200 threads ÷ 0.1 s = about <strong>2,000 requests/s</strong>. Let the request take 200 ms and the ceiling halves, with the CPU still idle.</li>
+<li><strong>The pool below is smaller.</strong> 200 threads share 10 Hikari connections, so 190 can be queued behind the database. That is usually the real limit — see Connection Pooling.</li>
+<li><strong>Node has the opposite shape.</strong> Waiting is free, so one process holds thousands of waiting requests — but 50 ms of your own CPU work stalls all of them.</li>
+</ul>
+<p><strong>Virtual threads</strong> (<code>spring.threads.virtual.enabled=true</code>, Java 21 or newer) give Spring Node’s shape without changing your code: the thread parks during the wait instead of being held, so the 200-thread limit stops mattering. The database pool still does.</p>
+
+<!-- section: failure -->
+<p>Same request, but the database has stopped answering.</p>
+<ol>
+<li>At step 7 the proxy asks Hikari for a connection. None is free, so it waits — 30 seconds by default.</li>
+<li>It gives up and throws. The proxy sees an unchecked exception, rolls the transaction back, and returns the connection.</li>
+<li>The exception travels back up through your service and controller, on the same thread.</li>
+<li>Spring turns it into a response: your <code>@ControllerAdvice</code> handler if you wrote one, otherwise a default JSON body with the status and path. The client gets a 500.</li>
+<li>The thread goes back to the pool. The app is still running.</li>
+</ol>
+<p><strong>Nothing is half-written.</strong> The transaction rolled back, so the database is as it was. The case you cannot see is a failure just after the commit: the row is there, and the client is told it failed.</p>
+<p>The worse version is the pile-up. If every request waits 30 seconds, all 200 threads fill. New connections sit in Tomcat’s accept queue, 100 of them by default, and after that the operating system refuses them. Clients see “connection refused” and the load balancer drops the instance, routes that never touch that database included. Short timeouts matter more here than the thread count.</p>
+
+<!-- section: settings -->
+<div class="table-wrap"><table>
+<tr><th>Setting</th><th>What it changes</th><th>When to touch it</th></tr>
+<tr><td><code>server.tomcat.threads.max</code></td><td>How many requests can be in flight at once. 200 by default.</td><td>Raise it when threads are waiting on something slow, never when the CPU is the busy part.</td></tr>
+<tr><td><code>server.tomcat.accept-count</code></td><td>How many connections queue once every thread is busy. 100 by default.</td><td>It decides whether a spike waits or gets refused.</td></tr>
+<tr><td><code>spring.threads.virtual.enabled</code></td><td>Runs requests on virtual threads, so the pool size stops being the ceiling.</td><td>On Java 21 or newer, for an app that mostly waits on other services.</td></tr>
+<tr><td><code>spring.datasource.hikari.maximum-pool-size</code></td><td>How many database connections this instance may hold. 10 by default.</td><td>The real ceiling under load. Work it out as instances × pool size.</td></tr>
+<tr><td><code>spring.main.lazy-initialization</code></td><td>Builds beans on first use instead of at startup.</td><td>Faster restarts while developing. It also delays wiring mistakes until a request hits them.</td></tr>
+</table></div>
+
+<!-- section: tryIt -->
+<p>Run the JAR with <code>--debug</code> to see what auto-configuration decided:</p>
+<pre><code>java -jar target/app.jar --debug</code></pre>
+<p>Read the condition report it prints. <strong>Positive matches</strong> shows what was switched on and which condition passed; <strong>negative matches</strong> shows what was skipped and what was missing. That report is the answer to “where did my Tomcat come from”.</p>
+<p>Add <code>spring-boot-starter-actuator</code>, expose the endpoints, and look at the container itself:</p>
+<pre><code># application.properties
+management.endpoints.web.exposure.include=beans,conditions,health</code></pre>
+<pre><code>curl -s localhost:8080/actuator/beans | jq '.contexts[].beans | length'
+curl -s localhost:8080/actuator/conditions | head</code></pre>
+<p>Then watch the threads. With the app running, take a thread dump:</p>
+<pre><code>jcmd $(jcmd -l | grep app.jar | cut -d' ' -f1) Thread.print | grep http-nio</code></pre>
+<p>You will see a handful of idle <code>http-nio-8080-exec-N</code> threads. Fire fifty slow requests at it and dump again — the count climbs toward 200 and stops. That is the whole thread model, on screen.</p>
+
+<!-- section: myths -->
+<ul>
+<li><strong>“A new controller object is made for each request.”</strong> One object, shared by every thread. That is why a field on it is a bug waiting to happen.</li>
+<li><strong>“All those annotations mean slow reflection on every request.”</strong> The scanning and wiring happen once at startup. A request is a map lookup and a method call.</li>
+<li><strong>“Spring Boot needs a Tomcat installed on the server.”</strong> Tomcat is a library inside your JAR. There is nothing to install.</li>
+<li><strong>“More threads means more throughput.”</strong> Threads cost memory, and they all queue for the same ten database connections. Past that point, raising the number just moves the queue.</li>
+<li><strong>“Virtual threads make blocking code free.”</strong> They make waiting cheap. Every other limit — the connection pool, the database, your own CPU work — is exactly where it was.</li>
+<li><strong>“<code>spring-boot-starter-web</code> is the one to use.”</strong> In Spring Boot 4 it is deprecated in favour of <code>spring-boot-starter-webmvc</code>. Same Tomcat underneath.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>Spring Boot is Spring plus auto-configuration plus an embedded Tomcat, so you run a plain JAR.</li>
+<li>At startup it builds one instance of every bean and keeps them in the ApplicationContext.</li>
+<li>A request is one Tomcat worker thread walking through those pre-built objects and back out.</li>
+<li>The DispatcherServlet finds the controller method in a route table built at startup, so routing itself is cheap.</li>
+<li>Your <code>@Service</code> is reached through a proxy, which is where <code>@Transactional</code> and security actually happen.</li>
+<li>Calling a <code>@Transactional</code> method on <code>this</code> skips the proxy, so no transaction starts.</li>
+<li>Beans are shared by every thread at once, so request state belongs in locals, never in fields.</li>
+<li>The thread is held for the whole request, waiting included, so 200 threads cap how many can be in flight.</li>
+<li>Virtual threads remove that cap; the connection pool below it, 10 by default, does not move.</li>
+<li>When the database stalls, threads pile up, the accept queue fills, and the whole instance stops answering.</li>
+</ul>
