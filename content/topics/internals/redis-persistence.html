@@ -1,0 +1,177 @@
+<!--
+title: How Redis Saves Data to Disk
+summary: Redis keeps everything in memory, so a restart would lose it all. Two mechanisms stop that: RDB snapshots and the AOF log. What each one writes, and exactly how much you can lose when the power goes.
+category: Redis
+order: 20
+related: realtime-communication, authentication-authorisation, sql-vs-nosql
+-->
+
+<!-- section: what -->
+<p><strong>Redis</strong> is a key-value store that keeps the whole dataset in memory. That is where the speed comes from, and it is also the problem: memory is gone when the process dies.</p>
+<p>So Redis writes to disk in two ways, and this topic is about those two. Everything here is <strong>Redis 7</strong>, open-source.</p>
+<ul>
+<li><strong>RDB</strong>: a snapshot. The whole dataset copied into one file, every so often.</li>
+<li><strong>AOF</strong> (append-only file): a log. Every write command appended as it happens, and replayed on startup.</li>
+</ul>
+<p>You can run either, both, or neither. Both is the usual production answer, and neither is a real choice when Redis is only a cache.</p>
+<p class="note">One-line version: RDB is a photograph taken now and then, AOF is a diary written as you go. The gap between the last photo or diary entry and the crash is what you lose.</p>
+
+<!-- section: why -->
+<p>Knowing this changes three decisions you will actually face:</p>
+<ul>
+<li><strong>“Is my data safe in Redis?”</strong> The honest answer is a number of seconds, and it depends on settings you choose. You can’t give that answer without this.</li>
+<li><strong>Memory alarms during saves.</strong> Redis can briefly use much more memory than the dataset size, and the reason is in the walkthrough below.</li>
+<li><strong>Slow startup.</strong> A Redis that takes minutes to come back after a restart is replaying a log, and the size of that log is something you control.</li>
+</ul>
+<p>It also answers the interview question behind “why not use Redis as your main database?” — which is really a question about durability, not speed.</p>
+
+<!-- section: bigPicture -->
+<p>Five parts matter here:</p>
+<ul>
+<li><strong>The command loop</strong>: one thread, running commands one at a time. No command overlaps another.</li>
+<li><strong>The dataset</strong>: your keys and values, in memory.</li>
+<li><strong>The AOF buffer</strong>: a small in-memory buffer where write commands land before they reach the file.</li>
+<li><strong>The AOF files</strong>: the log on disk, in a directory Redis 7 calls <code>appendonlydir</code>.</li>
+<li><strong>The RDB child</strong>: a forked child process that writes the snapshot, so the main thread keeps serving.</li>
+</ul>
+
+<div class="diagram">
+<svg viewBox="0 0 640 240" role="img" aria-label="Clients send commands to a single-threaded command loop, which updates the in-memory dataset, appends to the AOF buffer which flushes to the AOF files, while a forked child process writes the RDB snapshot to disk">
+<defs><marker id="ah-redis-persistence" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="15" y="95" width="95" height="46" rx="8" class="box"/><text x="62" y="123" text-anchor="middle" class="lbl">Clients</text>
+<rect x="150" y="88" width="140" height="60" rx="8" class="box hi"/><text x="220" y="112" text-anchor="middle" class="lbl">Command loop</text><text x="220" y="130" text-anchor="middle" class="sub">one thread, one at a time</text>
+<rect x="340" y="20" width="130" height="50" rx="8" class="box"/><text x="405" y="42" text-anchor="middle" class="lbl">Dataset</text><text x="405" y="59" text-anchor="middle" class="sub">in memory</text>
+<rect x="340" y="100" width="130" height="50" rx="8" class="box"/><text x="405" y="122" text-anchor="middle" class="lbl">AOF buffer</text><text x="405" y="139" text-anchor="middle" class="sub">not on disk yet</text>
+<rect x="340" y="180" width="130" height="50" rx="8" class="box"/><text x="405" y="202" text-anchor="middle" class="lbl">RDB child</text><text x="405" y="219" text-anchor="middle" class="sub">forked copy</text>
+<rect x="520" y="100" width="105" height="50" rx="8" class="box"/><text x="572" y="122" text-anchor="middle" class="lbl">Disk</text><text x="572" y="139" text-anchor="middle" class="sub">AOF + dump.rdb</text>
+<line x1="110" y1="118" x2="148" y2="118" class="arr" marker-end="url(#ah-redis-persistence)"/>
+<line x1="290" y1="105" x2="338" y2="55" class="arr" marker-end="url(#ah-redis-persistence)"/>
+<line x1="290" y1="120" x2="338" y2="122" class="arr" marker-end="url(#ah-redis-persistence)"/>
+<line x1="290" y1="138" x2="338" y2="195" class="arr dim" marker-end="url(#ah-redis-persistence)"/>
+<text x="296" y="178" class="sub">fork</text>
+<line x1="470" y1="122" x2="518" y2="122" class="arr" marker-end="url(#ah-redis-persistence)"/>
+<path d="M470 200 C 510 200, 520 160, 545 152" class="arr dim" fill="none" marker-end="url(#ah-redis-persistence)"/>
+</svg>
+</div>
+
+<p>Note what is <em>not</em> in the picture: no write-ahead log the way a relational database has one. Redis answers the client first and writes to disk after.</p>
+
+<!-- section: walkthrough -->
+<p>Follow one command: <code>SET user:42 "Asha"</code>, with AOF on and the default <code>appendfsync everysec</code>.</p>
+<ol>
+<li>The command arrives and waits its turn. The loop is single-threaded, so it runs alone.</li>
+<li>Redis updates the <strong>dataset in memory</strong>. The new value is live now — any client reading <code>user:42</code> sees Asha.</li>
+<li>Redis appends the command to the <strong>AOF buffer</strong>, still in memory.</li>
+<li>Redis <strong>replies <code>+OK</code> to the client</strong>. Note the order: the client is told it worked while the write exists only in memory.</li>
+<li>At the end of the event loop iteration, the buffer is written to the AOF file with <code>write()</code>. That hands the bytes to the operating system, which may still hold them in its own cache.</li>
+<li>About once a second, a background thread calls <code>fsync()</code>, which tells the disk to make it permanent.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 640 200" role="img" aria-label="Timeline of one SET command: memory updated and OK replied immediately, written to the operating system at the end of the loop, and fsynced up to a second later, leaving a window where a confirmed write is not yet on disk">
+<defs><marker id="ah2-redis-persistence" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead-warn"/></marker></defs>
+<line x1="40" y1="110" x2="610" y2="110" class="arr"/>
+<circle cx="80" cy="110" r="6" class="box hi"/><text x="80" y="92" text-anchor="middle" class="sub">memory updated</text>
+<circle cx="200" cy="110" r="6" class="box hi"/><text x="200" y="92" text-anchor="middle" class="sub">+OK to client</text>
+<circle cx="340" cy="110" r="6" class="box"/><text x="340" y="92" text-anchor="middle" class="sub">write() to the OS</text>
+<circle cx="560" cy="110" r="6" class="box"/><text x="560" y="92" text-anchor="middle" class="sub">fsync() to disk</text>
+<rect x="200" y="130" width="360" height="26" rx="6" class="box warn"/>
+<text x="380" y="148" text-anchor="middle" class="sub">up to 1 second: the client thinks it is saved, the disk disagrees</text>
+<text x="40" y="180" class="sub">A crash anywhere in the red band loses this write. appendfsync always shrinks the band to nearly nothing, and costs a disk flush per write.</text>
+</svg>
+</div>
+
+<p>RDB works differently. When a save point fires, Redis <strong>forks</strong>. The child gets a frozen view of memory and writes the whole snapshot to <code>dump.rdb</code>; the parent keeps serving clients. The operating system only copies a memory page when the parent changes it, which is why a write-heavy moment during a save makes memory grow.</p>
+
+<!-- section: storage -->
+<div class="table-wrap"><table>
+<tr><th>What</th><th>Where</th><th>Holds</th></tr>
+<tr><td>Dataset</td><td>Memory</td><td>Every key and value. The only copy that is fully current.</td></tr>
+<tr><td>AOF buffer</td><td>Memory</td><td>Write commands not yet handed to the OS.</td></tr>
+<tr><td><code>appendonlydir/</code></td><td>Disk</td><td>Redis 7 splits the AOF into a base file, incremental files, and a manifest listing them.</td></tr>
+<tr><td><code>dump.rdb</code></td><td>Disk</td><td>One compact snapshot of the whole dataset at a moment in time.</td></tr>
+</table></div>
+<p>The AOF is a log of <em>commands</em>, so it grows forever if nothing trims it. <strong>AOF rewrite</strong> fixes that: Redis writes a new base file holding the current state, then keeps appending from there. A million <code>INCR</code> calls on one key collapse into one entry.</p>
+<p>With <code>aof-use-rdb-preamble</code> on, that base file is written in RDB format — a snapshot with a command log after it, which is why startup from AOF is faster than replaying a million commands.</p>
+
+<!-- section: guarantees -->
+<p><strong>You can rely on:</strong></p>
+<ul>
+<li>Anything fsynced is on disk. With <code>appendfsync always</code>, that means every confirmed write, at the cost of a flush per write.</li>
+<li>A partly-written AOF from a crash is detected at startup, and Redis can truncate the broken tail (<code>aof-load-truncated</code> is on by default).</li>
+<li>An RDB file is a consistent point in time, because the child works from a frozen copy. It is never half-updated.</li>
+</ul>
+<p><strong>People wrongly rely on:</strong></p>
+<ul>
+<li><strong>“<code>+OK</code> means saved.”</strong> It means in memory. With <code>everysec</code>, up to a second of confirmed writes can disappear.</li>
+<li><strong>“Replicas make it durable.”</strong> Replication is asynchronous: the primary doesn’t wait. A primary that dies can lose writes the replicas never saw.</li>
+<li><strong>“AOF means no data loss.”</strong> Only with <code>always</code>. The default is <code>everysec</code>.</li>
+<li><strong>“Redis is transactional.”</strong> <code>MULTI/EXEC</code> runs commands together without interleaving, but there is no rollback, and durability still depends on these settings.</li>
+</ul>
+
+<!-- section: performance -->
+<p>From the steps above, with <strong>example numbers for the shape of it, not benchmarks</strong>:</p>
+<ul>
+<li><strong>The write itself is cheap.</strong> Steps 1–4 are memory work. The reply does not wait for the disk.</li>
+<li><strong><code>appendfsync always</code> is the expensive setting.</strong> Every write waits for a disk flush, so throughput falls to what your disk can sync, which on a network disk can be a few thousand a second instead of tens of thousands.</li>
+<li><strong>Fork is a pause.</strong> The fork itself blocks the one thread while the OS copies page tables — longer with a bigger dataset. Afterwards, every page the parent writes to gets copied.</li>
+<li><strong>Memory can nearly double</strong> during a save on a write-heavy instance, because of those copies. This is the classic cause of an out-of-memory kill during a nightly snapshot.</li>
+<li><strong>A big AOF makes restarts slow</strong>, since startup replays it. That is what rewrite is for.</li>
+</ul>
+
+<!-- section: failure -->
+<p>The power goes right after step 4 of the walkthrough: the client holds <code>+OK</code> for <code>user:42</code>, and the bytes are in the AOF buffer.</p>
+<ol>
+<li>The buffer is memory. It is gone, and so is that write.</li>
+<li>On restart, Redis loads from the AOF directory if AOF is on, otherwise from <code>dump.rdb</code>.</li>
+<li>If the crash landed mid-<code>write()</code>, the last entry is incomplete. Redis truncates that tail and logs a warning.</li>
+<li>The dataset comes back as of the last durable point. <code>user:42</code> is missing or holds its old value.</li>
+<li>The client was never told. It believes the write happened.</li>
+</ol>
+<p>How much you lose: nearly nothing with <code>always</code>, up to about a second with <code>everysec</code>, whatever the OS had cached with <code>no</code>, and up to the whole gap since the last snapshot with RDB alone. A disk that fills up is worse — writes to the AOF start failing, and with <code>stop-writes-on-bgsave-error</code> on, Redis refuses writes rather than pretending.</p>
+
+<!-- section: settings -->
+<div class="table-wrap"><table>
+<tr><th>Setting</th><th>What it changes</th><th>When to touch it</th></tr>
+<tr><td><code>appendonly</code></td><td>AOF on or off. Off in the shipped config.</td><td>Turn it on for anything you would miss.</td></tr>
+<tr><td><code>appendfsync</code></td><td><code>always</code>, <code>everysec</code> (default), or <code>no</code>.</td><td><code>always</code> when a lost second is unacceptable, and you accept the throughput cost.</td></tr>
+<tr><td><code>save</code></td><td>Snapshot points, like “after 60 seconds if 10,000 keys changed”.</td><td>Empty it to turn snapshots off on a pure cache.</td></tr>
+<tr><td><code>auto-aof-rewrite-percentage</code></td><td>Rewrite when the AOF has grown this much over its last size.</td><td>Raise it if rewrites run too often on a busy instance.</td></tr>
+<tr><td><code>stop-writes-on-bgsave-error</code></td><td>Refuse writes when the last snapshot failed.</td><td>Leave it on, so a broken disk is loud instead of silent.</td></tr>
+<tr><td><code>dir</code></td><td>Where both files are written.</td><td>Point it at a disk with room for a second copy during rewrite.</td></tr>
+</table></div>
+
+<!-- section: tryIt -->
+<p>On a default install, with <code>redis-cli</code>:</p>
+<pre><code>redis-cli CONFIG GET appendonly appendfsync save
+redis-cli SET user:42 "Asha"
+redis-cli LASTSAVE        # unix time of the last successful snapshot
+redis-cli BGSAVE          # take one now; LASTSAVE should move
+redis-cli INFO persistence</code></pre>
+<p>In the <code>INFO persistence</code> output, look for <code>aof_enabled</code>, <code>rdb_last_bgsave_status</code> and <code>aof_last_write_status</code> (both should be <code>ok</code>), <code>rdb_changes_since_last_save</code> (how much is not in a snapshot yet), and <code>aof_rewrite_in_progress</code>.</p>
+<pre><code>redis-cli CONFIG SET appendonly yes    # creates appendonlydir
+redis-cli BGREWRITEAOF                 # collapse the log
+ls -l $(redis-cli CONFIG GET dir | tail -1)</code></pre>
+<p>To see a loss for yourself on a scratch instance: <code>SET</code> a key, then kill the process hard (<code>kill -9</code>) instead of using <code>SHUTDOWN</code>, and restart. With <code>everysec</code> and bad timing, the key is not there. <code>SHUTDOWN</code> saves first, which is why a clean restart never shows this.</p>
+
+<!-- section: myths -->
+<ul>
+<li><strong>“Redis is memory-only, so it can’t be a database.”</strong> It persists, and with <code>always</code> it is durable. The real limits are dataset size against RAM, and the recovery window you accept.</li>
+<li><strong>“AOF is slower than RDB.”</strong> Writing AOF entries is cheap. The cost is the fsync policy you choose, not the format.</li>
+<li><strong>“Snapshots are free because a child does the work.”</strong> The fork pauses the main thread, and copy-on-write can nearly double memory.</li>
+<li><strong>“Turning on AOF means I can stop taking snapshots.”</strong> Snapshots restore faster and are easier to copy elsewhere as a backup. Most setups keep both.</li>
+<li><strong>“Single-threaded means slow.”</strong> One thread avoids locks, and the usual limit is the network, not the CPU. It does mean one slow command, like <code>KEYS</code> on a big dataset, blocks everyone.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>Redis holds the dataset in memory and persists in two ways: RDB snapshots and the AOF command log.</li>
+<li>A write updates memory and replies <code>+OK</code> before anything reaches the disk.</li>
+<li>AOF entries go to a buffer, then to the OS at the end of the loop, then to disk on fsync.</li>
+<li><code>appendfsync everysec</code> is the default and risks about a second of confirmed writes. <code>always</code> is durable and costs a flush per write.</li>
+<li>RDB forks a child that writes a consistent snapshot while the parent serves traffic.</li>
+<li>Fork pauses the thread briefly, and copy-on-write can nearly double memory during a save.</li>
+<li>The AOF grows until a rewrite collapses it into a fresh base file.</li>
+<li>Replication is asynchronous, so replicas are not a durability guarantee.</li>
+<li>After a crash Redis loads the last durable point and truncates a broken AOF tail; anything newer is gone.</li>
+</ul>
