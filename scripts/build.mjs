@@ -103,9 +103,21 @@ function topbar(root, hubTitle, withSidebar) {
 /* Words a developer would not say out loud to a teammate. TOPIC_STYLE.md part 8 lists the plain swaps. */
 /* Length and visual budget. TOPIC_STYLE.md part 7.
    A topic is for learning, so it stays short and leans on diagrams. */
-const MAX_TOPIC_WORDS = 2200;   // about an 11 minute read; the target is 1400-1900
 const MAX_SECTION_WORDS = 250;  // prose only; code and diagram text don't count
 const MIN_DIAGRAMS = 2;
+
+/* Most tracks fit 1,400-1,900 words. system-design does not, and that is the
+   format's doing, not the writer's: on top of the prose it must carry an
+   estimates table, an endpoint table, a schema, a failure table, a scaling
+   table and an interview plan. Tables and schemas are scanned, not read line
+   by line, so the same word count is a shorter sitting. It gets its own
+   numbers rather than being cut until the required parts go missing.
+   Its deepDives section also holds 2-4 sub-dives, so it gets more room too. */
+const BUDGET = {
+  'system-design': { target: '1,800 to 2,300', max: 2500, sections: { deepDives: 400 } },
+};
+const DEFAULT_BUDGET = { target: '1,400 to 1,900', max: 2200, sections: {} };
+const budgetFor = track => BUDGET[track] || DEFAULT_BUDGET;
 
 const FORMAL_WORDS = /\b(utili[sz]e[sd]?|utili[sz]ing|leverag(?:e|es|ed|ing)|facilitat\w+|subsequently|consequently|furthermore|moreover|thus|hence|therefore|whereas|aforementioned|in order to|prior to|with respect to|numerous|commenc\w+|thereby|wherein|plethora|myriad|paradigm|seamless(?:ly)?|delv(?:e|es|ed|ing)|pivotal|paramount|compris\w+|ascertain\w*|elucidat\w+|necessitat\w+|pertaining|albeit|whilst|nonetheless|nevertheless|approximately|sufficient(?:ly)?|obtain(?:s|ed|ing)?|mitigat\w+|additionally|regarding|endeavou?r\w*)\b/gi;
 
@@ -240,8 +252,9 @@ export function build() {
     /* length and visuals: keep topics readable in one sitting (TOPIC_STYLE.md part 7) */
     const all = Object.values(t.sections).join(' ');
     const topicWords = plain(noSvg(all)).split(/\s+/).filter(Boolean).length;
-    if (topicWords > MAX_TOPIC_WORDS) {
-      notes.push(`${file}: ${topicWords} words, about a ${Math.round(topicWords / 200)} minute read. The budget is 1,400 to 1,900 words (10 minutes). Do the cutting pass in TOPIC_STYLE.md part 7`);
+    const budget = budgetFor(file.split('/')[0]);
+    if (topicWords > budget.max) {
+      notes.push(`${file}: ${topicWords} words, about a ${Math.round(topicWords / 200)} minute read. The budget for this track is ${budget.target} words. Do the cutting pass in TOPIC_STYLE.md part 7`);
     }
     const long = [];
     const diagrams = (all.match(/class="diagram"/g) || []).length;
@@ -253,7 +266,8 @@ export function build() {
       const at = `${file}, section "${key}"`;
       const secWords = plain(noSvg(html).replace(/<pre[\s\S]*?<\/pre>/gi, ' '))
         .split(/\s+/).filter(Boolean).length;
-      if (secWords > MAX_SECTION_WORDS) long.push(`${key} ${secWords}`);
+      const secMax = budget.sections[key] || MAX_SECTION_WORDS;
+      if (secWords > secMax) long.push(`${key} ${secWords}`);
       if ((html.match(/<p>/g) || []).length >= 4 && !/<(ul|ol|table|pre|svg|h4)\b/i.test(html)) {
         notes.push(`${at}: four or more paragraphs with no list, table, diagram or code. Break it up or draw it (TOPIC_STYLE.md part 7)`);
       }
@@ -268,7 +282,7 @@ export function build() {
       for (const m of h.matchAll(/<[a-z][^>]*\sid="([^"]+)"/gi)) (ids[m[1]] ||= []).push(key);
     }
     if (long.length) {
-      notes.push(`${file}: sections over ${MAX_SECTION_WORDS} words of prose (${long.join(', ')}). Keep each near 150; cut it or draw it (TOPIC_STYLE.md part 7)`);
+      notes.push(`${file}: sections over their word budget (${long.join(', ')}). Keep each near 150; cut it or draw it (TOPIC_STYLE.md part 7)`);
     }
     for (const [id, where] of Object.entries(ids)) {
       if (where.length > 1) notes.push(`${file}: id "${id}" is used ${where.length} times (sections: ${[...new Set(where)].join(', ')}); ids must be unique in a topic`);

@@ -1,6 +1,6 @@
 ---
 name: refactor-topic
-description: Rework an existing topic of the UnderTheHood site so it matches the current learning rules: moderate depth, 1,400 to 1,900 words, at least two diagrams, and a table or list wherever prose was doing that job. Use when a topic reads too long, when the build prints a length or diagram Note:, when the user asks to shorten, trim, tighten, simplify or re-illustrate a topic, or after the format rules change.
+description: Rework an existing topic of the UnderTheHood site so it matches the current learning rules: moderate depth, 1,400 to 1,900 words (1,800 to 2,300 in system-design), at least two diagrams, and a table or list wherever prose was doing that job. Use when a topic reads too long, when the build prints a length or diagram Note:, when the user asks to shorten, trim, tighten, simplify or re-illustrate a topic, or after the format rules change.
 ---
 
 # Refactor a topic
@@ -17,8 +17,9 @@ Read first:
 
 | | Target | Hard limit |
 |---|---|---|
-| Whole topic | 1,400 to 1,900 words (6 to 9 min) | 2,000 |
-| One section | 100 to 150 words | 250 |
+| Whole topic | 1,400 to 1,900 words (7 to 10 min) | 2,200 |
+| Whole topic, `system-design` | 1,800 to 2,300 words (9 to 12 min) | 2,500 |
+| One section | 100 to 150 words | 250 (400 for `system-design` `deepDives`) |
 | Diagrams | 2 or 3, where the format file says | at least 2 |
 
 All 12 sections stay. Every "Must have" item stays. The id, the title and the `related` links stay, so saved progress and links keep working.

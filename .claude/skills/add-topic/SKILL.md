@@ -12,7 +12,7 @@ The user only has to say what they want added, for example "add a topic on rate 
 
 A topic is one file, `content/topics/<track>/<id>.html`.
 
-**What a topic is for.** The reader is learning, not looking something up. A topic has to be easy to get through: moderate depth, short, and as visual as you can make it. That means **1,400 to 1,900 words, a 7 to 10 minute read, with at least two diagrams**. All 12 sections are still written; each one is just short. `TOPIC_STYLE.md` part 7 is the full rule, and the build fails you with a `Note:` when a topic runs long.
+**What a topic is for.** The reader is learning, not looking something up. A topic has to be easy to get through: moderate depth, short, and as visual as you can make it. That means **1,400 to 1,900 words, a 7 to 10 minute read, with at least two diagrams** &mdash; or 1,800 to 2,300 in `system-design`, whose format makes every topic carry six tables and a schema. All 12 sections are still written; each one is just short. `TOPIC_STYLE.md` part 7 is the full rule, and the build fails you with a `Note:` when a topic runs long.
 
 Three files define how it must be written:
 
