@@ -204,7 +204,6 @@ ORDER BY pg_relation_size(indexrelid) DESC;
 <li><strong>Faster reads vs slower writes.</strong> In PostgreSQL an update that changes any indexed column adds an entry to <em>every</em> index on the table, not just that column's.</li>
 <li><strong>One wide index vs several narrow ones.</strong> A composite serves one query shape very well; separate single-column indexes serve more shapes, each less well.</li>
 <li><strong>Covering vs small.</strong> Extra columns save table visits and make the index bigger, so less of it stays in memory.</li>
-<li><strong>Partial vs general.</strong> Tiny and cheap to keep, and useless outside the slice it was built for.</li>
 </ul>
 
 <!-- section: whenToUse -->
@@ -221,7 +220,7 @@ ORDER BY pg_relation_size(indexrelid) DESC;
 <li><strong>The table is small.</strong> A few thousand rows fit in a handful of pages, and the planner will ignore your index anyway.</li>
 <li><strong>The query matches most of the table.</strong> Counting <code>delivered</code> orders, 96% of our rows, still chose a <code>Seq Scan</code> with an index on <code>status</code>.</li>
 <li><strong>The column has few distinct values</strong> and you ask for the common ones. A partial index on the rare value may still help.</li>
-<li><strong>Another index already starts with the same columns.</strong> <code>(customer_id, created_at)</code> makes <code>(customer_id)</code> redundant.</li>
+<li><strong>Another index already starts with the same columns</strong> &mdash; <code>(customer_id, created_at)</code> makes <code>(customer_id)</code> redundant.</li>
 </ul>
 
 <!-- section: mistakes -->
