@@ -227,7 +227,7 @@ return { notificationId: id };</code></pre>
 </svg>
 </div>
 
-<p>The same split happens after the processor: one queue per channel, so a slow SMS provider never holds up push. The campaign itself is cut up &mdash; a <strong>splitter</strong> turns the list into chunks of 1,000 users (<strong>fan-out</strong>), processed at a capped rate, so one crash costs one chunk. Users also get a cap of 3 offers a day, counted in Redis, and quiet hours.</p>
+<p>The same split happens after the processor: one queue per channel, so a slow SMS provider never holds up push. The campaign is cut up &mdash; a <strong>splitter</strong> turns the list into chunks of 1,000 users (<strong>fan-out</strong>) processed at a capped rate, so one crash costs one chunk. Users also get quiet hours and a Redis-counted cap of 3 offers a day.</p>
 
 <h4>3. What happens when a provider is slow or down?</h4>
 <p>Retrying forever hammers a struggling provider; giving up at once loses notifications that would have worked seconds later. So retry with growing waits, then set the message aside. That needs two kinds of failure told apart.</p>
