@@ -7,100 +7,60 @@ related: table-partitioning, postgresql-mvcc, sql-vs-nosql, pagination, database
 -->
 
 <!-- section: what -->
-<p>An <strong>index</strong> is a separate, sorted copy of one or more columns of a table. Each entry points back to the full row. It works like the index at the back of a book: you look up a word, get a page number, and go straight there.</p>
-<p>Without an index, the database answers “find this customer’s orders” by reading every row in the table. That is a <strong>sequential scan</strong>. With the right index, it reads a handful of pages.</p>
-<p>An <strong>indexing strategy</strong> is how you decide which indexes to create. Which columns? In what order? Covering which queries? It matters because indexes are not free. Each one takes disk space and slows down every write to the table.</p>
-<p>All examples here use <strong>PostgreSQL</strong>. They were run on version 14, and work the same on newer versions.</p>
+<p>An <strong>index</strong> is a separate, sorted copy of one or more columns, where each entry points back to the full row. Like the index at the back of a book: look up a word, get a page number, go straight there.</p>
+<p>Without one, &ldquo;find this customer's orders&rdquo; means reading every row in the table &mdash; a <strong>sequential scan</strong>. With the right index, it reads a handful of pages.</p>
+<p>An <strong>indexing strategy</strong> is how you decide which to create: which columns, in what order, covering which queries. It matters because indexes aren't free. Each one takes disk and slows every write to the table. All examples are <strong>PostgreSQL 14</strong>.</p>
 <p class="note">One-line version: an index trades slower writes and more disk for faster reads. A good strategy means a few indexes shaped around your real queries, not one index per column.</p>
 
 <!-- section: why -->
-<p>Get it wrong in one direction, and reads are slow. A page that lists a customer’s orders is instant with 10,000 rows in the table. At 100 million rows, the same query takes half a minute, because it reads the whole table each time. Nothing in the code changed. The table just grew.</p>
-<p>Get it wrong in the other direction, and writes are slow. A team adds an index for every slow query they ever saw. Two years later the table has 15 indexes. Each insert now writes to 16 places, the indexes take more disk than the data, and nobody knows which ones are still used.</p>
-<p>And an index on the wrong columns, or with the columns in the wrong order, costs the same as a good one and is never picked.</p>
+<p>Get it wrong in one direction and reads are slow. A page listing a customer's orders is instant at 10,000 rows. At 100 million the same query takes half a minute, because it reads the whole table every time. Nothing in the code changed; the table just grew.</p>
+<p>Get it wrong the other way and writes are slow. A team adds an index for every slow query they ever saw; two years later the table has 15, each insert writes to 16 places, the indexes take more disk than the data, and nobody knows which are still used.</p>
+<p>The strategy sits between those: enough for the queries that matter, and no more.</p>
 
 <!-- section: example -->
-<p>Let’s build a table with a million orders. Each of 50,000 customers gets 20 of them.</p>
-<pre><code>-- Create an orders table and fill it with 1,000,000 rows
-CREATE TABLE orders (
+<p>One million orders, the same query three ways. Plans are trimmed to fit; times are from one laptop.</p>
+<pre><code>CREATE TABLE orders (
   id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  customer_id  INT           NOT NULL,
-  status       TEXT          NOT NULL,
-  total        NUMERIC(10,2) NOT NULL,
-  created_at   TIMESTAMPTZ   NOT NULL
+  customer_id  INT NOT NULL, status TEXT NOT NULL,
+  total NUMERIC(10,2) NOT NULL, created_at TIMESTAMPTZ NOT NULL
 );
+-- 1,000,000 rows: customer_id cycles 1..50000, 1% 'pending'
+ANALYZE orders;   -- refresh the planner's statistics
 
-INSERT INTO orders (customer_id, status, total, created_at)
-SELECT (g * 7) % 50000 + 1,
-       CASE WHEN g % 100 = 0 THEN 'pending'
-            WHEN g % 100 &lt; 4 THEN 'cancelled'
-            ELSE 'delivered' END,
-       (g % 5000) / 10.0 + 5,
-       TIMESTAMPTZ '2026-01-01 00:00+00' + g * INTERVAL '20 seconds'
-FROM generate_series(1, 1000000) AS g;
-
-ANALYZE orders;   -- refresh the statistics the planner uses</code></pre>
-<p>The query we care about: the five newest orders for one customer.</p>
-<pre><code>-- The five newest orders of customer 4242
-SELECT id, total, created_at
-FROM orders
-WHERE customer_id = 4242
-ORDER BY created_at DESC
-LIMIT 5;
-
-   id   | total  |       created_at
---------+--------+------------------------
- 993463 | 351.30 | 2026-08-18 23:14:20+00
- 943463 | 351.30 | 2026-08-07 09:27:40+00
- 893463 | 351.30 | 2026-07-26 19:41:00+00
- 843463 | 351.30 | 2026-07-15 05:54:20+00
- 793463 | 351.30 | 2026-07-03 16:07:40+00</code></pre>
-<p>(Times are shown in UTC. Run <code>SET TIME ZONE 'UTC';</code> first to see the same.)</p>
-<p>Now put <code>EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF)</code> in front of that query. It runs the query and prints what the database did. The plans below are trimmed a little to fit, and the times are from one laptop. Yours will differ.</p>
+SELECT id, total, created_at FROM orders
+WHERE customer_id = 4242 ORDER BY created_at DESC LIMIT 5;</code></pre>
 
 <h4>Step 1: no index</h4>
-<pre><code>-- Plan with no index on customer_id
- Limit (actual rows=5 loops=1)
-   -&gt;  Gather Merge (actual rows=5 loops=1)
-         Workers Planned: 2
-         Workers Launched: 2
-         -&gt;  Sort (actual rows=4 loops=3)
-               Sort Key: created_at DESC
-               -&gt;  Parallel Seq Scan on orders (actual rows=7 loops=3)
+<pre><code> Limit
+   -&gt;  Gather Merge  (Workers Launched: 2)
+         -&gt;  Sort  (Sort Key: created_at DESC)
+               -&gt;  Parallel Seq Scan on orders
                      Filter: (customer_id = 4242)
                      Rows Removed by Filter: 333327
  Execution Time: 11.705 ms</code></pre>
-<p><code>Seq Scan</code> means it read the whole table. Three processes shared the work, and each threw away about 333,000 rows. So it read a million rows to find 20.</p>
+<p><code>Seq Scan</code> means it read the whole table: three processes each threw away about 333,000 rows, a million read to find 20.</p>
 
 <h4>Step 2: an index on the filter column</h4>
-<pre><code>-- Index the column in the WHERE clause
-CREATE INDEX orders_cust_idx ON orders (customer_id);
+<pre><code>CREATE INDEX orders_cust_idx ON orders (customer_id);
 
- Limit (actual rows=5 loops=1)
-   -&gt;  Sort (actual rows=5 loops=1)
-         Sort Key: created_at DESC
-         Sort Method: top-N heapsort  Memory: 25kB
-         -&gt;  Bitmap Heap Scan on orders (actual rows=20 loops=1)
-               Recheck Cond: (customer_id = 4242)
-               Heap Blocks: exact=20
-               -&gt;  Bitmap Index Scan on orders_cust_idx (actual rows=20 ...)
-                     Index Cond: (customer_id = 4242)
+ Limit
+   -&gt;  Sort  (Sort Key: created_at DESC)
+         -&gt;  Bitmap Heap Scan on orders  (actual rows=20)
+               -&gt;  Bitmap Index Scan on orders_cust_idx
  Execution Time: 0.047 ms</code></pre>
-<p>Now it uses the index to find the 20 rows, fetches them from 20 table pages, and sorts them. About 250 times faster. But there is still a <code>Sort</code> step, and it fetched 20 rows to return 5.</p>
+<p>It finds the 20 rows through the index, fetches them from 20 table pages and sorts. About 250 times faster &mdash; but there is still a <code>Sort</code>, and it read 20 rows to return 5.</p>
 
-<h4>Step 3: an index that matches the whole query</h4>
-<pre><code>-- Index the filter column, then the sort column
-CREATE INDEX orders_cust_created_idx
-  ON orders (customer_id, created_at DESC);
+<h4>Step 3: an index shaped like the query</h4>
+<pre><code>CREATE INDEX orders_cust_created_idx ON orders (customer_id, created_at DESC);
 
- Limit (actual rows=5 loops=1)
-   -&gt;  Index Scan using orders_cust_created_idx on orders (actual rows=5 ...)
+ Limit
+   -&gt;  Index Scan using orders_cust_created_idx on orders  (actual rows=5)
          Index Cond: (customer_id = 4242)
  Execution Time: 0.016 ms</code></pre>
-<p>No sort, and only 5 rows read. Inside this index, one customer’s orders sit next to each other, already newest first. The database walks to the first one and reads five entries.</p>
-<p>That is the whole idea of an indexing strategy. The second index was fine. The third one was shaped like the query.</p>
+<p>No sort, five rows read. Inside this index one customer's orders sit together, already newest first, so the database walks to the first and reads five entries. The step-2 index was fine; the step-3 one was <em>shaped like the query</em>. That is the whole idea.</p>
 
 <!-- section: internals -->
-<p>PostgreSQL’s default index is a <strong>B-tree</strong>: a tree of pages, where each page is 8 KB. The top page points to pages below it, which point to pages below them. The bottom pages, called <strong>leaf pages</strong>, hold the sorted values and the address of each row in the table.</p>
+<p>PostgreSQL's default index is a <strong>B-tree</strong>: a tree of 8 KB pages. The top page points at pages below, down to the <strong>leaf pages</strong>, which hold the sorted values and the address of each row.</p>
 
 <div class="diagram">
 <svg viewBox="0 0 640 320" role="img" aria-label="A B-tree index with a root page at the top, three branch pages below it, and leaf pages at the bottom. A lookup for customer 4242 goes from the root to one branch page, to one leaf page, and from there to the table pages that hold the rows.">
@@ -129,306 +89,178 @@ CREATE INDEX orders_cust_created_idx
 <line x1="240" y1="222" x2="240" y2="262" class="arr" marker-end="url(#ah-indexing-strategies)"/>
 </svg>
 </div>
-<p>The ranges in the picture are made up, to show the idea. Here is what happens for <code>WHERE customer_id = 4242 ORDER BY created_at DESC LIMIT 5</code> with the index from step 3:</p>
-<ol>
-<li><strong>The planner picks a plan.</strong> It looks at the indexes on the table and at its statistics, and estimates the cost of each way to run the query. Here the index is far cheaper than reading the table.</li>
-<li><strong>Read the root page.</strong> It holds a few hundred values with pointers. The database finds the range that 4242 falls in and follows that pointer.</li>
-<li><strong>Read one branch page</strong>, and do the same again.</li>
-<li><strong>Read one leaf page.</strong> It finds the first entry for customer 4242. The entries for that customer are side by side, sorted by <code>created_at</code>, newest first.</li>
-<li><strong>Follow five entries to the table.</strong> Each entry holds the address of a row: which table page, and which slot in it. The database reads those pages to get <code>id</code> and <code>total</code>.</li>
-<li><strong>Stop.</strong> The <code>LIMIT</code> is met. No sorting was needed, because the index was already in the right order.</li>
-</ol>
-<p>Our index has three levels for a million rows. A B-tree grows very slowly: a tree one level deeper holds a few hundred times more rows.</p>
-<p>Two more things follow from this picture:</p>
-<ul>
-<li><strong>Leaf pages are linked</strong> (the grey arrows). So a range like “between March 1 and March 2” is one walk down the tree, then a walk sideways.</li>
-<li><strong>Every write touches the tree.</strong> An insert into <code>orders</code> must also add an entry to the right leaf page of every index on the table.</li>
-</ul>
-<p class="note">MySQL differs here. In MySQL (InnoDB), the table itself is stored inside the primary key index, and foreign key columns get an index automatically. Neither is true in PostgreSQL.</p>
+
+<p>Ranges in the picture are made up. For our step-3 query the database reads the root, follows the pointer for 4242, reads one branch page and does the same, then reads one leaf page where that customer's entries sit side by side, newest first. It follows five of them to the table and stops: the <code>LIMIT</code> is met, and no sort was needed.</p>
+<p>A million rows needed three levels, and a B-tree grows very slowly &mdash; one more level holds a few hundred times more rows. Two things follow: <strong>leaf pages are linked</strong> (the grey arrows), so a date range is one walk down then sideways; and <strong>every write touches the tree</strong>, because an insert adds an entry to every index on the table.</p>
+<p class="note">MySQL differs. In InnoDB the table itself lives inside the primary key index, and foreign key columns are indexed automatically. Neither is true in PostgreSQL.</p>
 
 <!-- section: types -->
-<p>These build on the <code>orders</code> table from the example. Each one is a different way to shape an index around a query.</p>
-
-<h4>Single-column index</h4>
-<p><code>CREATE INDEX orders_cust_idx ON orders (customer_id);</code></p>
-<ul>
-<li><strong>How it works:</strong> one column, sorted. It handles <code>=</code>, <code>&lt;</code>, <code>&gt;</code>, <code>BETWEEN</code>, <code>IN</code> and <code>ORDER BY</code> on that column.</li>
-<li><strong>Use it when:</strong> queries filter on that one column, and the filter matches a small share of the rows.</li>
-<li><strong>Good:</strong> small, simple, and useful to many queries.</li>
-<li><strong>Bad:</strong> it does nothing for the other columns in the query. Step 2 still had to sort.</li>
-</ul>
-
-<h4>Composite index (several columns)</h4>
-<p><code>CREATE INDEX orders_cust_created_idx ON orders (customer_id, created_at DESC);</code></p>
-<ul>
-<li><strong>How it works:</strong> sorted by the first column, then by the second inside each value of the first. Like a phone book: surname, then first name.</li>
-<li><strong>Use it when:</strong> a query filters on one column and filters or sorts on another.</li>
-<li><strong>The order rule:</strong> put columns compared with <code>=</code> first, then the one used for a range or a sort.</li>
-<li><strong>Good:</strong> one index answers the filter and the sort. It also serves queries on <code>customer_id</code> alone, so the single-column index above is no longer needed.</li>
-<li><strong>Bad:</strong> it is no help for the second column alone. A phone book can’t find everyone called Asha. Counting one day’s orders by <code>created_at</code> still gave us <code>Parallel Seq Scan on orders</code>.</li>
-</ul>
-
-<h4>Covering index</h4>
-<pre><code>-- Carry the total column inside the index
-CREATE INDEX orders_cust_cover_idx ON orders (customer_id) INCLUDE (total);
-VACUUM orders;
-
-EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF)
-SELECT sum(total) FROM orders WHERE customer_id = 4242;
-
- Aggregate (actual rows=1 loops=1)
-   -&gt;  Index Only Scan using orders_cust_cover_idx on orders (actual rows=20 ...)
-         Index Cond: (customer_id = 4242)
-         Heap Fetches: 0</code></pre>
-<ul>
-<li><strong>How it works:</strong> <code>INCLUDE</code> stores extra columns in the leaf pages. If the index holds every column the query needs, the database never visits the table. The plan says <code>Index Only Scan</code>.</li>
-<li><strong>Use it when:</strong> a very frequent query reads one or two small columns.</li>
-<li><strong>Good:</strong> it skips the table visits, which are usually the slowest part.</li>
-<li><strong>Bad:</strong> a bigger index. And it only skips the table on pages that <code>VACUUM</code> has marked as fully visible. <code>Heap Fetches: 0</code> shows it worked. On a table with many recent writes, that number climbs.</li>
-</ul>
-
-<h4>Partial index</h4>
-<pre><code>-- Index only the rows that are still pending
-CREATE INDEX orders_pending_idx ON orders (created_at)
-  WHERE status = 'pending';
-
--- For comparison: the same idea over every row
-CREATE INDEX orders_status_idx ON orders (status, created_at);</code></pre>
-<ul>
-<li><strong>How it works:</strong> only rows that match the <code>WHERE</code> go into the index. A query must use the same condition to be able to use it.</li>
-<li><strong>Use it when:</strong> queries always ask for a small, fixed slice. Pending orders, unread messages, rows not yet deleted.</li>
-<li><strong>Good:</strong> tiny. In our table 1% of rows are pending. The partial index is <strong>240 kB</strong>. The full one is <strong>39 MB</strong>. Writes to delivered orders never touch it.</li>
-<li><strong>Bad:</strong> useless for any other slice. <code>WHERE status = 'cancelled'</code> can’t use it.</li>
-</ul>
-
-<h4>Expression index</h4>
-<pre><code>-- Find a customer by email, ignoring upper and lower case
-CREATE TABLE customers (id INT PRIMARY KEY, email TEXT NOT NULL);
-INSERT INTO customers
-SELECT g, 'User' || g || '@Example.com'
-FROM generate_series(1, 50000) AS g;
-
-CREATE INDEX customers_email_idx ON customers (email);
-ANALYZE customers;
-
-EXPLAIN (COSTS OFF)
-SELECT id FROM customers WHERE lower(email) = 'user4242@example.com';
-
- Seq Scan on customers
-   Filter: (lower(email) = 'user4242@example.com'::text)
-
-CREATE INDEX customers_email_lower_idx ON customers (lower(email));
-ANALYZE customers;
--- the same EXPLAIN now gives:
-
- Index Scan using customers_email_lower_idx on customers
-   Index Cond: (lower(email) = 'user4242@example.com'::text)</code></pre>
-<ul>
-<li><strong>How it works:</strong> the index stores the result of an expression, not the raw column.</li>
-<li><strong>Use it when:</strong> queries always wrap the column in the same function.</li>
-<li><strong>Good:</strong> it makes those queries indexable at all. A plain index on <code>email</code> was ignored above.</li>
-<li><strong>Bad:</strong> the query must use the very same expression. Each write has to run the function.</li>
-</ul>
-
-<h4>Other kinds of index</h4>
-<p>Everything above is a B-tree. PostgreSQL has other kinds for data a B-tree handles badly.</p>
-<ul>
-<li><strong>GIN</strong>: for a column where one value holds many things, like a JSON document, an array, or text you search by word. Fast to search, slower to update.</li>
-<li><strong>BRIN</strong>: for huge tables where the column follows the order rows were inserted, like a timestamp on a log table. It only stores the lowest and highest value for each block of pages. So it is tiny, and much less exact. It is for big ranges, not single rows.</li>
-<li><strong>Hash</strong>: only handles <code>=</code>. A B-tree does that well too, so hash indexes are rare.</li>
-</ul>
-<pre><code>-- The same column, indexed two ways
-CREATE INDEX orders_created_idx  ON orders (created_at);
-CREATE INDEX orders_created_brin ON orders USING brin (created_at);</code></pre>
-<p>On our table the B-tree is <strong>21 MB</strong> and the BRIN index is <strong>24 kB</strong>.</p>
+<p>Seven shapes. The first two cover most real work.</p>
 
 <div class="table-wrap"><table>
 <tr><th>Strategy</th><th>Best for</th><th>Size</th><th>Main catch</th></tr>
-<tr><td>Single column</td><td>A filter on one column</td><td>Small</td><td>Doesn’t help the rest of the query</td></tr>
+<tr><td>Single column</td><td>A filter on one column</td><td>Small</td><td>Doesn't help the rest of the query &mdash; step 2 still sorted</td></tr>
 <tr><td>Composite</td><td>Filter plus sort, or two filters</td><td>Medium</td><td>Column order decides which queries can use it</td></tr>
-<tr><td>Covering</td><td>Hot queries that read few columns</td><td>Larger</td><td>Needs a recent <code>VACUUM</code> to skip the table</td></tr>
+<tr><td>Covering</td><td>Hot queries reading one or two small columns</td><td>Larger</td><td>Needs a recent <code>VACUUM</code> to skip the table</td></tr>
 <tr><td>Partial</td><td>A small, fixed slice of rows</td><td>Tiny</td><td>Only for queries with the same condition</td></tr>
 <tr><td>Expression</td><td>Filters on a function of a column</td><td>Medium</td><td>Query must use the same expression</td></tr>
 <tr><td>GIN</td><td>JSON, arrays, text search</td><td>Large</td><td>Slower writes</td></tr>
-<tr><td>BRIN</td><td>Huge tables in insert order</td><td>Tiny</td><td>Rough. Bad for single-row lookups</td></tr>
+<tr><td>BRIN</td><td>Huge tables in insert order</td><td>Tiny</td><td>Rough &mdash; narrows to a block, no good for one row</td></tr>
 </table></div>
 
+<h4>The composite order rule</h4>
+<p>A composite index is sorted by its first column, then by the second inside each value of the first &mdash; a phone book: surname, then first name. So <strong>equality columns go first, then the range or sort column</strong>.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="Two leaf layouts compared. With customer_id first, all of customer 4242's orders sit together and sorted newest first, so the database reads five entries in a row and stops. With created_at first, the same customer's orders are scattered across the whole index and most entries have to be skipped.">
+<defs><marker id="ah2-indexing-strategies" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<text x="20" y="22" class="lbl">(customer_id, created_at DESC)</text>
+<text x="20" y="38" class="sub">one customer, together and in order</text>
+<rect x="20" y="48" width="600" height="38" rx="6" class="box faintbox"/>
+<rect x="26" y="52" width="58" height="30" rx="4" class="box"/><text x="55" y="72" text-anchor="middle" class="sub">4241</text>
+<rect x="88" y="52" width="36" height="30" rx="4" class="box hi"/><rect x="126" y="52" width="36" height="30" rx="4" class="box hi"/><rect x="164" y="52" width="36" height="30" rx="4" class="box hi"/><rect x="202" y="52" width="36" height="30" rx="4" class="box hi"/><rect x="240" y="52" width="36" height="30" rx="4" class="box hi"/>
+<rect x="278" y="52" width="36" height="30" rx="4" class="box"/><rect x="316" y="52" width="36" height="30" rx="4" class="box"/><rect x="354" y="52" width="36" height="30" rx="4" class="box"/>
+<rect x="392" y="52" width="58" height="30" rx="4" class="box"/><text x="421" y="72" text-anchor="middle" class="sub">4243</text>
+<rect x="454" y="52" width="160" height="30" rx="4" class="box"/><text x="534" y="72" text-anchor="middle" class="sub">4244 and on</text>
+<text x="183" y="104" text-anchor="middle" class="sub">read 5, stop</text>
+<line x1="183" y1="96" x2="183" y2="86" class="arr" marker-end="url(#ah2-indexing-strategies)"/>
+
+<text x="20" y="150" class="lbl">(created_at, customer_id)</text>
+<text x="20" y="166" class="sub">same customer, scattered by date &mdash; the index can't help</text>
+<rect x="20" y="176" width="600" height="38" rx="6" class="box faintbox"/>
+<rect x="26" y="180" width="30" height="30" rx="4" class="box hi"/>
+<rect x="60" y="180" width="76" height="30" rx="4" class="box"/>
+<rect x="140" y="180" width="30" height="30" rx="4" class="box hi"/>
+<rect x="174" y="180" width="110" height="30" rx="4" class="box"/>
+<rect x="288" y="180" width="30" height="30" rx="4" class="box hi"/>
+<rect x="322" y="180" width="94" height="30" rx="4" class="box"/>
+<rect x="420" y="180" width="30" height="30" rx="4" class="box hi"/>
+<rect x="454" y="180" width="76" height="30" rx="4" class="box"/>
+<rect x="534" y="180" width="30" height="30" rx="4" class="box hi"/>
+<rect x="568" y="180" width="46" height="30" rx="4" class="box"/>
+</svg>
+</div>
+
+<h4>The other five, in one line each</h4>
+<pre><code>-- covering: carries total, so the table is never read (Index Only Scan)
+CREATE INDEX orders_cust_cover_idx ON orders (customer_id) INCLUDE (total);
+
+-- partial: only the 1% pending rows. 240 kB, against 39 MB
+CREATE INDEX orders_pending_idx ON orders (created_at) WHERE status = 'pending';
+
+-- expression: a plain index on email can't serve lower(email) = '...'
+CREATE INDEX customers_email_lower_idx ON customers (lower(email));
+
+-- BRIN: min and max per block only. 24 kB, against 21 MB for the B-tree
+CREATE INDEX orders_created_brin ON orders USING brin (created_at);</code></pre>
+<p>A covering index skips the table visits, usually the slowest part, but only on pages a recent <code>VACUUM</code> marked fully visible &mdash; watch <code>Heap Fetches</code>. A partial one is tiny and writes to other rows never touch it, but <code>status = 'cancelled'</code> can't use it.</p>
+
 <!-- section: numbers -->
-<p>Our example has a million rows and everything fits in memory, so even the full scan took only 12 ms. Let’s work out the same query at 100 million rows.</p>
-<p><strong>Assumptions</strong> (made up for the sums, not benchmarks):</p>
-<ul>
-<li>100 million orders, with rows the same size as ours. Our table is 65 MB for a million rows, so about 65 bytes a row.</li>
-<li>Nothing is in memory yet. The disk reads 200 MB a second in a straight line, and one page at a random spot takes 0.1 ms.</li>
-<li>An index page holds about 250 entries.</li>
-</ul>
+<p>Our million rows fit in memory, so even the full scan took 12 ms. The same query at <strong>100 million rows</strong>, with made-up assumptions: 65 bytes a row, nothing cached, 200 MB/s in a straight line, 0.1 ms for a random page, 250 entries per index page.</p>
 
-<h4>Reading without an index</h4>
-<ul>
-<li>Table size: 100,000,000 × 65 bytes = <strong>6.5 GB</strong>, which is about 800,000 pages of 8 KB.</li>
-<li>Full scan: 6,500 MB ÷ 200 MB a second = <strong>about 32 seconds</strong>. For every request.</li>
-</ul>
+<div class="table-wrap"><table>
+<tr><th></th><th>Working</th><th>Result</th></tr>
+<tr><td>Table size</td><td>100,000,000 &times; 65 bytes</td><td><strong>6.5 GB</strong>, about 800,000 pages</td></tr>
+<tr><td>Full scan</td><td>6,500 MB &divide; 200 MB/s</td><td><strong>~32 seconds</strong>, every request</td></tr>
+<tr><td>Tree depth</td><td>250&sup3; = 15.6m is too few; 250&#8308; = 3.9bn</td><td><strong>4 levels</strong></td></tr>
+<tr><td>Index lookup</td><td>4 index pages + 5 table pages, &times; 0.1 ms</td><td><strong>~1 ms</strong></td></tr>
+</table></div>
 
-<h4>Reading with the composite index</h4>
-<ul>
-<li>Tree depth: 250 × 250 × 250 = 15.6 million entries in three levels. That is not enough. A fourth level gives 3.9 billion. So <strong>4 levels</strong>.</li>
-<li>Pages read: 4 index pages + 5 table pages = <strong>9 pages</strong>, against 800,000.</li>
-<li>Time: 9 × 0.1 ms = <strong>about 1 ms</strong>.</li>
-</ul>
-<p>The table grew 100 times. The scan got 100 times slower. The index lookup got one page longer.</p>
-
-<h4>What the indexes cost</h4>
-<ul>
-<li><strong>Disk.</strong> After everything in this topic, our table is 65 MB and its eight indexes are 149 MB. That is 2.3 times the data. At 100 million rows: 6.5 GB of table and about <strong>15 GB of indexes</strong>.</li>
-<li><strong>Writes.</strong> One insert now changes 9 places: the table and each of the 8 indexes. (The partial index is only touched for pending orders.)</li>
-</ul>
-<p>The shape is what matters: reads go from seconds to milliseconds, and you pay for it on every write.</p>
+<p>The table grew 100 times. The scan got 100 times slower; the lookup got one page longer.</p>
+<p><strong>What that costs.</strong> Our table is 65 MB and its eight indexes are 149 MB &mdash; 2.3 times the data, so at 100 million rows, 6.5 GB of table and about <strong>15 GB of indexes</strong>. One insert now changes nine places.</p>
 
 <!-- section: commands -->
-<h4>Create and remove an index without blocking writes</h4>
-<pre><code>-- Build an index while the app keeps writing to the table
-CREATE INDEX CONCURRENTLY orders_total_idx ON orders (total);
-
--- Remove one the same way
+<h4>Build and drop without blocking writes</h4>
+<pre><code>CREATE INDEX CONCURRENTLY orders_total_idx ON orders (total);
 DROP INDEX CONCURRENTLY orders_total_idx;
+REINDEX INDEX CONCURRENTLY orders_cust_idx;   -- rebuild a bloated one
 
--- Rebuild a bloated index
-REINDEX INDEX CONCURRENTLY orders_cust_idx;
+-- a failed CONCURRENTLY build leaves a broken index. Find it, then rebuild:
+SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;</code></pre>
+<p>A plain <code>CREATE INDEX</code> blocks every write until it finishes &mdash; minutes of downtime on a big table. <code>CONCURRENTLY</code> is slower, lets writes through, and can't run inside a transaction.</p>
 
--- A CONCURRENTLY build that fails leaves a broken index behind. Find it:
-SELECT indexrelid::regclass AS index FROM pg_index WHERE NOT indisvalid;</code></pre>
-<p>A plain <code>CREATE INDEX</code> blocks every insert, update and delete on the table until it finishes. On a big table that is minutes of downtime. <code>CONCURRENTLY</code> takes longer but lets writes through. It can’t run inside a transaction. If the last query returns a row, drop that index and build it again.</p>
-
-<h4>See how a query really runs</h4>
-<pre><code>-- Run the query and show the plan, with page counts
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT id, total, created_at FROM orders
-WHERE customer_id = 4242 ORDER BY created_at DESC LIMIT 5;
-
- Limit  (cost=0.42..21.51 rows=5 width=22)
-        (actual time=0.005..0.008 rows=5 loops=1)
-   Buffers: shared hit=8
-   -&gt;  Index Scan using orders_cust_created_idx on orders
-         (cost=0.42..84.77 rows=20 width=22)
-         (actual time=0.004..0.007 rows=5 loops=1)
-         Index Cond: (customer_id = 4242)
-         Buffers: shared hit=8
- Planning Time: 0.425 ms
- Execution Time: 0.010 ms</code></pre>
-<p>(Long lines are wrapped here to fit.) How to read it:</p>
+<h4>Read a plan</h4>
+<p><code>EXPLAIN (ANALYZE, BUFFERS)</code> runs the query and shows what it did. Read it inside out: the most indented step runs first and feeds the one above.</p>
 <ul>
-<li><strong>Read from the inside out.</strong> The most indented step runs first and feeds the one above it.</li>
-<li><strong>The step name</strong> tells you how rows were found. <code>Seq Scan</code>: the whole table. <code>Index Scan</code>: the index, then the table. <code>Index Only Scan</code>: the index alone. <code>Bitmap Heap Scan</code>: the index collects row addresses first, then the table pages are read in order.</li>
-<li><strong><code>cost=0.42..84.77</code></strong> is the planner’s guess, in its own units. It is not milliseconds.</li>
-<li><strong><code>rows=20</code></strong> in the cost part is the guess. <strong><code>rows=5</code></strong> in the actual part is what happened. Here it stopped early because of the <code>LIMIT</code>. If the two are far apart for no such reason, the statistics are old. Run <code>ANALYZE</code>.</li>
-<li><strong><code>Buffers: shared hit=8</code></strong> means 8 pages, all found in memory: 3 index levels and 5 table pages. <code>read</code> would mean pages fetched from disk.</li>
+<li><strong>The step name</strong> says how rows were found: <code>Seq Scan</code> the whole table, <code>Index Scan</code> the index then the table, <code>Index Only Scan</code> the index alone.</li>
+<li><strong><code>cost=</code></strong> is the planner's guess in its own units, not milliseconds. <code>rows=</code> is a guess in the cost part and the truth in the actual part &mdash; far apart for no reason like a <code>LIMIT</code> means stale statistics.</li>
+<li><strong><code>Buffers: shared hit=8</code></strong> is 8 pages found in memory: 3 index levels plus 5 table pages. <code>read</code> means fetched from disk.</li>
 </ul>
-<p>Warning signs: a <code>Seq Scan</code> with a large <code>Rows Removed by Filter</code>, a <code>Sort</code> that an index could have avoided, and a high <code>Heap Fetches</code> on an index-only scan.</p>
+<p>Warning signs: a <code>Seq Scan</code> with a large <code>Rows Removed by Filter</code>, a <code>Sort</code> an index could have avoided, a high <code>Heap Fetches</code>.</p>
 
 <h4>Find indexes nobody uses</h4>
-<pre><code>-- Size and use of every index on a table
-SELECT indexrelname AS index,
-       pg_size_pretty(pg_relation_size(indexrelid)) AS size,
-       idx_scan AS scans
-FROM pg_stat_user_indexes
-WHERE relname = 'orders'
+<pre><code>SELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)), idx_scan
+FROM pg_stat_user_indexes WHERE relname = 'orders'
 ORDER BY pg_relation_size(indexrelid) DESC;
 
-          index          |  size   | scans
--------------------------+---------+-------
- orders_status_idx       | 39 MB   |     0
- orders_cust_cover_idx   | 30 MB   |     2
- orders_cust_created_idx | 30 MB   |     1
- orders_pkey             | 21 MB   |     0
- orders_created_idx      | 21 MB   |     0
- orders_cust_idx         | 7600 kB |     1
- orders_pending_idx      | 240 kB  |     1
- orders_created_brin     | 24 kB   |     0</code></pre>
-<p><code>scans</code> counts how many times each index was used since the statistics were last reset, so your counts will differ. The biggest index here, <code>orders_status_idx</code>, has never been used. In production, an index that stays at 0 for weeks is one to drop. Two cautions: a primary key or unique index does its job even at 0 scans, and a read copy of the database keeps its own counts.</p>
-
-<h4>Find tables that are being scanned</h4>
-<pre><code>-- Tables where the most rows are read by full scans
-SELECT relname, seq_scan, seq_tup_read, idx_scan
-FROM pg_stat_user_tables
-ORDER BY seq_tup_read DESC
-LIMIT 5;
-
-  relname  | seq_scan | seq_tup_read | idx_scan
------------+----------+--------------+----------
- orders    |       29 |     12000000 |        6
- customers |        3 |       100000 |        1</code></pre>
-<p><code>seq_tup_read</code> is the number of rows read by full scans. A big table at the top of this list, with few index scans, is probably missing an index. Then find the slow query and <code>EXPLAIN</code> it.</p>
+ orders_status_idx       | 39 MB  | 0    &lt;- biggest, never used
+ orders_cust_created_idx | 30 MB  | 1
+ orders_created_brin     | 24 kB  | 0</code></pre>
+<p>An index at 0 scans for weeks is one to drop &mdash; but a primary key does its job at 0, and a read replica keeps its own counts. For the other direction, order <code>pg_stat_user_tables</code> by <code>seq_tup_read</code>: a big table at the top with few index scans is probably missing one.</p>
 
 <!-- section: tradeoffs -->
 <ul>
-<li><strong>Faster reads vs slower writes.</strong> Each index speeds up some queries and adds work to every insert. In PostgreSQL, an update that changes any indexed column adds a new entry to every index on the table, not only the one for that column.</li>
-<li><strong>One wide index vs several narrow ones.</strong> A composite index serves one query shape very well. Separate single-column indexes serve more shapes, each less well.</li>
-<li><strong>Covering vs small.</strong> Extra columns in the index save table visits. They also make the index bigger, so less of it stays in memory.</li>
-<li><strong>Partial vs general.</strong> A partial index is tiny and cheap to keep. It only helps the one slice it was built for.</li>
-<li><strong>Exact vs rough.</strong> A B-tree finds one row. A BRIN index is a thousand times smaller and only narrows things down to a block of pages.</li>
+<li><strong>Faster reads vs slower writes.</strong> In PostgreSQL an update that changes any indexed column adds an entry to <em>every</em> index on the table, not just that column's.</li>
+<li><strong>One wide index vs several narrow ones.</strong> A composite serves one query shape very well; separate single-column indexes serve more shapes, each less well.</li>
+<li><strong>Covering vs small.</strong> Extra columns save table visits and make the index bigger, so less of it stays in memory.</li>
+<li><strong>Partial vs general.</strong> Tiny and cheap to keep, and useless outside the slice it was built for.</li>
 </ul>
 
 <!-- section: whenToUse -->
 <h4>Add an index when</h4>
 <ul>
-<li>A query that runs often filters or joins on a column, and matches a small share of the table.</li>
-<li>A query sorts by a column and only takes the first few rows.</li>
-<li>A column is a foreign key. PostgreSQL does not index these for you, and joins and deletes on the parent table need it.</li>
-<li>A value must be unique. A unique index is how the database enforces that.</li>
+<li>A frequent query filters or joins on a column and matches a small share of the table.</li>
+<li>A query sorts by a column and takes only the first few rows.</li>
+<li>A column is a foreign key &mdash; PostgreSQL does not index these for you, and joins and parent deletes need it.</li>
 <li><code>EXPLAIN</code> shows a <code>Seq Scan</code> throwing away most of a big table.</li>
 </ul>
 
-<h4>You don’t need one when</h4>
+<h4>You don't need one when</h4>
 <ul>
-<li><strong>The table is small.</strong> A few thousand rows fit in a handful of pages. Reading them all is as fast as using an index, and PostgreSQL will ignore your index anyway.</li>
-<li><strong>The query matches most of the table.</strong> Counting <code>delivered</code> orders, 96% of our rows, still used a <code>Seq Scan</code> even with an index on <code>status</code>. Reading nearly everything through an index is slower than just reading everything.</li>
-<li><strong>The column has only a few different values</strong> and you ask for the common ones. An index on a true/false column rarely helps. A partial index on the rare value might.</li>
-<li><strong>The table is written far more than it is read</strong>, like a log you only load in bulk later.</li>
-<li><strong>Another index already starts with the same columns.</strong> An index on <code>(customer_id, created_at)</code> makes one on <code>(customer_id)</code> redundant.</li>
+<li><strong>The table is small.</strong> A few thousand rows fit in a handful of pages, and the planner will ignore your index anyway.</li>
+<li><strong>The query matches most of the table.</strong> Counting <code>delivered</code> orders, 96% of our rows, still chose a <code>Seq Scan</code> with an index on <code>status</code>.</li>
+<li><strong>The column has few distinct values</strong> and you ask for the common ones. A partial index on the rare value may still help.</li>
+<li><strong>Another index already starts with the same columns.</strong> <code>(customer_id, created_at)</code> makes <code>(customer_id)</code> redundant.</li>
 </ul>
 
 <!-- section: mistakes -->
 <ul>
-<li><strong>One index per column.</strong> Five single-column indexes are not the same as one index shaped for the query. You pay five write costs and still sort. Start from the query, not from the column list.</li>
-<li><strong>Wrong column order in a composite index.</strong> <code>(created_at, customer_id)</code> is nearly useless for “orders of this customer”. Columns compared with <code>=</code> go first.</li>
-<li><strong>Wrapping the column in a function.</strong> <code>WHERE created_at::date = '2026-03-01'</code> can’t use an index on <code>created_at</code>. Our test fell back to a <code>Seq Scan</code>. Write it as a range, <code>created_at &gt;= '2026-03-01' AND created_at &lt; '2026-03-02'</code>, and the index is used.</li>
-<li><strong>Searching with a wildcard at the front.</strong> <code>LIKE '%4242@Example.com'</code> gave a <code>Seq Scan</code> too. A sorted list can’t help when you don’t know how the value starts. Text search needs a different kind of index.</li>
-<li><strong>Building an index without <code>CONCURRENTLY</code> in production.</strong> Writes to the table stop until it is done.</li>
-<li><strong>Never removing indexes.</strong> Queries change, and old indexes stay and slow down writes. Check <code>pg_stat_user_indexes</code> a few times a year.</li>
-<li><strong>Forgetting foreign key columns.</strong> Deleting a customer then scans the whole orders table to look for their orders.</li>
-<li><strong>Trusting a test on a tiny table.</strong> With 100 rows the planner picks a <code>Seq Scan</code> whatever you build. Test with a realistic amount of data.</li>
+<li><strong>One index per column.</strong> Five single-column indexes are not one shaped for the query: you pay five write costs and still sort.</li>
+<li><strong>Wrong column order.</strong> <code>(created_at, customer_id)</code> is nearly useless for &ldquo;this customer's orders&rdquo;, as the diagram above shows.</li>
+<li><strong>Wrapping the column in a function.</strong> <code>WHERE created_at::date = '2026-03-01'</code> fell back to a <code>Seq Scan</code>. Write it as a range and the index is used.</li>
+<li><strong>A wildcard at the front.</strong> <code>LIKE '%4242@Example.com'</code> also gave a <code>Seq Scan</code>: a sorted list can't help when you don't know how the value starts.</li>
+<li><strong>Building without <code>CONCURRENTLY</code> in production</strong>, which stops writes until it finishes.</li>
+<li><strong>Never removing indexes.</strong> Queries change, old indexes stay and slow writes. Check <code>pg_stat_user_indexes</code> a few times a year.</li>
 </ul>
 
 <!-- section: interview -->
 <h4>Common questions</h4>
 <ul>
-<li><strong>What is an index, and what does it cost?</strong> A sorted copy of some columns with pointers to the rows. It makes matching reads fast. It costs disk space and extra work on every write.</li>
-<li><strong>How do you choose the column order in a composite index?</strong> Equality columns first, then the column used for a range or a sort. The index works for any query that uses its first columns, but not for one that skips them.</li>
-<li><strong>Why would the database ignore an index?</strong> The query matches too many rows, the table is small, the column is wrapped in a function, the types don’t match, or the statistics are out of date.</li>
-<li><strong>What is a covering index?</strong> One that holds every column the query needs, so the table is never read. In PostgreSQL the plan shows <code>Index Only Scan</code>.</li>
-<li><strong>How do you find a missing index?</strong> Find the slow query, run <code>EXPLAIN (ANALYZE, BUFFERS)</code>, and look for a scan that throws away most of what it reads.</li>
+<li><strong>How do you choose column order in a composite index?</strong> Equality columns first, then the range or sort column. It serves any query using its first columns, never one that skips them.</li>
+<li><strong>Why would the database ignore an index?</strong> Too many matching rows, a small table, a column wrapped in a function, mismatched types, or stale statistics.</li>
+<li><strong>What is a covering index?</strong> One holding every column the query needs, so the table is never read. The plan says <code>Index Only Scan</code>.</li>
+<li><strong>How do you find a missing index?</strong> <code>EXPLAIN (ANALYZE, BUFFERS)</code> the slow query and look for a scan throwing away most of what it reads.</li>
 </ul>
 
 <h4>Follow-ups to expect</h4>
 <ul>
 <li>How does a B-tree stay fast as the table grows?</li>
-<li>When is a partial index better than a full one?</li>
-<li>How would you add an index to a table with a billion rows and live traffic?</li>
-<li>How would you index a column you search with <code>LIKE '%word%'</code>?</li>
+<li>How would you add an index to a billion-row table with live traffic?</li>
 </ul>
 
 <h4>How it fits a bigger design</h4>
-<p>In a system design, indexes come right after the data model. For each main query, say which index serves it. “The inbox reads the newest 20 by user, so the index is on user and time, newest first.” Cursor pagination, covered in the Pagination topic, only works well with an index on the cursor columns. And when a table gets too big for one machine, sharding splits it up, but each shard still needs the same indexes.</p>
+<p>Indexes come right after the data model: for each main query, name the index that serves it. &ldquo;The inbox reads the newest 20 by user, so the index is user then time, newest first.&rdquo; Cursor pagination needs an index on the cursor columns, and a sharded table still needs the same indexes on every shard.</p>
 
 <!-- section: revision -->
 <ul>
-<li>An index is a sorted copy of some columns that points back to the rows. Without one, the database reads the whole table.</li>
-<li>The default index is a B-tree. A lookup reads one page per level, and a million rows needed only three levels.</li>
-<li>Shape the index like the query. An index on the filter column and then the sort column removed both the scan and the sort.</li>
-<li>In a composite index, equality columns go first. The index can’t help a query that skips its first column.</li>
-<li>A covering index holds every column the query needs, so the table isn’t read. A partial index only holds the rows you ask for, so it stays tiny.</li>
-<li>An expression index is needed when the query wraps the column in a function. Other kinds, like GIN and BRIN, fit JSON, text search and huge insert-ordered tables.</li>
-<li>Every index costs disk and slows writes. Our eight indexes took 2.3 times the space of the table.</li>
+<li>An index is a sorted copy of some columns pointing back at the rows. Without one the database reads the whole table.</li>
+<li>The default is a B-tree: one page per level, and a million rows needed three levels.</li>
+<li>Shape the index like the query. Filter column then sort column removed both the scan and the sort.</li>
+<li>In a composite index, equality columns go first. It can't help a query that skips its first column.</li>
+<li>A covering index holds every column the query needs, so the table isn't read. A partial index holds only the rows you ask for, so it stays tiny.</li>
+<li>An expression index is needed when the query wraps the column in a function. GIN fits JSON and text search; BRIN fits huge insert-ordered tables.</li>
+<li>Every index costs disk and slows writes: our eight took 2.3 times the space of the table.</li>
 <li>Use <code>EXPLAIN (ANALYZE, BUFFERS)</code> to see what a query does, and <code>pg_stat_user_indexes</code> to find indexes nobody uses.</li>
-<li>Build indexes in production with <code>CONCURRENTLY</code>, so writes are not blocked.</li>
-<li>Skip the index on small tables, and for queries that match most of the rows.</li>
+<li>Build in production with <code>CONCURRENTLY</code>. Skip the index on small tables and queries matching most rows.</li>
 </ul>
