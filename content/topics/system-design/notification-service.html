@@ -174,7 +174,7 @@ CREATE TABLE deliveries (
 
 <!-- section: deepDives -->
 <h4>1. How do we avoid sending the same thing twice?</h4>
-<p>Duplicates come from two places. <strong>The caller retries</strong> after a timeout &mdash; the idempotency key handles that:</p>
+<p>Duplicates come from two places. <strong>The caller retries</strong> after a timeout, handled by the idempotency key:</p>
 <pre><code>const key = `idem:${req.source}:${req.idempotencyKey}`;
 const id = randomUUID();
 // NX = only write if absent. EX = forget after 24 hours.
@@ -230,7 +230,7 @@ return { notificationId: id };</code></pre>
 <p>The same split happens after the processor: one queue per channel, so a slow SMS provider never holds up push. The campaign itself is cut up &mdash; a <strong>splitter</strong> turns the list into chunks of 1,000 users (<strong>fan-out</strong>), processed at a capped rate, so one crash costs one chunk. Users also get a cap of 3 offers a day, counted in Redis, and quiet hours.</p>
 
 <h4>3. What happens when a provider is slow or down?</h4>
-<p>Retrying forever hammers a struggling provider; giving up at once loses notifications that would have gone through seconds later. So retry a few times with growing waits, then set the message aside &mdash; which needs the two kinds of failure told apart.</p>
+<p>Retrying forever hammers a struggling provider; giving up at once loses notifications that would have worked seconds later. So retry with growing waits, then set the message aside. That needs two kinds of failure told apart.</p>
 <ul>
 <li><strong>Short-term</strong> (timeout, &ldquo;too many requests&rdquo;): wait 1 s, then 2, 4, 8 &mdash; <strong>exponential backoff</strong> &mdash; plus a random <strong>jitter</strong>, so thousands of failures don't retry in the same instant.</li>
 <li><strong>Permanent</strong> (dead push token, non-existent address): retrying can never work. Mark failed, drop the address.</li>
