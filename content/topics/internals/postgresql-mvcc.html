@@ -131,7 +131,7 @@ UPDATE accounts SET balance = balance - 100 WHERE id = 1;</code></pre>
 <h4>Costly</h4>
 <ul>
 <li><strong>Every update writes the whole row again</strong>, even for one small column. A 200-byte row with 5 indexes (made-up numbers) costs a new 200-byte version plus 5 index entries when an indexed column changes.</li>
-<li><strong>Updates grow the table.</strong> On a laptop, 100,000 small rows took 3,544 kB; updating each once took it to 7,080 kB. That extra space is <strong>bloat</strong>.</li>
+<li><strong>Updates grow the table.</strong> On a laptop, 100,000 rows took 3,544 kB; updating each once took it to 7,080 kB. That extra space is <strong>bloat</strong>.</li>
 <li><strong>Vacuum frees space but rarely shrinks the file.</strong> That table stayed 7,080 kB after vacuuming, and the next full update reused the freed half. Only <code>VACUUM FULL</code> took it back to 3,544 kB, and it locks the table to do it.</li>
 <li><strong>Counting rows.</strong> No count is stored, because each transaction may see a different number, so <code>count(*)</code> checks visibility row by row.</li>
 <li><strong>A long-open transaction</strong> keeps dead versions alive across every table in the database.</li>
@@ -207,9 +207,9 @@ DETAIL:  0 dead row versions cannot be removed yet</code></pre>
 
 <!-- section: myths -->
 <ul>
-<li><strong>&ldquo;An update changes the row in place.&rdquo;</strong> It writes a new version and marks the old one replaced. Demo 1 shows the row moving slot.</li>
+<li><strong>&ldquo;An update changes the row in place.&rdquo;</strong> It writes a new version and marks the old one replaced, as demo 1 shows.</li>
 <li><strong>&ldquo;A big rollback is slow.&rdquo;</strong> Nothing is undone; the transaction is marked rolled back and its versions become invisible. The cost lands later, on vacuum.</li>
-<li><strong>&ldquo;Vacuum gives disk space back.&rdquo;</strong> It frees space inside the table for reuse. Only a full rewrite shrinks the file.</li>
+<li><strong>&ldquo;Vacuum gives disk space back.&rdquo;</strong> It frees space inside the table for reuse; only a full rewrite shrinks the file.</li>
 <li><strong>&ldquo;Every database does it this way.&rdquo;</strong> MySQL's InnoDB has MVCC too, but changes the row in place and keeps old versions in a separate undo log. They don't bloat the table, and a long rollback has real work to do.</li>
 </ul>
 
