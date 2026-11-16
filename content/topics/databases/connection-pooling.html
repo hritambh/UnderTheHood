@@ -37,15 +37,15 @@ INSERT INTO accounts VALUES (1, 500.00), (2, 120.50);
 CREATE ROLE shop_app LOGIN CONNECTION LIMIT 3;   -- a limit we can hit safely
 GRANT SELECT, UPDATE ON accounts TO shop_app;
 SHOW max_connections;   --  100</code></pre>
-<p>Open three <code>psql -U shop_app pool_demo</code> windows and leave them idle, then look at the server:</p>
+<p>Open three <code>psql -U shop_app pool_demo</code> windows, leave them idle, and look:</p>
 <pre><code>SELECT pid, usename, state FROM pg_stat_activity
 WHERE backend_type = 'client backend' AND datname = 'pool_demo';
 --   pid  | usename  | state
 --  43505 | shop_app | idle      &lt;- also a process: postgres: shop_app pool_demo
 --  43506 | shop_app | idle
 --  43507 | shop_app | idle</code></pre>
-<p>The pids match: <strong>each connection is a whole operating-system process</strong> on the server, alive and holding memory even while idle. A fourth window is refused at the door with <code>FATAL: too many connections for role "shop_app"</code>.</p>
-<p>Now measure what reuse saves, with <code>pgbench</code> running one tiny query for 3 seconds. The <code>-C</code> run opens a new connection per query.</p>
+<p><strong>Each connection is a whole operating-system process</strong>, alive and holding memory even while idle. A fourth window is refused at the door: <code>FATAL: too many connections for role "shop_app"</code>.</p>
+<p>Now measure what reuse saves. <code>pgbench</code> runs one tiny query for 3 seconds; <code>-C</code> opens a new connection per query.</p>
 <pre><code>$ pgbench -n -f one-query.sql -c 1 -T 3 pool_demo      # kept open
 latency average = 0.076 ms     tps = 13123
 
@@ -180,7 +180,7 @@ finally { client.release(); }                   // always give it back</code></p
 <li><strong>Holding a connection during slow non-database work.</strong> One 300 ms API call cuts throughput twentyfold. Do the slow work first, then borrow.</li>
 <li><strong>Creating a pool per request.</strong> That is having no pool. One pool, made at start-up.</li>
 <li><strong>No wait timeout.</strong> Requests waiting forever make a full pool look like a frozen app.</li>
-<li><strong>Leaving transactions open.</strong> <code>BEGIN</code> with no <code>COMMIT</code> holds a connection and its locks. Set <code>idle_in_transaction_session_timeout</code> and treat every hit as a bug.</li>
+<li><strong>Leaving transactions open.</strong> <code>BEGIN</code> with no <code>COMMIT</code> holds a connection and its locks. Set <code>idle_in_transaction_session_timeout</code>.</li>
 <li><strong>Session features through transaction mode.</strong> A <code>SET</code> quietly applies to some other client’s connection later. Use <code>SET LOCAL</code>.</li>
 </ul>
 
@@ -188,7 +188,7 @@ finally { client.release(); }                   // always give it back</code></p
 <h4>Common questions</h4>
 <ul>
 <li><strong>What is a pool?</strong> Open connections that requests borrow and return. Connecting costs far more than a small query, and the database has a hard limit.</li>
-<li><strong>How do you size it?</strong> Database side: limit minus reserve, divided by instances. Work side: requests/s × hold time. If the first is smaller, add a pooler or cut the hold time.</li>
+<li><strong>How do you size it?</strong> Database side: limit minus reserve, divided by instances. Work side: requests/s × hold time. If the first is smaller, add a pooler.</li>
 <li><strong>When it’s empty?</strong> The request queues, then gets a connection or times out.</li>
 <li><strong>Session or transaction pooling?</strong> Session holds a connection for the whole client connection; transaction holds it per transaction, so many more clients share — at the price of connection-level features.</li>
 </ul>
