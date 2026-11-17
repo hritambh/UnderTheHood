@@ -89,10 +89,12 @@ function topbar(root, hubTitle, withSidebar) {
     </div>
     <a class="top-link top-home" href="${root}index.html">Home</a>
     <div class="reading">
-      <button class="theme-btn" id="readBtn" type="button" aria-label="Reading mode" title="Reading mode" aria-expanded="false" aria-controls="readPanel">${BOOK_ICON}</button>
+      <button class="theme-btn" id="readBtn" type="button" aria-label="Reading options" title="Reading options" aria-expanded="false" aria-controls="readPanel">${BOOK_ICON}</button>
       <div class="read-panel" id="readPanel" hidden>
         <label class="read-row"><span><strong>Reading mode</strong><small>A warm tint that is easier on the eyes.</small></span><input type="checkbox" class="switch" id="readOn"></label>
         <label class="read-row col"><span>Intensity <output id="readVal" for="readRange">50%</output></span><input type="range" id="readRange" min="10" max="100" step="5" value="50"></label>
+        <label class="read-row"><span><strong>Auto scroll</strong><small>Creeps the page down on its own. Scrolling stops it.</small></span><input type="checkbox" class="switch" id="scrollOn"></label>
+        <label class="read-row col"><span>Speed <output id="scrollVal" for="scrollRange">40 px/s</output></span><input type="range" id="scrollRange" min="10" max="200" step="5" value="40"></label>
       </div>
     </div>
     <button class="theme-btn" id="themeBtn" type="button" aria-label="Switch between light and dark theme">${THEME_ICON}</button>

@@ -243,7 +243,8 @@ details.sec[open] .sec-toggle{transform:rotate(90deg)}
 /* ---------- Reading mode (warm tint over the whole page) ---------- */
 :root[data-reading]::after{content:"";position:fixed;inset:0;z-index:1000;pointer-events:none;background:rgb(255,208,150);mix-blend-mode:multiply;opacity:var(--read-intensity,.5)}
 .reading{position:relative;flex:none}
-:root[data-reading] #readBtn{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+:root[data-reading] #readBtn,
+:root[data-autoscroll] #readBtn{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 .read-panel{position:absolute;right:0;top:calc(100% + 10px);z-index:40;width:270px;padding:6px 14px;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
 .read-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;font-size:.93rem;cursor:pointer}
 .read-row + .read-row{border-top:1px solid var(--line)}

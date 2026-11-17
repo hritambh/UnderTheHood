@@ -11,6 +11,7 @@
   var LS_READING = 'sd-hub-reading';
   var LS_READ_INT = 'sd-hub-reading-intensity';
   var LS_SIDEBAR = 'sd-hub-sidebar';
+  var LS_SCROLL_SPEED = 'sd-hub-autoscroll-speed';
   var LABEL = { not: 'Not started', progress: 'In progress', done: 'Completed' };
 
   function load(key, fallback) {
@@ -93,6 +94,95 @@
     });
     window.addEventListener('storage', function (e) {
       if (e.key === LS_READING || e.key === LS_READ_INT) { var x = stored(); apply(x.on, x.v); }
+    });
+  })();
+
+  /* ---------- auto scroll: creep the page down at a speed the reader picks ----------
+     The speed is remembered; the on/off state is not, so a page never starts
+     moving on its own when it is opened. Any scroll or arrow key stops it. */
+  var scrollOn = $('scrollOn');
+  if (scrollOn) (function () {
+    var root = document.documentElement;
+    var range = $('scrollRange'), val = $('scrollVal');
+    var MIN = 10, MAX = 200;
+    var speed = 40;       // pixels a second
+    var raf = 0, last = 0, carry = 0;
+    var STOP_KEYS = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
+
+    try {
+      var n = parseInt(localStorage.getItem(LS_SCROLL_SPEED), 10);
+      if (n >= MIN && n <= MAX) speed = n;
+    } catch (e) {}
+
+    function paintSpeed() {
+      range.value = speed;
+      val.textContent = speed + ' px/s';
+    }
+    function atBottom() {
+      return window.innerHeight + window.scrollY >= root.scrollHeight - 1;
+    }
+    /* One frame. We keep the leftover fraction of a pixel, so even the slowest
+       speed keeps moving instead of rounding down to nothing every frame. */
+    function step(now) {
+      raf = requestAnimationFrame(step);
+      var dt = (now - last) / 1000;
+      last = now;
+      if (dt <= 0) return;
+      if (dt > 0.25) dt = 0.25;        // the tab was in the background
+      carry += speed * dt;
+      var px = Math.floor(carry);
+      if (px < 1) return;
+      carry -= px;
+      var before = window.scrollY;
+      // 'instant' matters: the page sets scroll-behavior:smooth, which would fight this
+      window.scrollBy({ top: px, left: 0, behavior: 'instant' });
+      if (window.scrollY === before && atBottom()) stop();
+    }
+    function start() {
+      if (raf) return;
+      carry = 0;
+      last = window.performance ? performance.now() : Date.now();
+      root.setAttribute('data-autoscroll', '');
+      scrollOn.checked = true;
+      raf = requestAnimationFrame(step);
+    }
+    function stop() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      root.removeAttribute('data-autoscroll');
+      scrollOn.checked = false;
+    }
+
+    paintSpeed();
+    scrollOn.addEventListener('change', function () {
+      if (scrollOn.checked) start(); else stop();
+    });
+    // moving the slider starts it, so the new speed can be seen straight away
+    range.addEventListener('input', function () {
+      speed = Number(range.value);
+      try { localStorage.setItem(LS_SCROLL_SPEED, String(speed)); } catch (e) {}
+      paintSpeed();
+      start();
+    });
+
+    // anything that means "I am steering now" hands control back to the reader
+    function handOver(e) {
+      if (!raf) return;
+      var t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (e.type === 'keydown' && STOP_KEYS.indexOf(e.key) < 0) return;
+      stop();
+    }
+    ['wheel', 'touchstart', 'keydown'].forEach(function (type) {
+      window.addEventListener(type, handOver, { passive: true });
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && raf) stop();
+    });
+    window.addEventListener('storage', function (e) {
+      if (e.key !== LS_SCROLL_SPEED) return;
+      var v = parseInt(e.newValue, 10);
+      if (v >= MIN && v <= MAX) { speed = v; paintSpeed(); }
     });
   })();
 
