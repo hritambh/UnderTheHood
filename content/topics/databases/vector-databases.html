@@ -1,0 +1,277 @@
+<!--
+title: Vector Databases
+summary: Storing text, images or audio as lists of numbers that capture meaning, then finding the nearest ones. How similarity search works, and why it gives up exact answers to stay fast.
+category: Search
+order: 50
+related: inverted-indexes, indexing-strategies, sql-vs-nosql, table-partitioning
+-->
+
+<!-- section: what -->
+<p>An <strong>embedding</strong> is a list of numbers standing for a piece of text, an image or a sound. A model produces it, and things that mean similar things get similar numbers. &ldquo;Cancel my subscription&rdquo; and &ldquo;end my plan&rdquo; land close together, with no word in common.</p>
+<p>A <strong>vector database</strong> stores those lists and answers one question fast: <em>which stored vectors are nearest to this one?</em> That is <strong>similarity search</strong>, and it is the whole job.</p>
+<p>You get it as its own product (Pinecone, Milvus, Qdrant, Weaviate) or as an add-on to a database you already run. Examples use <strong>PostgreSQL 16 with pgvector</strong>, so you can run every line.</p>
+<p class="note">One-line version: a vector database finds the rows closest in meaning, not the rows that match a word. It gets fast by returning <em>probably</em> the nearest rows instead of certainly the nearest ones.</p>
+
+<!-- section: why -->
+<p>Normal indexes answer &ldquo;where is this value?&rdquo;. A B-tree finds <code>customer_id = 4242</code>; a text index finds the word <em>refund</em>. Neither answers &ldquo;what is close to this?&rdquo;, because closeness isn't a value you can sort by in advance.</p>
+<p>Say a help centre gets &ldquo;how do I stop paying you&rdquo;. The right article is &ldquo;Cancel your subscription&rdquo;. Word search finds nothing &mdash; not one word matches. Embeddings put both in nearly the same place, so it comes first.</p>
+<p>The catch is cost. Nothing is sorted, so the honest answer means comparing the query with every stored vector &mdash; fine at 10,000 rows, hopeless at 10 million. Everything below exists to avoid that.</p>
+
+<!-- section: example -->
+<p>Four help articles. Real embeddings have hundreds of numbers; we use two so you can see them on a page.</p>
+<pre><code>CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE docs (
+  id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  title     TEXT NOT NULL,
+  embedding vector(2) NOT NULL
+);
+
+INSERT INTO docs (title, embedding) VALUES
+  ('Cancel your subscription', '[0.9, 0.1]'),
+  ('Ending a plan early',      '[0.7, 0.4]'),
+  ('Change your billing card', '[0.5, 0.6]'),
+  ('Reset your password',      '[0.1, 0.9]');</code></pre>
+
+<p>The model turns that question into <code>[0.85, 0.2]</code>. <code>&lt;=&gt;</code> is cosine distance: 0 is the same direction, 1 is unrelated.</p>
+
+<pre><code>SELECT title, round((embedding &lt;=&gt; '[0.85,0.2]')::numeric, 4) AS distance
+FROM docs
+ORDER BY embedding &lt;=&gt; '[0.85,0.2]'
+LIMIT 3;
+
+          title           | distance
+ -------------------------+----------
+  Cancel your subscription |   0.0072
+  Ending a plan early      |   0.0412
+  Change your billing card |   0.2009</code></pre>
+
+<p>&ldquo;Reset your password&rdquo; sits at 0.6649 and never makes the top three. Put the four rows and the question on a grid and the ordering is just distance:</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 260" role="img" aria-label="Four help articles plotted as points on a grid, with the question point sitting almost on top of Cancel your subscription, close to Ending a plan early, further from Change your billing card, and far from Reset your password.">
+<defs><marker id="ah-vector-databases" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<line x1="60" y1="230" x2="600" y2="230" class="arr dim"/>
+<line x1="60" y1="230" x2="60" y2="20" class="arr dim"/>
+<text x="596" y="248" text-anchor="end" class="sub">&ldquo;money and plans&rdquo; direction</text>
+<text x="52" y="28" text-anchor="end" class="sub">&ldquo;account&rdquo;</text>
+
+<circle cx="485" cy="182" r="9" class="box hi"/>
+<text x="485" y="166" text-anchor="middle" class="lbl">question</text>
+<text x="485" y="206" text-anchor="middle" class="sub">[0.85, 0.2]</text>
+
+<circle cx="510" cy="201" r="6" class="box"/>
+<text x="548" y="222" text-anchor="middle" class="sub">Cancel your subscription &mdash; 0.0072</text>
+
+<circle cx="410" cy="144" r="6" class="box"/>
+<text x="400" y="136" text-anchor="end" class="sub">Ending a plan early &mdash; 0.0412</text>
+
+<circle cx="310" cy="106" r="6" class="box"/>
+<text x="300" y="98" text-anchor="end" class="sub">Change your billing card &mdash; 0.2009</text>
+
+<circle cx="110" cy="49" r="6" class="box warn"/>
+<text x="126" y="44" class="sub">Reset your password &mdash; 0.6649</text>
+
+<line x1="485" y1="182" x2="506" y2="198" class="arr" marker-end="url(#ah-vector-databases)"/>
+<line x1="478" y1="176" x2="416" y2="149" class="arr" marker-end="url(#ah-vector-databases)"/>
+<line x1="476" y1="174" x2="317" y2="110" class="arr faint"/>
+<line x1="476" y1="174" x2="118" y2="53" class="arr faint"/>
+</svg>
+</div>
+
+<!-- section: internals -->
+<p>With no index, PostgreSQL reads every row, works out the distance and keeps the best three. A million rows means a million distance sums, on every query.</p>
+<p>An index avoids that by giving up on being exact. This is <strong>approximate nearest neighbour</strong> search, ANN for short: rows that are almost always the nearest, in a fraction of the time. pgvector's default is <strong>HNSW</strong>, a layered graph where every vector links to the ones near it.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 300" role="img" aria-label="An HNSW index drawn as three layers. The top layer has a few far-apart nodes, the middle layer has more, and the bottom layer has every vector. The search enters at the top, hops to the nearest node, drops a layer, hops again, and finishes with short hops in the bottom layer.">
+<defs><marker id="ah2-vector-databases" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="20" y="16" width="600" height="72" rx="8" class="box faintbox"/>
+<text x="34" y="36" class="sub">Layer 2 &mdash; few nodes, long hops</text>
+<circle cx="110" cy="64" r="8" class="box hi"/><text x="110" y="84" text-anchor="middle" class="sub">entry</text>
+<circle cx="330" cy="62" r="8" class="box"/><circle cx="520" cy="66" r="8" class="box hi"/>
+<line x1="120" y1="64" x2="320" y2="62" class="arr faint"/>
+<line x1="338" y1="62" x2="510" y2="66" class="arr faint"/>
+<path d="M118,62 Q320,30 512,64" class="arr" marker-end="url(#ah2-vector-databases)"/>
+
+<rect x="20" y="104" width="600" height="72" rx="8" class="box faintbox"/>
+<text x="34" y="124" class="sub">Layer 1 &mdash; more nodes, shorter hops</text>
+<circle cx="150" cy="152" r="7" class="box"/><circle cx="280" cy="150" r="7" class="box"/>
+<circle cx="420" cy="154" r="7" class="box"/><circle cx="520" cy="152" r="7" class="box hi"/>
+<circle cx="574" cy="150" r="7" class="box hi"/>
+<line x1="157" y1="152" x2="273" y2="150" class="arr faint"/>
+<line x1="287" y1="150" x2="413" y2="154" class="arr faint"/>
+<line x1="427" y1="154" x2="513" y2="152" class="arr faint"/>
+<line x1="527" y1="152" x2="567" y2="150" class="arr" marker-end="url(#ah2-vector-databases)"/>
+
+<rect x="20" y="192" width="600" height="92" rx="8" class="box faintbox"/>
+<text x="34" y="212" class="sub">Layer 0 &mdash; every vector, nearest links only</text>
+<circle cx="120" cy="246" r="6" class="box"/><circle cx="190" cy="252" r="6" class="box"/>
+<circle cx="258" cy="244" r="6" class="box"/><circle cx="322" cy="254" r="6" class="box"/>
+<circle cx="388" cy="246" r="6" class="box"/><circle cx="452" cy="252" r="6" class="box"/>
+<circle cx="520" cy="244" r="6" class="box hi"/><circle cx="574" cy="250" r="6" class="box hi"/>
+<circle cx="604" cy="240" r="6" class="box hi"/>
+<line x1="126" y1="246" x2="184" y2="252" class="arr faint"/>
+<line x1="196" y1="252" x2="252" y2="244" class="arr faint"/>
+<line x1="264" y1="244" x2="316" y2="254" class="arr faint"/>
+<line x1="328" y1="254" x2="382" y2="246" class="arr faint"/>
+<line x1="394" y1="246" x2="446" y2="252" class="arr faint"/>
+<line x1="458" y1="252" x2="514" y2="244" class="arr faint"/>
+<line x1="526" y1="245" x2="568" y2="250" class="arr" marker-end="url(#ah2-vector-databases)"/>
+<line x1="580" y1="249" x2="598" y2="242" class="arr" marker-end="url(#ah2-vector-databases)"/>
+<text x="330" y="276" text-anchor="middle" class="sub">the rest of the graph is never touched</text>
+
+<line x1="520" y1="76" x2="520" y2="142" class="arr dim" marker-end="url(#ah2-vector-databases)"/>
+<line x1="574" y1="160" x2="574" y2="240" class="arr dim" marker-end="url(#ah2-vector-databases)"/>
+</svg>
+</div>
+
+<ol>
+<li>Start at the single entry node in the top layer.</li>
+<li>Hop to whichever neighbour is nearer the query. Repeat until no neighbour is nearer.</li>
+<li>Drop one layer and do the same, now with more nodes and shorter hops.</li>
+<li>In layer 0, keep a shortlist of the best <code>ef_search</code> candidates found so far, then return the top <code>LIMIT</code> of them.</li>
+</ol>
+<p>The top layers are a rough map that reaches the right neighbourhood in a few jumps; layer 0 does the careful part. Nothing guarantees the true nearest row was in the neighbourhood you landed in. That is the approximation.</p>
+
+<!-- section: types -->
+<p>Three ways to answer the query. You choose by how much wrongness you can take.</p>
+
+<h4>Exact (no index)</h4>
+<p>Compare the query with every row. Always right, and the only option that is. Fine up to a few tens of thousands of rows.</p>
+
+<h4>IVFFlat</h4>
+<p>Group the vectors into <code>lists</code> clusters once, each with a centre point. A query checks the centres, then searches only the nearest <code>probes</code> clusters.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 190" role="img" aria-label="Vectors grouped into five clusters, each with a centre point. The query is compared with the five centres, then only the two nearest clusters are searched; the other three are skipped.">
+<circle cx="100" cy="100" r="46" class="box faintbox"/><circle cx="100" cy="100" r="4" class="box"/><text x="100" y="162" text-anchor="middle" class="sub">skipped</text>
+<circle cx="215" cy="70" r="40" class="box faintbox"/><circle cx="215" cy="70" r="4" class="box"/><text x="215" y="124" text-anchor="middle" class="sub">skipped</text>
+<circle cx="340" cy="105" r="44" class="box hi"/><circle cx="340" cy="105" r="4" class="box"/><text x="340" y="166" text-anchor="middle" class="sub">searched</text>
+<circle cx="455" cy="68" r="40" class="box hi"/><circle cx="455" cy="68" r="4" class="box"/><text x="455" y="20" text-anchor="middle" class="sub">searched</text>
+<circle cx="565" cy="112" r="38" class="box faintbox"/><circle cx="565" cy="112" r="4" class="box"/><text x="565" y="166" text-anchor="middle" class="sub">skipped</text>
+<circle cx="398" cy="88" r="8" class="box hi"/><text x="398" y="46" text-anchor="middle" class="lbl">query</text>
+<text x="20" y="30" class="sub">probes = 2 of 5 clusters</text>
+</svg>
+</div>
+
+<p>Cheap to build and small on disk. The weak spot: a query on the edge between clusters misses neighbours that fell inside a cluster you didn't probe.</p>
+
+<h4>HNSW</h4>
+<p>The layered graph above. Better recall at the same speed, and it takes new rows as they arrive. It costs more to build and wants the whole graph in memory.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Exact</th><th>IVFFlat</th><th>HNSW</th></tr>
+<tr><td>Correct answer?</td><td>Always</td><td>Usually</td><td>Nearly always</td></tr>
+<tr><td>Query cost</td><td>Grows with every row</td><td>Rows &divide; lists &times; probes</td><td>A few hundred hops</td></tr>
+<tr><td>Build</td><td>Nothing to build</td><td>Fast</td><td>Slow</td></tr>
+<tr><td>Index size</td><td>None</td><td>Small</td><td>Large</td></tr>
+<tr><td>New rows</td><td>Nothing to do</td><td>Go to an existing cluster, recall drifts</td><td>Linked in properly</td></tr>
+<tr><td>Knob</td><td>&mdash;</td><td><code>probes</code></td><td><code>ef_search</code></td></tr>
+</table></div>
+
+<!-- section: numbers -->
+<p><strong>Assumptions, made up:</strong> 1,000,000 articles, 768 numbers per embedding, 4 bytes each plus 8 bytes of header, disk read at 2 GB/s, and a machine with 8 GB of memory for the database.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Working</th><th>Result</th></tr>
+<tr><td>One vector</td><td>768 &times; 4 + 8</td><td><strong>3,080 bytes</strong></td></tr>
+<tr><td>All vectors</td><td>1,000,000 &times; 3,080</td><td><strong>3.1 GB</strong></td></tr>
+<tr><td>Exact search</td><td>3.1 GB &divide; 2 GB/s, every query</td><td><strong>~1.5 s</strong> at best</td></tr>
+<tr><td>IVFFlat, 1,000 lists, 10 probes</td><td>1,000,000 &divide; 1,000 &times; 10</td><td><strong>10,000 rows</strong> compared, 1% of the table</td></tr>
+</table></div>
+
+<p>Exact search is a disk-speed problem that gets worse with every row. Both index types turn it into a small number of comparisons. The HNSW index itself will be bigger than the vectors, so plan for graph and data to sit in memory &mdash; once the hops become disk reads, the speed is gone.</p>
+
+<!-- section: commands -->
+<h4>Build an index</h4>
+<pre><code>-- cosine distance, the usual choice for text embeddings
+CREATE INDEX docs_embed_hnsw ON docs
+  USING hnsw (embedding vector_cosine_ops);
+
+-- IVFFlat: build only once the table has real data
+CREATE INDEX docs_embed_ivf ON docs
+  USING ivfflat (embedding vector_cosine_ops) WITH (lists = 1000);</code></pre>
+<p>The operator class has to match the operator you query with: <code>vector_cosine_ops</code> for <code>&lt;=&gt;</code>, <code>vector_l2_ops</code> for <code>&lt;-&gt;</code>. Get it wrong and the index is simply never used.</p>
+
+<h4>Check that it is used</h4>
+<pre><code>EXPLAIN ANALYZE
+SELECT title FROM docs ORDER BY embedding &lt;=&gt; '[0.85,0.2]' LIMIT 3;
+
+ Limit
+   -&gt;  Index Scan using docs_embed_hnsw on docs
+         Order By: (embedding &lt;=&gt; '[0.85,0.2]'::vector)</code></pre>
+<p>Read the step name. <code>Index Scan</code> with an <code>Order By:</code> line means the index did the work. If you see <code>Seq Scan</code> and a <code>Sort</code> instead, it is reading everything: usually the wrong operator, or a <code>LIMIT</code> you forgot.</p>
+
+<h4>Trade recall for speed</h4>
+<pre><code>SET hnsw.ef_search = 100;   -- default 40; bigger = better recall, slower
+SET ivfflat.probes = 10;    -- default 1; bigger = better recall, slower
+
+SELECT pg_size_pretty(pg_relation_size('docs_embed_hnsw'));</code></pre>
+<p>Both are session settings, so you can raise them for one query. To measure recall, run the query again with the index off (<code>SET enable_indexscan = off;</code>) and count how many of the exact top 10 the indexed query returned.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Recall vs speed.</strong> The only knob that matters. Raising <code>ef_search</code> or <code>probes</code> finds more of the true neighbours and costs time in direct proportion.</li>
+<li><strong>Build time vs query time.</strong> HNSW is slow to build and fast to query. IVFFlat is the other way round.</li>
+<li><strong>Memory vs disk.</strong> ANN indexes assume they are in memory. Once the graph spills to disk, random reads cancel most of the gain.</li>
+<li><strong>Meaning vs exactness.</strong> Embeddings find things no keyword matches, but can't promise a row containing a word, a price or a date. Keyword search still wins there.</li>
+<li><strong>One database vs a specialist one.</strong> pgvector keeps vectors next to your rows, so one query does filter plus search. A dedicated vector database handles billions and sharding, at the cost of keeping two stores in step.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Reach for it when</h4>
+<ul>
+<li>Users search in their own words and the right answer shares no words with the question.</li>
+<li>You are feeding a language model: find the 5 most relevant chunks, put them in the prompt.</li>
+<li>You want &ldquo;more like this&rdquo; &mdash; related articles, duplicate detection, image or song lookup.</li>
+<li>The thing you search has no useful keywords at all, like a photo or an audio clip.</li>
+</ul>
+
+<h4>You don't need one when</h4>
+<ul>
+<li><strong>Keyword search already works.</strong> Product codes, names and tags want an inverted index, not meaning.</li>
+<li><strong>The set is small.</strong> Under about 10,000 rows, exact search in a plain table is quick, always right and has no knobs.</li>
+<li><strong>The answer must be exactly right.</strong> Anything legal, financial or rules-based should not be answered by &ldquo;probably the nearest&rdquo;.</li>
+<li><strong>You can't re-embed.</strong> Every vector depends on one model. No plan for re-running it is no plan at all.</li>
+</ul>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Mixing models.</strong> Vectors from two models are not comparable, even at the same size. Changing the model means re-embedding every row.</li>
+<li><strong>The wrong operator class.</strong> An index built with <code>vector_l2_ops</code> does nothing for a <code>&lt;=&gt;</code> query. The plan silently falls back to a full scan.</li>
+<li><strong>Building IVFFlat on an empty table.</strong> The clusters are worked out from the rows present at build time. Build it on an empty table and every later row lands badly; rebuild after a big load.</li>
+<li><strong>Filtering hard, then wondering where the results went.</strong> <code>WHERE lang = 'de'</code> on top of an ANN search throws away rows the index already picked: you ask for 10 and get 2. Raise <code>ef_search</code>, or filter first and search exactly.</li>
+<li><strong>Never measuring recall.</strong> Approximate search never errors. It quietly returns slightly worse answers, and nobody notices for months.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<ul>
+<li><strong>Why can't a B-tree do this?</strong> It sorts by value in one dimension. &ldquo;Near&rdquo; in 768 dimensions is not a position in a sorted list, so there is nothing to walk down.</li>
+<li><strong>What does &ldquo;approximate&rdquo; cost you?</strong> Recall. The index can miss a true neighbour it never visited. <code>ef_search</code> and <code>probes</code> buy it back.</li>
+<li><strong>HNSW or IVFFlat?</strong> HNSW for rows arriving all the time. IVFFlat when the index must build fast or stay small, and data is loaded in batches.</li>
+<li><strong>How do you combine it with filters?</strong> Small filtered set: filter first, then search exactly. Large one: raise <code>ef_search</code>, then filter what comes back.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>How would you measure whether search got better after a model change?</li>
+<li>Where do the embeddings get generated, and what happens when that call fails?</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>Vector search is usually one half of a search service: keyword search handles exact words, vector search handles meaning, and the lists are merged before ranking. Writes need a second path &mdash; when a document changes, something has to re-embed it. That is a queue and a worker, not a database feature.</p>
+
+<!-- section: revision -->
+<ul>
+<li>An embedding is a list of numbers standing for text, an image or a sound; similar meanings give similar numbers. A vector database answers one question: which stored vectors are nearest to this one.</li>
+<li>Nothing is sorted, so an exact answer means comparing the query with every row &mdash; about 1.5 seconds for a million 768-number vectors. ANN indexes trade that exactness for speed.</li>
+<li>HNSW is a layered graph. You enter at the top, hop towards the query, and drop layers until the careful search in layer 0.</li>
+<li>IVFFlat groups vectors into clusters and searches only the nearest few. Cheap to build, weaker at cluster edges.</li>
+<li><code>ef_search</code> and <code>probes</code> are the recall knobs: higher finds more true neighbours and takes longer.</li>
+<li>The index operator class must match the query operator, or the index is never used. Vectors are tied to one model, so changing the model means re-embedding everything.</li>
+<li>Keyword search and vector search solve different problems; real systems usually run both and merge the results.</li>
+</ul>

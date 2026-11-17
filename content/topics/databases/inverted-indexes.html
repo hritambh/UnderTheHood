@@ -1,0 +1,262 @@
+<!--
+title: Inverted Indexes
+summary: The index behind text search. Instead of row to words, it stores word to rows, so finding every document containing “refund” is one lookup instead of a full scan.
+category: Search
+order: 40
+related: vector-databases, indexing-strategies, table-partitioning, postgresql-mvcc
+-->
+
+<!-- section: what -->
+<p>A normal index stores a whole value and points at the row holding it. Fine when you search for the whole value: <code>customer_id = 4242</code>, <code>email = 'sam@example.com'</code>. Useless for &ldquo;articles mentioning <em>refund</em>&rdquo;, where the word is buried in a paragraph.</p>
+<p>An <strong>inverted index</strong> turns the mapping around. A table maps a row to its words; the index maps each <strong>word to the rows containing it</strong>. That list is a <strong>posting list</strong>, and &ldquo;inverted&rdquo; means this flip.</p>
+<p>Examples use <strong>PostgreSQL 16</strong>, where this is two parts: the <code>tsvector</code> type, holding a document's processed words, and a <strong>GIN</strong> index over it. GIN stands for Generalized Inverted Index &mdash; the structure Elasticsearch and Lucene are built on too.</p>
+<p class="note">One-line version: store word &rarr; rows instead of row &rarr; words, and text search becomes a few lookups and a list merge.</p>
+
+<!-- section: why -->
+<p>Without one, text search means <code>LIKE '%refund%'</code>, and three things go wrong at once.</p>
+<ul>
+<li><strong>It reads every row.</strong> A leading <code>%</code> means no sorted index can help, so every document is scanned on every search.</li>
+<li><strong>It matches the wrong things.</strong> It catches <em>refunded</em>, which you wanted, and <em>non-refundable</em>, which you may not. Searching <em>run</em> misses <em>running</em>.</li>
+<li><strong>It can't rank.</strong> Matching rows come back in no useful order. A document with the word in its title and five times in the body looks the same as one with it in a footnote.</li>
+</ul>
+<p>The inverted index fixes all three. Words are cut to a common root before storage, so <em>running</em> and <em>ran</em> both become <code>run</code>. Each word's list is already built, so a search is a lookup. And the index keeps where each word appeared, which is what ranking uses.</p>
+
+<!-- section: example -->
+<p>Three articles.</p>
+<pre><code>CREATE TABLE articles (
+  id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  title TEXT NOT NULL,
+  body  TEXT NOT NULL
+);
+
+INSERT INTO articles (title, body) VALUES
+  ('Refund policy',  'We are refunding orders within 30 days.'),
+  ('Shipping delay', 'Orders are running late this week.'),
+  ('Payment errors', 'A failed payment is not a refund.');</code></pre>
+
+<p>First, what a document becomes. <code>to_tsvector</code> splits the text, drops the words too common to store, and cuts the rest back to a root:</p>
+
+<pre><code>SELECT to_tsvector('english', 'We are refunding orders within 30 days.');
+
+ '30':6  'day':7  'order':4  'refund':3  'within':5</code></pre>
+
+<p><code>we</code> and <code>are</code> are gone: they are <strong>stop words</strong>, too common to be worth a list. <code>refunding</code> became <code>refund</code> and <code>days</code> became <code>day</code> &mdash; that is <strong>stemming</strong>, cutting a word to a root so different endings meet. The number is the word's position.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 200" role="img" aria-label="A sentence passes through four steps: split into words, lowercase, drop stop words, then stem each word to a root. We are refunding orders becomes refund and order.">
+<defs><marker id="ah-inverted-indexes" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="14" y="70" width="128" height="52" rx="8" class="box"/>
+<text x="78" y="92" text-anchor="middle" class="lbl">Raw text</text>
+<text x="78" y="110" text-anchor="middle" class="sub">&ldquo;We are refunding&hellip;&rdquo;</text>
+
+<rect x="172" y="70" width="120" height="52" rx="8" class="box"/>
+<text x="232" y="92" text-anchor="middle" class="lbl">Split</text>
+<text x="232" y="110" text-anchor="middle" class="sub">we · are · refunding</text>
+
+<rect x="322" y="70" width="120" height="52" rx="8" class="box warn"/>
+<text x="382" y="92" text-anchor="middle" class="lbl">Drop stop words</text>
+<text x="382" y="110" text-anchor="middle" class="sub">we and are go</text>
+
+<rect x="472" y="70" width="154" height="52" rx="8" class="box hi"/>
+<text x="549" y="92" text-anchor="middle" class="lbl">Stem</text>
+<text x="549" y="110" text-anchor="middle" class="sub">refunding &rarr; refund</text>
+
+<line x1="142" y1="96" x2="170" y2="96" class="arr" marker-end="url(#ah-inverted-indexes)"/>
+<line x1="292" y1="96" x2="320" y2="96" class="arr" marker-end="url(#ah-inverted-indexes)"/>
+<line x1="442" y1="96" x2="470" y2="96" class="arr" marker-end="url(#ah-inverted-indexes)"/>
+<text x="549" y="150" text-anchor="middle" class="sub">stored as a tsvector, indexed by GIN</text>
+<text x="320" y="36" text-anchor="middle" class="sub">the same four steps run on the query, so both sides end up in the same shape</text>
+</svg>
+</div>
+
+<p>Now search. <code>@@</code> is the match operator, and the query goes through the same steps:</p>
+
+<pre><code>SELECT id, title FROM articles
+WHERE to_tsvector('english', title || ' ' || body)
+      @@ plainto_tsquery('english', 'refunded order');
+
+ id |     title
+ ---+---------------
+  1 | Refund policy</code></pre>
+
+<p>Row 1 matched although it holds neither word as typed: <em>refunding</em> and <em>orders</em> stemmed to <code>refund</code> and <code>order</code>, and so did the query. Row 2 has <code>order</code> but not <code>refund</code>, and <code>plainto_tsquery</code> joins words with AND, so it is out.</p>
+
+<!-- section: internals -->
+<p>Building the index is running that pipeline over every row, then collecting the results word by word.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 290" role="img" aria-label="Three documents on the left feed into posting lists in the middle: refund points to documents 1 and 3, order points to 1 and 2, pay points to 3. A search for refund and order intersects the two lists and returns document 1 only.">
+<defs><marker id="ah2-inverted-indexes" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<text x="20" y="22" class="sub">documents</text>
+<rect x="20" y="34" width="118" height="36" rx="6" class="box"/><text x="79" y="57" text-anchor="middle" class="sub">1 · refund, order</text>
+<rect x="20" y="86" width="118" height="36" rx="6" class="box"/><text x="79" y="109" text-anchor="middle" class="sub">2 · order, run, late</text>
+<rect x="20" y="138" width="118" height="36" rx="6" class="box"/><text x="79" y="161" text-anchor="middle" class="sub">3 · pay, fail, refund</text>
+
+<text x="215" y="22" class="sub">posting lists, sorted by word</text>
+<rect x="215" y="34" width="150" height="34" rx="6" class="box hi"/><text x="290" y="56" text-anchor="middle" class="sub">refund &rarr; 1, 3</text>
+<rect x="215" y="78" width="150" height="34" rx="6" class="box hi"/><text x="290" y="100" text-anchor="middle" class="sub">order &rarr; 1, 2</text>
+<rect x="215" y="122" width="150" height="34" rx="6" class="box"/><text x="290" y="144" text-anchor="middle" class="sub">pay &rarr; 3</text>
+<rect x="215" y="166" width="150" height="34" rx="6" class="box"/><text x="290" y="188" text-anchor="middle" class="sub">run, late, fail &hellip;</text>
+
+<line x1="138" y1="52" x2="212" y2="50" class="arr dim" marker-end="url(#ah2-inverted-indexes)"/>
+<line x1="138" y1="56" x2="212" y2="94" class="arr dim" marker-end="url(#ah2-inverted-indexes)"/>
+<line x1="138" y1="104" x2="212" y2="96" class="arr dim" marker-end="url(#ah2-inverted-indexes)"/>
+<line x1="138" y1="152" x2="212" y2="140" class="arr dim" marker-end="url(#ah2-inverted-indexes)"/>
+<line x1="138" y1="148" x2="212" y2="58" class="arr dim" marker-end="url(#ah2-inverted-indexes)"/>
+
+<rect x="420" y="46" width="200" height="56" rx="8" class="box hi"/>
+<text x="520" y="70" text-anchor="middle" class="lbl">search: refund AND order</text>
+<text x="520" y="88" text-anchor="middle" class="sub">read both lists, keep ids in both</text>
+
+<line x1="365" y1="52" x2="416" y2="62" class="arr" marker-end="url(#ah2-inverted-indexes)"/>
+<line x1="365" y1="94" x2="416" y2="84" class="arr" marker-end="url(#ah2-inverted-indexes)"/>
+
+<rect x="440" y="136" width="160" height="40" rx="8" class="box"/>
+<text x="520" y="153" text-anchor="middle" class="lbl">{1, 3} &cap; {1, 2} = {1}</text>
+<text x="520" y="169" text-anchor="middle" class="sub">one row to fetch</text>
+<line x1="520" y1="102" x2="520" y2="134" class="arr" marker-end="url(#ah2-inverted-indexes)"/>
+
+<rect x="440" y="208" width="160" height="40" rx="8" class="box"/>
+<text x="520" y="225" text-anchor="middle" class="lbl">rank and return</text>
+<text x="520" y="241" text-anchor="middle" class="sub">by how often and where</text>
+<line x1="520" y1="176" x2="520" y2="206" class="arr" marker-end="url(#ah2-inverted-indexes)"/>
+</svg>
+</div>
+
+<ol>
+<li><strong>On write,</strong> the row's text is split, cleaned and stemmed into a <code>tsvector</code>.</li>
+<li>Each word is added to its posting list with the row's address. The words themselves sit in a B-tree, so finding one word's list is a normal tree walk.</li>
+<li><strong>On search,</strong> the query is processed the same way, giving a small set of words.</li>
+<li>Each word's posting list is read. AND intersects them, OR unions them, starting from the shortest list because that bounds the work.</li>
+<li>What survives is a set of row addresses. The database fetches those rows and ranks them.</li>
+</ol>
+<p class="note">GIN doesn't write a posting list on every insert &mdash; that would be slow, because one row touches as many lists as it has distinct words. New entries go to a small <strong>pending list</strong> first and are folded in later, which is why a search right after a bulk load can be slower than normal.</p>
+
+<!-- section: types -->
+<h4>GIN</h4>
+<p>The default for text search. One entry per word, pointing at every row that has it. Fast to search, slower to write, and the right answer unless you have a reason.</p>
+
+<h4>GiST</h4>
+<p>Stores a fixed-size signature per document instead of its words. Smaller and quicker to update, but signatures collide, so it returns false matches the database must recheck against the real rows. Worth it when the table is small or changes constantly.</p>
+
+<h4>Trigram (pg_trgm)</h4>
+<p>Indexes every three-letter run instead of words: <code>refund</code> becomes <code>ref</code>, <code>efu</code>, <code>fun</code>&hellip; That makes it the one option that serves <code>LIKE '%fund%'</code> and typo-tolerant matching. It has no idea what a word means, and the index is large.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>GIN</th><th>GiST</th><th>Trigram</th></tr>
+<tr><td>Stores</td><td>Word &rarr; rows</td><td>A signature per row</td><td>Three-letter runs</td></tr>
+<tr><td>Search</td><td>Fastest</td><td>Slower, rechecks matches</td><td>Slower still</td></tr>
+<tr><td>Writes</td><td>Slowest</td><td>Fast</td><td>Slow</td></tr>
+<tr><td>Size</td><td>Large</td><td>Small</td><td>Largest</td></tr>
+<tr><td>Handles typos?</td><td>No</td><td>No</td><td>Yes</td></tr>
+<tr><td>Use for</td><td>Normal text search</td><td>Small or write-heavy tables</td><td>Substrings and fuzzy names</td></tr>
+</table></div>
+
+<!-- section: numbers -->
+<p><strong>Assumptions, made up:</strong> 1,000,000 articles, 2.5 KB of text each, about 150 distinct words left after stop words and stemming, 6 bytes to store one row address, disk read at 2 GB/s.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Working</th><th>Result</th></tr>
+<tr><td>Table size</td><td>1,000,000 &times; 2.5 KB</td><td><strong>2.5 GB</strong></td></tr>
+<tr><td><code>LIKE '%refund%'</code></td><td>2.5 GB &divide; 2 GB/s</td><td><strong>~1.25 s</strong>, every search</td></tr>
+<tr><td>Index entries</td><td>1,000,000 &times; 150</td><td><strong>150 million</strong></td></tr>
+<tr><td>Index size, before compression</td><td>150,000,000 &times; 6 bytes</td><td><strong>~900 MB</strong></td></tr>
+<tr><td>&ldquo;refund&rdquo; in 2% of rows</td><td>20,000 &times; 6 bytes</td><td><strong>120 kB</strong> to read</td></tr>
+</table></div>
+
+<p>The search reads about 120 kB instead of 2.5 GB. The bill arrives on writes: one article adds 150 entries across 150 posting lists, which is why GIN batches them through the pending list.</p>
+
+<!-- section: commands -->
+<h4>Set it up properly</h4>
+<pre><code>-- keep the processed text in a column: computed once
+ALTER TABLE articles ADD COLUMN tsv tsvector
+  GENERATED ALWAYS AS (
+    to_tsvector('english', title || ' ' || body)
+  ) STORED;
+
+CREATE INDEX articles_tsv_idx ON articles USING gin (tsv);</code></pre>
+<p>The database keeps a generated column up to date, and reading it is free. Indexing <code>to_tsvector(...)</code> directly also works, but every query must then repeat that exact expression or the index is skipped.</p>
+
+<h4>Check it is used, and rank</h4>
+<pre><code>EXPLAIN ANALYZE
+SELECT title, ts_rank(tsv, q) AS rank
+FROM articles, plainto_tsquery('english', 'refund order') q
+WHERE tsv @@ q ORDER BY rank DESC LIMIT 10;
+
+ Bitmap Heap Scan on articles
+   Recheck Cond: (tsv @@ q)
+   -&gt;  Bitmap Index Scan on articles_tsv_idx
+         Index Cond: (tsv @@ q)</code></pre>
+<p>Read it inside out. <code>Bitmap Index Scan</code> means the posting lists were read into a set of row addresses; <code>Bitmap Heap Scan</code> then fetches those rows in page order. A <code>Seq Scan</code> means the index was skipped &mdash; usually a mismatched expression, or a configuration other than <code>'english'</code>.</p>
+
+<h4>Query shapes and size</h4>
+<pre><code>SELECT websearch_to_tsquery('english', '"order status" -refund');
+ -- 'order' &lt;-&gt; 'status' &amp; !'refund'   (phrase, and a word excluded)
+
+SELECT pg_size_pretty(pg_relation_size('articles_tsv_idx'));</code></pre>
+<p><code>websearch_to_tsquery</code> takes what a user actually types, quotes and minus signs included, and never errors on odd input. <code>to_tsquery</code> wants proper operators and throws on bad syntax, so never hand it raw user text.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Read speed vs write cost.</strong> One insert touches one B-tree entry, but 150 posting lists. Text-heavy tables with constant writes feel this.</li>
+<li><strong>Size vs precision.</strong> GIN stores every word and is large. GiST stores a signature, stays small, and pays with false matches it must recheck.</li>
+<li><strong>Stemming vs exactness.</strong> Stemming makes <em>running</em> find <em>run</em>, and also makes <em>universe</em> and <em>university</em> both stem to <code>univers</code>. You cannot have one without the other.</li>
+<li><strong>In your database vs a search engine.</strong> Postgres keeps search next to your rows, in the same transaction, with no sync to go wrong. Elasticsearch gives better ranking and scale, and a second system to keep in step.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Reach for it when</h4>
+<ul>
+<li>Users type words to find rows: articles, product descriptions, tickets, logs.</li>
+<li>You need word matching rather than value matching, and want <em>refunded</em> to find <em>refund</em>.</li>
+<li>The data is already in Postgres and the search is a feature, not the product.</li>
+</ul>
+
+<h4>You don't need one when</h4>
+<ul>
+<li><strong>The column is a short exact value.</strong> Codes, emails, slugs and tags want a plain B-tree.</li>
+<li><strong>The table is small.</strong> A few thousand rows scan fast enough, and the index would just slow writes.</li>
+<li><strong>You search by meaning, not words.</strong> &ldquo;How do I stop paying you&rdquo; shares no word with &ldquo;Cancel your subscription&rdquo;; that needs vector search.</li>
+<li><strong>Search is the product.</strong> If ranking, facets and typo handling are what you sell, a real search engine earns its keep.</li>
+</ul>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Indexing an expression, then querying a different one.</strong> An index on <code>to_tsvector('english', body)</code> does nothing for a query on <code>title || body</code>. The plan quietly goes back to a full scan.</li>
+<li><strong>Using the <code>simple</code> configuration by accident.</strong> It skips stemming, so <em>refunded</em> no longer finds <em>refund</em> and nobody can tell why results got worse.</li>
+<li><strong>Passing user text to <code>to_tsquery</code>.</strong> A stray <code>&amp;</code> or quote throws a syntax error at the user. Use <code>plainto_tsquery</code> instead.</li>
+<li><strong>Sorting by rank over a huge match set.</strong> <code>ts_rank</code> runs on every matching row before <code>LIMIT</code> helps. A query matching 500,000 rows ranks all of them.</li>
+<li><strong>Expecting substring matches.</strong> A word index can't find <code>'%fund%'</code> inside <em>refund</em>. Trigrams are for that.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<ul>
+<li><strong>What makes it &ldquo;inverted&rdquo;?</strong> The normal direction is row &rarr; words. The index stores word &rarr; rows, so one lookup gives every document with that word.</li>
+<li><strong>How is an AND of two words answered?</strong> Read both posting lists and keep the addresses in both, starting from the shorter list, since the answer can't be bigger than it.</li>
+<li><strong>Why is writing slower?</strong> One row adds an entry for every distinct word it holds. GIN softens that by batching new entries into a pending list.</li>
+<li><strong>GIN or GiST?</strong> GIN for read-heavy text search. GiST when the table is small or written to constantly, and false matches can be rechecked.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>How would you handle typos and partial words?</li>
+<li>When would you move search out of the database altogether?</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>In most systems this is the whole of search, and often enough. When it isn't, the next step is a search service fed by a queue of document changes &mdash; and you now own the lag between a write landing and the search seeing it. Bigger systems run keyword and vector search side by side and merge the lists.</p>
+
+<!-- section: revision -->
+<ul>
+<li>An inverted index stores word &rarr; rows instead of row &rarr; words. Each word's list of rows is a posting list.</li>
+<li><code>LIKE '%word%'</code> reads the whole table, matches the wrong things and can't rank. The index fixes all three.</li>
+<li>Text is split, stripped of stop words and stemmed before storage, and the query goes through the same steps so both sides match.</li>
+<li>In PostgreSQL that is a <code>tsvector</code> column with a GIN index, searched with <code>@@</code>. AND intersects posting lists, OR unions them, starting from the shortest.</li>
+<li>Reading is cheap and writing is not: one row adds an entry per distinct word, batched through GIN's pending list.</li>
+<li>GIN is the default. GiST is smaller and rechecks false matches. Trigram indexes handle substrings and typos.</li>
+<li>Index an expression and every query must repeat it exactly, or the index is skipped. Use <code>plainto_tsquery</code> or <code>websearch_to_tsquery</code> for user input; <code>to_tsquery</code> throws on bad syntax.</li>
+<li>It matches words, not meaning. A question phrased differently from the answer needs vector search.</li>
+</ul>

@@ -1,0 +1,277 @@
+<!--
+title: Doctor Appointment Booking
+summary: Patients search for a doctor nearby, see free slots and book one. The hard parts are keeping search fast while availability changes all day, and making sure one slot can never go to two patients.
+category: Booking
+order: 30
+related: inverted-indexes, indexing-strategies, load-balancer, pagination, redundancy-fault-tolerance
+-->
+
+<!-- section: problem -->
+<p>A patient opens the app and types &ldquo;dermatologist near me&rdquo;. They get a list of doctors with a fee, a distance and the next free slot. They tap a doctor, see that day's open times, pick 4:30 pm and get a confirmation. A reminder arrives the evening before.</p>
+<p>Practo and Zocdoc are the well-known versions. From the outside it looks like a search box and a calendar. The interesting part is that those two things pull in opposite directions: search wants data copied everywhere so it is fast, and booking wants one copy of the truth so a slot can't be sold twice.</p>
+<p class="note">One-line version: a search problem and a correctness problem sharing one product. Search is read-heavy and can be slightly stale; booking is low-volume and must never be wrong.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Search doctors by specialty and city, filtered to those with a free slot on a date.</li>
+<li>Show a doctor's free slots for a chosen day.</li>
+<li>Book a free slot. One slot goes to exactly one patient.</li>
+<li>Cancel or reschedule, which puts the slot back.</li>
+<li>Send a reminder before the appointment.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Search:</strong> under 300 ms at the 95th percentile. Stale by a minute is fine.</li>
+<li><strong>Booking:</strong> never double-booked. This is the one thing we will not trade away.</li>
+<li><strong>Confirmation:</strong> the patient knows within 2 seconds whether they got the slot.</li>
+<li><strong>Uptime:</strong> 99.9%. Search staying up matters more than booking staying up.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Payments and refunds.</strong> A different system with its own rules; we only mark an appointment paid.</li>
+<li><strong>Video consultations.</strong> Streaming is its own design.</li>
+<li><strong>Medical records and prescriptions.</strong> Regulated data, kept well away from a search index.</li>
+<li><strong>Doctor-side clinic management.</strong> We take the slots a clinic gives us and nothing more.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong>, made up: 200,000 doctors, 30 slots each per day, slots opened 60 days ahead, 20 million searches a day, 500,000 bookings a day, peak 5&times; average, 100 bytes per slot row and 500 bytes per appointment.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Working</th><th>Result</th></tr>
+<tr><td>Search rate</td><td>20,000,000 &divide; 86,400</td><td><strong>230/s</strong></td></tr>
+<tr><td>Peak search</td><td>230 &times; 5</td><td><strong>1,150/s</strong></td></tr>
+<tr><td>Booking rate</td><td>500,000 &divide; 86,400</td><td><strong>6/s</strong></td></tr>
+<tr><td>Peak booking</td><td>6 &times; 5</td><td><strong>30/s</strong></td></tr>
+<tr><td>Read to write</td><td>20m searches &divide; 500k bookings</td><td><strong>40 : 1</strong></td></tr>
+<tr><td>Live slots</td><td>200,000 &times; 30 &times; 60 days</td><td><strong>360 million rows</strong>, 36 GB</td></tr>
+<tr><td>Appointments a year</td><td>500,000 &times; 365 &times; 500 bytes</td><td><strong>91 GB/year</strong></td></tr>
+</table></div>
+
+<p>Two numbers decide the whole design. <strong>Peak booking is 30 writes a second</strong> &mdash; nothing for one PostgreSQL machine, so we can afford the strictest correctness we like. And <strong>reads outnumber writes 40 to 1</strong>, so search gets its own copy of the data rather than fighting the booking database for it.</p>
+
+<!-- section: api -->
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>GET /v1/doctors</code></td><td>Specialty, city, date, cursor</td><td>A page of doctors with the next free slot</td></tr>
+<tr><td><code>GET /v1/doctors/{id}/slots</code></td><td>Date</td><td>That day's free slot times</td></tr>
+<tr><td><code>POST /v1/appointments</code></td><td>Slot ID, patient ID, idempotency key</td><td><code>201</code> with the appointment, or <code>409</code></td></tr>
+<tr><td><code>DELETE /v1/appointments/{id}</code></td><td>&mdash;</td><td><code>204</code>, slot goes back</td></tr>
+<tr><td><code>PATCH /v1/appointments/{id}</code></td><td>New slot ID</td><td>The moved appointment, or <code>409</code></td></tr>
+</table></div>
+
+<pre><code>POST /v1/appointments
+{ "slotId": 90183371, "patientId": 42,
+  "idempotencyKey": "patient-42-slot-90183371" }
+
+201 Created -&gt; { "appointmentId": "a7c…", "startsAt": "2026-11-20T16:30:00+05:30" }
+409 Conflict -&gt; { "error": "slot_taken", "nextFree": "2026-11-20T17:00:00+05:30" }</code></pre>
+
+<ul>
+<li><strong>Book by slot ID, not by time.</strong> The server already decided what a slot is. A client sending a time would have to be trusted to round it the same way.</li>
+<li><strong>The idempotency key</strong> is a name the client invents for this one booking. A retry after a dropped connection returns the same appointment instead of making a second one.</li>
+<li><strong><code>409</code> is a normal answer</strong>, not a failure. Someone was faster. We hand back the next free time so the app can offer it.</li>
+</ul>
+
+<!-- section: data -->
+<p><strong>PostgreSQL</strong> holds the truth. The one requirement we cannot bend &mdash; a slot going to exactly one patient &mdash; is a uniqueness rule, and a relational database enforces that for us at 30 writes a second without breaking a sweat.</p>
+
+<pre><code>CREATE TABLE slots (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  doctor_id  BIGINT NOT NULL REFERENCES doctors(id),
+  starts_at  TIMESTAMPTZ NOT NULL,
+  held_until TIMESTAMPTZ,                    -- a short hold while booking
+  UNIQUE (doctor_id, starts_at)
+);
+
+CREATE TABLE appointments (
+  id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  slot_id     BIGINT NOT NULL REFERENCES slots(id),
+  patient_id  BIGINT NOT NULL,
+  status      TEXT NOT NULL,                 -- booked | cancelled
+  idem_key    TEXT NOT NULL UNIQUE
+);
+
+-- the whole guarantee: one live booking per slot, cancelled rows kept
+CREATE UNIQUE INDEX appt_one_per_slot ON appointments (slot_id)
+  WHERE status = 'booked';
+
+CREATE INDEX slots_free_idx ON slots (doctor_id, starts_at)
+  WHERE held_until IS NULL;
+CREATE INDEX appt_patient_idx ON appointments (patient_id, id DESC);</code></pre>
+
+<p><code>appt_one_per_slot</code> is the design. Two bookings for one slot are not a bug we catch in code &mdash; the second <code>INSERT</code> simply fails. Cancelling sets <code>status</code> to <code>cancelled</code>, which drops the row out of that index and frees the slot, while keeping the history.</p>
+<p>Search runs on a separate <strong>search index</strong> (Elasticsearch or OpenSearch), one document per doctor, holding the fields people filter on plus a summary of when they are next free. See <em>Inverted Indexes</em> for how that index works.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 330" role="img" aria-label="Clients reach a load balancer, which sends search requests to a search service backed by a search index and a cache, and booking requests to a booking service backed by PostgreSQL. A change feed copies slot changes from PostgreSQL into the search index, and a queue feeds a reminder worker.">
+<defs><marker id="ah-doctor-appointment-booking" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="14" y="128" width="96" height="48" rx="8" class="box"/>
+<text x="62" y="150" text-anchor="middle" class="lbl">Clients</text>
+<text x="62" y="167" text-anchor="middle" class="sub">app, web</text>
+
+<rect x="140" y="128" width="96" height="48" rx="8" class="box"/>
+<text x="188" y="150" text-anchor="middle" class="lbl">Load</text>
+<text x="188" y="167" text-anchor="middle" class="sub">balancer</text>
+
+<rect x="276" y="52" width="130" height="48" rx="8" class="box hi"/>
+<text x="341" y="74" text-anchor="middle" class="lbl">Search service</text>
+<text x="341" y="91" text-anchor="middle" class="sub">1,150/s at peak</text>
+
+<rect x="276" y="200" width="130" height="48" rx="8" class="box hi"/>
+<text x="341" y="222" text-anchor="middle" class="lbl">Booking service</text>
+<text x="341" y="239" text-anchor="middle" class="sub">30/s at peak</text>
+
+<rect x="446" y="14" width="124" height="44" rx="8" class="box"/>
+<text x="508" y="34" text-anchor="middle" class="lbl">Cache</text>
+<text x="508" y="50" text-anchor="middle" class="sub">hot searches, 60 s</text>
+
+<rect x="446" y="76" width="124" height="48" rx="8" class="box"/>
+<text x="508" y="98" text-anchor="middle" class="lbl">Search index</text>
+<text x="508" y="115" text-anchor="middle" class="sub">one doc per doctor</text>
+
+<rect x="446" y="196" width="124" height="56" rx="8" class="box"/>
+<text x="508" y="218" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="508" y="235" text-anchor="middle" class="sub">slots, appointments</text>
+<text x="508" y="248" text-anchor="middle" class="sub">the truth</text>
+
+<rect x="276" y="276" width="130" height="44" rx="8" class="box"/>
+<text x="341" y="296" text-anchor="middle" class="lbl">Queue</text>
+<text x="341" y="312" text-anchor="middle" class="sub">reminders</text>
+
+<rect x="446" y="276" width="124" height="44" rx="8" class="box"/>
+<text x="508" y="296" text-anchor="middle" class="lbl">Reminder worker</text>
+<text x="508" y="312" text-anchor="middle" class="sub">push, SMS</text>
+
+<line x1="110" y1="152" x2="136" y2="152" class="arr" marker-end="url(#ah-doctor-appointment-booking)"/>
+<line x1="236" y1="142" x2="272" y2="88" class="arr" marker-end="url(#ah-doctor-appointment-booking)"/>
+<line x1="236" y1="162" x2="272" y2="216" class="arr" marker-end="url(#ah-doctor-appointment-booking)"/>
+<line x1="406" y1="64" x2="442" y2="42" class="arr dim" marker-end="url(#ah-doctor-appointment-booking)"/>
+<line x1="406" y1="86" x2="442" y2="96" class="arr" marker-end="url(#ah-doctor-appointment-booking)"/>
+<line x1="406" y1="224" x2="442" y2="222" class="arr" marker-end="url(#ah-doctor-appointment-booking)"/>
+<line x1="406" y1="298" x2="442" y2="298" class="arr dim" marker-end="url(#ah-doctor-appointment-booking)"/>
+<line x1="341" y1="248" x2="341" y2="274" class="arr dim" marker-end="url(#ah-doctor-appointment-booking)"/>
+
+<path d="M508,194 L508,140" class="arr warnline" marker-end="url(#ah-doctor-appointment-booking)"/>
+<text x="596" y="166" text-anchor="end" class="sub">change feed: slot taken or freed</text>
+</svg>
+</div>
+
+<p><strong>A search</strong> (1): the load balancer picks a search service box. It checks the cache for this specialty, city and date. On a miss it asks the search index, which returns 20 doctors already filtered to those free that day, and caches the answer for 60 seconds.</p>
+<p><strong>A booking</strong> (2): the booking service opens one transaction against PostgreSQL, inserts the appointment row and commits. The unique constraint decides the winner. The commit also writes a job to the queue for the reminder worker, and the change feed carries &ldquo;this slot is gone&rdquo; across to the search index within a few seconds.</p>
+
+<!-- section: deepDives -->
+<h4>How do two patients not get the same slot?</h4>
+<p>Two requests arrive within a millisecond for slot 90183371.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="Two approaches compared. Checking whether a slot is free and then inserting lets both requests see it free and both succeed. Inserting against a unique constraint lets the first commit win and the second fail with a duplicate key error.">
+<text x="20" y="20" class="lbl">Check, then insert &mdash; broken</text>
+<rect x="20" y="32" width="128" height="40" rx="6" class="box"/><text x="84" y="56" text-anchor="middle" class="sub">A: is it free? yes</text>
+<rect x="166" y="32" width="128" height="40" rx="6" class="box"/><text x="230" y="56" text-anchor="middle" class="sub">B: is it free? yes</text>
+<rect x="312" y="32" width="120" height="40" rx="6" class="box warn"/><text x="372" y="56" text-anchor="middle" class="sub">A inserts</text>
+<rect x="450" y="32" width="120" height="40" rx="6" class="box warn"/><text x="510" y="56" text-anchor="middle" class="sub">B inserts too</text>
+<text x="300" y="92" text-anchor="middle" class="sub">both patients turn up at 4:30</text>
+
+<text x="20" y="140" class="lbl">Insert against a unique constraint &mdash; safe</text>
+<rect x="20" y="152" width="150" height="44" rx="6" class="box"/><text x="95" y="172" text-anchor="middle" class="sub">A: INSERT slot_id</text><text x="95" y="188" text-anchor="middle" class="sub">commits first</text>
+<rect x="196" y="152" width="150" height="44" rx="6" class="box hi"/><text x="271" y="172" text-anchor="middle" class="sub">unique index on</text><text x="271" y="188" text-anchor="middle" class="sub">slot_id where booked</text>
+<rect x="372" y="152" width="110" height="44" rx="6" class="box"/><text x="427" y="178" text-anchor="middle" class="sub">A &rarr; 201</text>
+<rect x="500" y="152" width="110" height="44" rx="6" class="box warn"/><text x="555" y="172" text-anchor="middle" class="sub">B &rarr; duplicate</text><text x="555" y="188" text-anchor="middle" class="sub">key &rarr; 409</text>
+</svg>
+</div>
+
+<p>Reading first and writing second is wrong however carefully you code it: both requests read before either writes. The options are a row lock (<code>SELECT ... FOR UPDATE</code>) or letting the database refuse the second write. We take the second. It is one <code>INSERT</code>, it holds no lock while the request thinks, and the guarantee lives in the schema where nobody can forget it. The duplicate key error becomes a <code>409</code>.</p>
+
+<h4>How does search stay fast while availability changes all day?</h4>
+<p>Filtering on &ldquo;free this Thursday&rdquo; means joining 200,000 doctors against 360 million slot rows, over and over.</p>
+<ul>
+<li><strong>Query PostgreSQL live.</strong> Always right, far too slow at 1,150 searches a second, and it puts read load on the database that must stay healthy for bookings.</li>
+<li><strong>Index every slot as its own document.</strong> Exact, but 6 million documents change every day and the index never stops rewriting itself.</li>
+<li><strong>Index one document per doctor</strong>, carrying a small summary: the dates they have anything free, and the next free time. 200,000 documents, updated only when a doctor's first free slot on a day changes.</li>
+</ul>
+<p>We take the third. Search is then one index lookup with no join. The cost is staleness: for a few seconds a listing can show a slot that was just taken. The booking <code>409</code> is what catches that, which is why it is a normal answer and not an error.</p>
+
+<h4>What stops a slot being taken while a patient is filling in the form?</h4>
+<p>Without a hold, patients lose the slot at the last step and blame the app. With a long hold, bad actors park every slot. We set <code>held_until</code> to two minutes when the booking screen opens; free slot queries skip held rows, and a sweeper clears holds that expire. Two minutes is short enough that a stuck hold costs one slot for one cycle.</p>
+
+<!-- section: scaling -->
+<p>Take the numbers from <em>Scale and numbers</em> and multiply.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Growth</th><th>What breaks first</th><th>How you notice</th><th>Fix</th></tr>
+<tr><td>10&times; &mdash; 11,500 searches/s</td><td>Search nodes run out of CPU</td><td>Search p95 climbs past 300 ms, cache hit rate falls</td><td>More search replicas behind the load balancer; cache by city and specialty</td></tr>
+<tr><td>10&times; &mdash; 300 bookings/s</td><td>Still fine. PostgreSQL has not noticed</td><td>&mdash;</td><td>Nothing. Watch connection count</td></tr>
+<tr><td>10&times; &mdash; 3.6 billion slot rows</td><td>The slots table and its index stop fitting in memory</td><td>Slot queries start reading disk; write latency rises</td><td>Partition <code>slots</code> by month and drop past months</td></tr>
+<tr><td>100&times; &mdash; 3,000 bookings/s</td><td>One write machine is now the limit</td><td>Lock waits and connection queueing on the primary</td><td>Shard by <code>doctor_id</code>. A booking only ever touches one doctor, so no transaction crosses shards</td></tr>
+<tr><td>100&times; &mdash; the change feed</td><td>Index updates fall behind</td><td>Feed lag grows; <code>409</code> rate rises</td><td>Batch updates per doctor and partition the feed by doctor</td></tr>
+</table></div>
+
+<p>The pleasant surprise is that the part everyone worries about &mdash; booking correctness &mdash; is the last thing to break. Sharding by <code>doctor_id</code> works because the unique constraint only ever covers one doctor's slots.</p>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the patient sees</th><th>What the system does</th></tr>
+<tr><td>Search index down</td><td>Search works, no availability filter</td><td>Fall back to a cached doctor list from PostgreSQL, with a &ldquo;times may have changed&rdquo; note</td></tr>
+<tr><td>Cache down</td><td>Search a little slower</td><td>Every search goes to the index. It is sized for this</td></tr>
+<tr><td>PostgreSQL primary down</td><td>Browsing works, booking returns a clear error</td><td>Promote a replica; bookings are refused rather than guessed at</td></tr>
+<tr><td>Booking service crashes mid-request</td><td>No confirmation; a retry works</td><td>The transaction never committed, so the slot was never taken. The idempotency key makes the retry safe</td></tr>
+<tr><td>Change feed stalls</td><td>Some listed slots are already gone</td><td>Booking still returns <code>409</code> with the next free time. Alert on feed lag</td></tr>
+<tr><td>Reminder worker backlog</td><td>Reminders arrive late or not at all</td><td>Queue holds them; drop reminders whose appointment has passed</td></tr>
+<tr><td>Traffic spike</td><td>Slower search, booking unaffected</td><td>Rate limit per IP, serve cached searches, keep booking capacity reserved</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Separate search index vs one database.</strong> We got fast search and protected the booking database. We pay with a copy that can be stale and a feed that can break.</li>
+<li><strong>Unique index vs row lock.</strong> The index is simpler and holds no lock while the user thinks, but losers find out only after trying, so the client must treat <code>409</code> as a normal path.</li>
+<li><strong>Short holds vs instant booking.</strong> Holds stop the last-step disappointment and make a slot briefly invisible to everyone else.</li>
+<li><strong>SQL vs NoSQL.</strong> At 30 writes a second there is no scale reason for NoSQL, and we would have to build uniqueness ourselves. We would revisit this past 100&times;.</li>
+<li><strong>Per-doctor summaries vs per-slot documents.</strong> Far fewer index updates, and we can't answer &ldquo;free at exactly 4:30 pm&rdquo; from search alone &mdash; that needs the slots call.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope, 3 min.</strong> Five things it must do, and the list of what you are leaving out.</li>
+<li><strong>Numbers, 5 min.</strong> Get to 1,150 searches a second against 30 bookings a second. That ratio drives everything after it.</li>
+<li><strong>API and schema, 7 min.</strong> Put the unique index on <code>appointments.slot_id</code> and say out loud why it is there.</li>
+<li><strong>Diagram, 5 min.</strong> Draw it, then walk a search and a booking through it.</li>
+<li><strong>Deep dive, 10 min.</strong> Double booking first. It is the question they are waiting for.</li>
+<li><strong>Scaling and failure, 5 min.</strong> 10&times; and 100&times;, then what the patient sees when each box dies.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>One city or many, and do we need distance ranking?</li>
+<li>Are payments part of booking, or separate?</li>
+<li>Can a doctor overbook on purpose, the way clinics really work?</li>
+<li>How far ahead can slots be booked?</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>What if the clinic cancels?</strong> Free the slot, mark the appointment cancelled, notify through the same queue as reminders.</li>
+<li><strong>How do you stop a bot grabbing every slot?</strong> Rate limit bookings per patient and per IP, and cap the number of live holds.</li>
+<li><strong>Timezones?</strong> Store <code>TIMESTAMPTZ</code>, show in the clinic's local time, since that is the time the patient has to be there.</li>
+<li><strong>Would you ever allow a double booking?</strong> Only if the product asks for it. Then it becomes a count per slot, not a unique row.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>Two problems in one product: search is read-heavy and may be stale, booking is tiny and must be exactly right.</li>
+<li>Made-up numbers: 1,150 searches a second at peak against 30 bookings a second, a 40 to 1 read-to-write ratio.</li>
+<li>Those 30 writes a second mean one PostgreSQL machine can hold the truth, so we can afford the strictest correctness.</li>
+<li>A unique index on <code>appointments.slot_id</code>, limited to live bookings, is the no-double-booking guarantee. Checking first and inserting second is always a race.</li>
+<li>The loser of that race gets a <code>409</code> with the next free time. That is a normal answer, not an error.</li>
+<li>Search runs on its own index, one document per doctor with a summary of when they are next free &mdash; 200,000 documents instead of 6 million slot changes a day.</li>
+<li>A change feed keeps that index close to the database, and the staleness it leaves is what the <code>409</code> catches.</li>
+<li>A two-minute hold on a slot stops patients losing it at the last step; a sweeper clears holds that expire.</li>
+<li>At 10&times; search nodes and the slots table break first, not bookings. At 100&times; shard by <code>doctor_id</code>, since no booking crosses doctors.</li>
+<li>When the database is down, bookings are refused rather than guessed at. Browsing carries on from the search index.</li>
+</ul>
