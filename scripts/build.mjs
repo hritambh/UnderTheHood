@@ -93,7 +93,7 @@ function topbar(root, hubTitle, withSidebar) {
       <div class="read-panel" id="readPanel" hidden>
         <label class="read-row"><span><strong>Reading mode</strong><small>A warm tint that is easier on the eyes.</small></span><input type="checkbox" class="switch" id="readOn"></label>
         <label class="read-row col"><span>Intensity <output id="readVal" for="readRange">50%</output></span><input type="range" id="readRange" min="10" max="100" step="5" value="50"></label>
-        <label class="read-row"><span><strong>Auto scroll</strong><small>Creeps the page down, page after page, until you scroll.</small></span><input type="checkbox" class="switch" id="scrollOn"></label>
+        <label class="read-row"><span><strong>Auto scroll</strong><small>Creeps the page down, page after page, until you scroll back up.</small></span><input type="checkbox" class="switch" id="scrollOn"></label>
         <label class="read-row col"><span>Speed <output id="scrollVal" for="scrollRange">40 px/s</output></span><input type="range" id="scrollRange" min="10" max="200" step="5" value="40"></label>
       </div>
     </div>

@@ -1,0 +1,210 @@
+<!--
+title: How RabbitMQ Routes a Message
+summary: A publisher never sends to a queue. It sends to an exchange, and bindings decide which queues get a copy. How channels, topic patterns, prefetch and acks fit together.
+category: RabbitMQ
+order: 40
+related: notification-service, saga-pattern, realtime-communication, redis-persistence
+-->
+
+<!-- section: what -->
+<p><strong>RabbitMQ</strong> is a message broker. One service hands it a message, it holds on to it, and another service picks it up later. The two never talk to each other and never have to be up at the same time.</p>
+<p>This topic looks inside one thing: <strong>how a published message finds its way to a consumer</strong>. That path is where queues, exchanges, bindings and channels all show up, and where most RabbitMQ confusion lives. Everything here is <strong>RabbitMQ 4</strong> speaking AMQP 0-9-1.</p>
+<p class="note">One-line version: you cannot publish to a queue. You publish to an exchange with a routing key, and the bindings decide which queues get a copy &mdash; maybe several, maybe none at all.</p>
+
+<!-- section: why -->
+<p>Three bugs stop being mysteries once you know this path.</p>
+<ul>
+<li><strong>&ldquo;The message vanished.&rdquo;</strong> It was published to an exchange with no matching binding. RabbitMQ dropped it and said nothing, because that is what it is meant to do.</li>
+<li><strong>&ldquo;One consumer is doing all the work.&rdquo;</strong> Nobody set a prefetch, so the first consumer to connect was handed thousands of messages at once.</li>
+<li><strong>&ldquo;We restarted the broker and lost everything.&rdquo;</strong> The queue was durable but the messages were not, which are two separate settings.</li>
+</ul>
+<p>It also answers the question every messaging interview asks: what exactly happens between <code>publish</code> and your handler running?</p>
+
+<!-- section: bigPicture -->
+<div class="diagram">
+<svg viewBox="0 0 640 250" role="img" aria-label="A publisher opens one TCP connection carrying several channels. Messages go to an exchange, which uses bindings to copy them into queues. Each queue pushes to its own consumers.">
+<defs><marker id="ah-rabbitmq-routing" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="12" y="84" width="92" height="52" rx="8" class="box"/>
+<text x="58" y="106" text-anchor="middle" class="lbl">Publisher</text>
+<text x="58" y="123" text-anchor="middle" class="sub">your service</text>
+
+<rect x="124" y="70" width="86" height="80" rx="8" class="box faintbox"/>
+<text x="167" y="62" text-anchor="middle" class="sub">1 TCP connection</text>
+<rect x="132" y="80" width="70" height="18" rx="4" class="box"/><text x="167" y="94" text-anchor="middle" class="sub">channel</text>
+<rect x="132" y="102" width="70" height="18" rx="4" class="box hi"/><text x="167" y="116" text-anchor="middle" class="sub">channel</text>
+<rect x="132" y="124" width="70" height="18" rx="4" class="box"/><text x="167" y="138" text-anchor="middle" class="sub">channel</text>
+
+<rect x="236" y="84" width="104" height="52" rx="8" class="box hi"/>
+<text x="288" y="106" text-anchor="middle" class="lbl">Exchange</text>
+<text x="288" y="123" text-anchor="middle" class="sub">orders, topic</text>
+
+<text x="378" y="60" text-anchor="middle" class="sub">bindings</text>
+<text x="378" y="76" text-anchor="middle" class="sub">pattern &rarr; queue</text>
+
+<rect x="428" y="24" width="112" height="44" rx="8" class="box"/>
+<text x="484" y="42" text-anchor="middle" class="lbl">Queue A</text>
+<text x="484" y="58" text-anchor="middle" class="sub">order.created.*</text>
+<rect x="428" y="88" width="112" height="44" rx="8" class="box"/>
+<text x="484" y="106" text-anchor="middle" class="lbl">Queue B</text>
+<text x="484" y="122" text-anchor="middle" class="sub">order.#</text>
+<rect x="428" y="152" width="112" height="44" rx="8" class="box faintbox"/>
+<text x="484" y="170" text-anchor="middle" class="lbl">Queue C</text>
+<text x="484" y="186" text-anchor="middle" class="sub">payment.#</text>
+
+<rect x="566" y="46" width="62" height="36" rx="8" class="box"/><text x="597" y="68" text-anchor="middle" class="sub">consumer</text>
+<rect x="566" y="110" width="62" height="36" rx="8" class="box"/><text x="597" y="132" text-anchor="middle" class="sub">consumer</text>
+
+<line x1="104" y1="110" x2="128" y2="110" class="arr" marker-end="url(#ah-rabbitmq-routing)"/>
+<line x1="210" y1="110" x2="232" y2="110" class="arr" marker-end="url(#ah-rabbitmq-routing)"/>
+<line x1="340" y1="100" x2="424" y2="52" class="arr" marker-end="url(#ah-rabbitmq-routing)"/>
+<line x1="340" y1="110" x2="424" y2="110" class="arr" marker-end="url(#ah-rabbitmq-routing)"/>
+<line x1="340" y1="124" x2="424" y2="172" class="arr faint"/>
+<line x1="540" y1="48" x2="562" y2="60" class="arr dim" marker-end="url(#ah-rabbitmq-routing)"/>
+<line x1="540" y1="112" x2="562" y2="124" class="arr dim" marker-end="url(#ah-rabbitmq-routing)"/>
+</svg>
+</div>
+
+<ul>
+<li><strong>Connection</strong> &mdash; one TCP connection to the broker. Expensive to open, so you keep it.</li>
+<li><strong>Channel</strong> &mdash; a lightweight conversation inside that connection. All publishing and consuming happens on a channel, and each thread gets its own.</li>
+<li><strong>Exchange</strong> &mdash; where messages are published. It stores nothing; it only decides where to copy them.</li>
+<li><strong>Binding</strong> &mdash; a rule joining an exchange to a queue, usually with a pattern to match against the routing key.</li>
+<li><strong>Queue</strong> &mdash; the thing that actually holds messages, in order, until someone acks them.</li>
+<li><strong>Consumer</strong> &mdash; subscribes on a channel and has messages pushed to it.</li>
+</ul>
+
+<!-- section: walkthrough -->
+<p>One message: an order was placed, published as <code>order.created.in</code> to the <code>orders</code> topic exchange.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 210" role="img" aria-label="The routing key order.created.in is split into three words and tested against three binding patterns. The star pattern matches because it stands for exactly one word, the hash pattern matches because it stands for any number of words, and the payment pattern does not match at all.">
+<text x="20" y="24" class="lbl">routing key</text>
+<rect x="150" y="8" width="90" height="26" rx="5" class="box hi"/><text x="195" y="26" text-anchor="middle" class="sub">order</text>
+<rect x="244" y="8" width="96" height="26" rx="5" class="box hi"/><text x="292" y="26" text-anchor="middle" class="sub">created</text>
+<rect x="344" y="8" width="70" height="26" rx="5" class="box hi"/><text x="379" y="26" text-anchor="middle" class="sub">in</text>
+<text x="430" y="26" class="sub">three words, split on the dots</text>
+
+<rect x="20" y="62" width="600" height="38" rx="6" class="box"/>
+<text x="34" y="86" class="sub">order.created.*</text>
+<text x="230" y="80" class="sub">* stands for exactly one word</text>
+<text x="230" y="94" class="sub">order &#10003;&nbsp;&nbsp;created &#10003;&nbsp;&nbsp;* takes &ldquo;in&rdquo;</text>
+<text x="600" y="86" text-anchor="end" class="lbl">match</text>
+
+<rect x="20" y="110" width="600" height="38" rx="6" class="box"/>
+<text x="34" y="134" class="sub">order.#</text>
+<text x="230" y="128" class="sub"># stands for any number of words</text>
+<text x="230" y="142" class="sub">order &#10003;&nbsp;&nbsp;# takes &ldquo;created.in&rdquo;</text>
+<text x="600" y="134" text-anchor="end" class="lbl">match</text>
+
+<rect x="20" y="158" width="600" height="38" rx="6" class="box faintbox"/>
+<text x="34" y="182" class="sub">payment.#</text>
+<text x="230" y="182" class="sub">first word is not &ldquo;payment&rdquo;</text>
+<text x="600" y="182" text-anchor="end" class="sub">no match</text>
+</svg>
+</div>
+
+<ol>
+<li>The publisher opens a channel on its existing connection and calls <code>basic.publish</code> with the exchange name, the routing key and the body.</li>
+<li>The exchange splits the routing key on dots and tests it against every binding. <code>*</code> stands for exactly one word, <code>#</code> for any number.</li>
+<li>Two bindings match, so the message is <strong>copied into Queue A and Queue B</strong>. Queue C never sees it. If nothing had matched, the message would be dropped &mdash; silently, unless the publisher set <code>mandatory</code>.</li>
+<li>Each queue appends its copy and, if the message is persistent, writes it to disk.</li>
+<li>Each queue pushes to its consumers in turn, as long as a consumer is under its <strong>prefetch</strong> limit &mdash; the cap on how many messages it may hold unacked.</li>
+<li>The consumer's handler runs. Until it acks, the message is still the queue's, just marked as out on loan.</li>
+<li><code>basic.ack</code> arrives and the queue drops its copy. A <code>nack</code> with requeue puts it back instead.</li>
+</ol>
+<p>Step 3 is the one to remember. One publish became two messages, and a third queue that looked related got nothing.</p>
+
+<!-- section: storage -->
+<div class="table-wrap"><table>
+<tr><th>What</th><th>Where it lives</th><th>What it holds</th></tr>
+<tr><td>Connection and channel state</td><td>Memory only</td><td>Open channels, consumer tags, how many messages are out unacked</td></tr>
+<tr><td>Exchanges and bindings</td><td>The broker's own metadata store, on disk and shared across the cluster</td><td>The routing table &mdash; survives a restart if declared durable</td></tr>
+<tr><td>Classic queue contents</td><td>Memory, with bodies written to disk when the message is persistent</td><td>The messages waiting, in order</td></tr>
+<tr><td>Quorum queue contents</td><td>A replicated log on disk, on every replica</td><td>The same messages, agreed by a majority before the publisher is told</td></tr>
+<tr><td>Unacked messages</td><td>Memory, tracked per channel</td><td>What each consumer is holding right now</td></tr>
+</table></div>
+<p>Two things follow. An exchange stores nothing, so declaring one costs almost nothing and there is nothing to &ldquo;fill up&rdquo;. And because unacked messages are tracked against a <em>channel</em>, closing that channel is what sends them back to the queue.</p>
+
+<!-- section: guarantees -->
+<h4>You can rely on</h4>
+<ul>
+<li><strong>At-least-once delivery</strong>, if you ack manually and handle redelivery. A message is only dropped from the queue once it is acked.</li>
+<li><strong>Order within one queue</strong>, as long as there is a single consumer and nothing is requeued.</li>
+<li><strong>Survival of a restart</strong>, if the queue is durable <em>and</em> the message is published as persistent. Both, not either.</li>
+<li><strong>Publisher confirms</strong>: once the broker acks your publish, it has taken responsibility for it.</li>
+</ul>
+
+<h4>You cannot rely on</h4>
+<ul>
+<li><strong>Exactly-once.</strong> A consumer that crashes after its work and before its ack will get the message again. Your handler has to cope with that.</li>
+<li><strong>Order with several consumers.</strong> Two consumers on one queue finish at their own pace, and a requeue puts a message back behind work that came after it.</li>
+<li><strong>A successful publish meaning a queued message.</strong> Without confirms, <code>basic.publish</code> returns as soon as it is written to the socket, matched nothing, and you never hear about it.</li>
+<li><strong>A queue being a backup.</strong> It holds messages until they are acked, not for as long as you might like.</li>
+</ul>
+
+<!-- section: performance -->
+<p>Everything cheap or costly here comes straight out of those seven steps.</p>
+<ul>
+<li><strong>Cheap:</strong> matching a routing key, copying to a few queues, a non-persistent message through memory. Steps 2 and 3 are pointer work.</li>
+<li><strong>Costly:</strong> step 4 when the message is persistent, because it has to reach disk; and a quorum queue, which also waits for a majority of replicas to agree.</li>
+<li><strong>Quietly costly:</strong> opening a connection per message instead of reusing one. The handshake dwarfs the publish.</li>
+<li><strong>The usual throughput killer:</strong> no prefetch. One consumer is handed the whole backlog, so the others sit idle and the queue's memory goes up with it.</li>
+</ul>
+<p><strong>Made-up example</strong> to show the shape, not a benchmark: if a non-persistent publish costs 1 unit of work, a persistent one costs perhaps 10 because of the disk write, and a quorum queue perhaps 20 because of the disk write plus the round trip to the replicas. Pick the weakest guarantee your use allows.</p>
+
+<!-- section: failure -->
+<p>The same message, and the broker is killed at different moments.</p>
+<ol>
+<li><strong>After the publish, before the exchange matched it.</strong> Without publisher confirms, the publisher believes it was sent. The message is gone. This is the gap confirms exist to close.</li>
+<li><strong>After the copies landed in the queues, with everything durable and persistent.</strong> On restart the queues are rebuilt from disk and both copies are there.</li>
+<li><strong>Same point, but the queue was not durable.</strong> The queue itself is gone on restart, along with everything in it.</li>
+<li><strong>After the consumer got the message, before it acked.</strong> The channel dies with the connection, so the queue takes the message back and gives it to whoever is next. The handler may already have run &mdash; this is exactly where at-least-once bites.</li>
+</ol>
+<p>So the only combination that survives a crash between publish and ack is: durable queue, persistent message, publisher confirms on, manual acks, and a handler that can safely run twice.</p>
+
+<!-- section: settings -->
+<div class="table-wrap"><table>
+<tr><th>Setting</th><th>What it changes</th><th>When you touch it</th></tr>
+<tr><td><code>basic.qos</code> prefetch</td><td>How many unacked messages one consumer may hold. Unlimited if never set</td><td>Always. Start low for slow handlers, higher for fast ones</td></tr>
+<tr><td>Queue <code>durable</code></td><td>Whether the queue itself survives a broker restart</td><td>On for anything that matters. It does not make the messages survive</td></tr>
+<tr><td>Message persistent</td><td>Whether the message is written to disk</td><td>Together with a durable queue, or neither has any effect</td></tr>
+<tr><td><code>confirm.select</code></td><td>The broker acks each publish once it has taken responsibility</td><td>When losing a publish silently is not acceptable</td></tr>
+<tr><td><code>mandatory</code></td><td>An unroutable message is returned to the publisher instead of dropped</td><td>While developing, to catch a binding you forgot</td></tr>
+<tr><td><code>x-queue-type: quorum</code></td><td>A replicated queue agreed by a majority. Replaces the mirrored queues removed in 4.0</td><td>When losing a queue with its node is not acceptable</td></tr>
+</table></div>
+
+<!-- section: tryIt -->
+<pre><code># one broker with the management UI, on http://localhost:15672 (guest/guest)
+docker run -it --rm --name rabbit -p 5672:5672 -p 15672:15672 rabbitmq:4-management
+
+# in another terminal, look at what is actually declared
+docker exec rabbit rabbitmqctl list_exchanges name type
+docker exec rabbit rabbitmqctl list_bindings source_name routing_key destination_name
+docker exec rabbit rabbitmqctl list_queues name messages messages_unacknowledged</code></pre>
+<p>Declare a topic exchange and two queues in the UI, bind them with <code>order.created.*</code> and <code>order.#</code>, then publish <code>order.created.in</code> from the exchange's own page. Watch <code>list_queues</code>: <strong>both</strong> counts go to 1 from one publish. Publish <code>payment.failed</code> and nothing moves anywhere &mdash; that is the silent drop, happening in front of you.</p>
+<p>Then consume one message without acking and watch <code>messages_unacknowledged</code> sit at 1. Close that connection and it goes straight back to <code>messages</code>.</p>
+
+<!-- section: myths -->
+<ul>
+<li><strong>&ldquo;You publish to a queue.&rdquo;</strong> You publish to an exchange. Clients that look like they publish to a queue are using the default exchange, a direct exchange with no name that every queue is automatically bound to by its own name.</li>
+<li><strong>&ldquo;A durable queue keeps your messages.&rdquo;</strong> It keeps the queue. The messages also have to be published as persistent.</li>
+<li><strong>&ldquo;An unroutable message is an error.&rdquo;</strong> It is dropped without a word unless you set <code>mandatory</code> or an alternate exchange.</li>
+<li><strong>&ldquo;A channel is just a connection.&rdquo;</strong> Many channels share one TCP connection, but an error on one closes that channel alone &mdash; and sharing a channel between threads is a well-known way to cause one.</li>
+<li><strong>&ldquo;Messages are delivered once.&rdquo;</strong> At-least-once is the promise. Plan for the same message arriving twice.</li>
+<li><strong>&ldquo;A topic exchange is slower because it matches patterns.&rdquo;</strong> Matching is cheap. What costs you is fanning one publish out into many queues, whatever the exchange type.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A publisher sends to an exchange with a routing key. Bindings decide which queues get a copy; exchanges store nothing.</li>
+<li>Four exchange types: direct, fanout, topic and headers. In a topic pattern <code>*</code> is exactly one word and <code>#</code> is any number.</li>
+<li>One publish can land in several queues, or in none. No match means a silent drop unless <code>mandatory</code> is set.</li>
+<li>A channel is a conversation inside one TCP connection. Unacked messages are tracked per channel, so closing it requeues them.</li>
+<li>Prefetch caps how many unacked messages a consumer holds. With no prefetch, one consumer takes the lot.</li>
+<li>A message stays in the queue, marked out on loan, until it is acked.</li>
+<li>Surviving a restart needs a durable queue <em>and</em> persistent messages. They are two separate settings.</li>
+<li>Publisher confirms close the gap between &ldquo;sent&rdquo; and &ldquo;the broker has it&rdquo;.</li>
+<li>Delivery is at-least-once, so a handler has to be safe to run twice.</li>
+<li>Quorum queues replicate through a majority and replaced the mirrored queues removed in RabbitMQ 4.0.</li>
+</ul>

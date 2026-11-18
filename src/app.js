@@ -99,11 +99,11 @@
   })();
 
   /* ---------- auto scroll: creep the page down at a speed the reader picks ----------
-     It keeps going until the reader takes over. A scroll, an arrow key or Escape
-     switches it off; nothing else does. Both the switch and the speed are
-     remembered, so it carries straight on to the next page. At the bottom it
-     waits instead of switching off, and picks up again when a folded section
-     opens and makes the page taller. */
+     It keeps going until the reader scrolls back up. Going the other way is the
+     same direction we are already heading, so it does not stop it. Both the
+     switch and the speed are remembered, so it carries straight on to the next
+     page. At the bottom it waits instead of switching off, and picks up again
+     when a folded section opens and makes the page taller. */
   var scrollOn = $('scrollOn');
   if (scrollOn) (function () {
     var root = document.documentElement;
@@ -111,7 +111,7 @@
     var MIN = 10, MAX = 200;
     var speed = 40;       // pixels a second
     var raf = 0, last = 0, carry = 0;
-    var STOP_KEYS = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
+    var UP_KEYS = ['ArrowUp', 'PageUp', 'Home'];   // only the ones that go back up
 
     function stored() {
       var on = false;
@@ -180,17 +180,28 @@
       start(true);
     });
 
-    // anything that means "I am steering now" hands control back to the reader
-    function handOver(e) {
-      if (!raf) return;
+    /* Only scrolling back up hands control over. Scrolling down is going the same
+       way we are, so it reads as "hurry up", not "stop", and we carry on from
+       wherever the reader landed. Escape and the switch still stop it outright. */
+    function isFromAField(e) {
       var t = e.target;
-      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-      if (e.type === 'keydown' && STOP_KEYS.indexOf(e.key) < 0) return;
-      stop(true);
+      return !!(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)));
     }
-    ['wheel', 'touchstart', 'keydown'].forEach(function (type) {
-      window.addEventListener(type, handOver, { passive: true });
-    });
+    window.addEventListener('wheel', function (e) {
+      if (raf && e.deltaY < 0 && !isFromAField(e)) stop(true);
+    }, { passive: true });
+    window.addEventListener('keydown', function (e) {
+      if (raf && UP_KEYS.indexOf(e.key) >= 0 && !isFromAField(e)) stop(true);
+    }, { passive: true });
+    // a finger sliding down the screen drags the page up, which is the opposite way
+    var touchFrom = null;
+    window.addEventListener('touchstart', function (e) {
+      touchFrom = e.touches && e.touches.length === 1 ? e.touches[0].clientY : null;
+    }, { passive: true });
+    window.addEventListener('touchmove', function (e) {
+      if (!raf || touchFrom === null || !e.touches || e.touches.length !== 1) return;
+      if (e.touches[0].clientY - touchFrom > 10) stop(true);     // dragged down
+    }, { passive: true });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && raf) stop(true);
     });
