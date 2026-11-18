@@ -52,6 +52,7 @@ const THEME_ICON =
 
 const SIDE_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 4.5v15" fill="none" stroke="currentColor" stroke-width="1.8"/><rect class="side-fill" x="5.4" y="6.4" width="2.4" height="11.2" rx=".8" fill="currentColor"/></svg>';
 
+const SCROLL_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M5.5 19.5h13"/></svg>';
 const BOOK_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.800" stroke-linecap="round" stroke-linejoin="round" d="M12 6.500C10.300 5.200 7.800 4.500 4.500 4.500v13c3.300 0 5.800.700 7.500 2 1.700-1.300 4.200-2 7.500-2v-13c-3.300 0-5.800.700-7.500 2zM12 6.500v13"/></svg>';
 
 function page({ root, title, description, bodyAttrs, body, scripts, v }) {
@@ -62,7 +63,7 @@ function page({ root, title, description, bodyAttrs, body, scripts, v }) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(description)}">
-<script>(function(){document.documentElement.className+=" js";if(/^#t-/.test(location.hash))document.documentElement.setAttribute("data-home","list");try{var t=localStorage.getItem("sd-hub-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);var v=localStorage.getItem("sd-hub-view");if(v==="list")document.documentElement.setAttribute("data-view","list");if(localStorage.getItem("sd-hub-sidebar")==="0")document.documentElement.setAttribute("data-side","off");if(localStorage.getItem("sd-hub-reading")==="1"){document.documentElement.setAttribute("data-reading","");var i=parseInt(localStorage.getItem("sd-hub-reading-intensity"),10);if(i>=10&&i<=100)document.documentElement.style.setProperty("--read-intensity",i/100)}}catch(e){}})()</script>
+<script>(function(){document.documentElement.className+=" js";if(/^#t-/.test(location.hash))document.documentElement.setAttribute("data-home","list");try{var t=localStorage.getItem("sd-hub-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);var v=localStorage.getItem("sd-hub-view");if(v==="list")document.documentElement.setAttribute("data-view","list");if(localStorage.getItem("sd-hub-sidebar")==="0")document.documentElement.setAttribute("data-side","off");if(localStorage.getItem("sd-hub-autoscroll")==="1")document.documentElement.setAttribute("data-autoscroll","");if(localStorage.getItem("sd-hub-reading")==="1"){document.documentElement.setAttribute("data-reading","");var i=parseInt(localStorage.getItem("sd-hub-reading-intensity"),10);if(i>=10&&i<=100)document.documentElement.style.setProperty("--read-intensity",i/100)}}catch(e){}})()</script>
 <link rel="icon" href="${ICON}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -89,17 +90,22 @@ function topbar(root, hubTitle, withSidebar) {
     </div>
     <a class="top-link top-home" href="${root}index.html">Home</a>
     <div class="reading">
-      <button class="theme-btn" id="readBtn" type="button" aria-label="Reading options" title="Reading options" aria-expanded="false" aria-controls="readPanel">${BOOK_ICON}</button>
+      <button class="theme-btn" id="readBtn" type="button" aria-label="Reading mode" title="Reading mode" aria-expanded="false" aria-controls="readPanel">${BOOK_ICON}</button>
       <div class="read-panel" id="readPanel" hidden>
         <label class="read-row"><span><strong>Reading mode</strong><small>A warm tint that is easier on the eyes.</small></span><input type="checkbox" class="switch" id="readOn"></label>
         <label class="read-row col"><span>Intensity <output id="readVal" for="readRange">50%</output></span><input type="range" id="readRange" min="10" max="100" step="5" value="50"></label>
-        <label class="read-row"><span><strong>Auto scroll</strong><small>Creeps the page down, page after page. Scroll freely; double tap to stop.</small></span><input type="checkbox" class="switch" id="scrollOn"></label>
-        <label class="read-row col"><span>Speed <output id="scrollVal" for="scrollRange">40 px/s</output></span><input type="range" id="scrollRange" min="10" max="200" step="5" value="40"></label>
       </div>
     </div>
+    <button class="theme-btn" id="scrollBtn" type="button" aria-label="Auto scroll" title="Auto scroll" aria-pressed="false">${SCROLL_ICON}</button>
     <button class="theme-btn" id="themeBtn" type="button" aria-label="Switch between light and dark theme">${THEME_ICON}</button>
   </div>
-</header>`;
+</header>
+<div class="autobar" id="autoBar" role="group" aria-label="Auto scroll">
+  <button class="autobar-stop" id="scrollStop" type="button"><span class="autobar-sq" aria-hidden="true"></span>Stop</button>
+  <input class="autobar-range" type="range" id="scrollRange" min="10" max="200" step="5" value="40" aria-label="Auto scroll speed">
+  <output class="autobar-val" id="scrollVal" for="scrollRange">40 px/s</output>
+  <span class="autobar-hint"><span class="hint-click">double-click anywhere to stop</span><span class="hint-tap">double-tap anywhere to stop</span></span>
+</div>`;
 }
 
 /* Words a developer would not say out loud to a teammate. TOPIC_STYLE.md part 8 lists the plain swaps. */

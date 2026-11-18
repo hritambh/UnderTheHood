@@ -105,10 +105,10 @@
      speed are remembered, so it carries straight on to the next page. At the
      bottom it waits instead of switching off, and picks up again when a folded
      section opens and makes the page taller. */
-  var scrollOn = $('scrollOn');
-  if (scrollOn) (function () {
+  var scrollBtn = $('scrollBtn');
+  if (scrollBtn) (function () {
     var root = document.documentElement;
-    var range = $('scrollRange'), val = $('scrollVal');
+    var range = $('scrollRange'), val = $('scrollVal'), stopBtn = $('scrollStop');
     var MIN = 10, MAX = 200;
     var speed = 40;       // pixels a second
     var raf = 0, last = 0, carry = 0;
@@ -152,7 +152,7 @@
     }
     function start(save) {
       if (save) remember(true);
-      scrollOn.checked = true;
+      scrollBtn.setAttribute('aria-pressed', 'true');
       root.setAttribute('data-autoscroll', '');
       if (raf) return;
       carry = 0;
@@ -164,21 +164,23 @@
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
       root.removeAttribute('data-autoscroll');
-      scrollOn.checked = false;
+      scrollBtn.setAttribute('aria-pressed', 'false');
     }
 
     var wasOn = stored();
     paintSpeed();
     if (wasOn) start(false);        // it was still running when the last page was left
 
-    scrollOn.addEventListener('change', function () {
-      if (scrollOn.checked) start(true); else stop(true);
+    scrollBtn.addEventListener('click', function () {
+      if (raf) stop(true); else start(true);
     });
-    // moving the slider starts it, so the new speed can be seen straight away
+    stopBtn.addEventListener('click', function () { stop(true); });
+    /* The bar is only on screen while it is running, so the slider never has to
+       start it; it just changes the speed under the reader's finger. */
     range.addEventListener('input', function () {
       speed = Number(range.value);
       paintSpeed();
-      start(true);
+      remember(true);
     });
 
     /* Stopping is a deliberate double tap, nothing else. Scrolling by hand is
@@ -187,7 +189,7 @@
        is left alone, so double clicking the slider or a button does not stop it. */
     function isAControl(el) {
       return !!(el && el.closest && el.closest(
-        'input,textarea,select,button,a,summary,label,[contenteditable],.read-panel'));
+        'input,textarea,select,button,a,summary,label,[contenteditable],.read-panel,.autobar'));
     }
     document.addEventListener('dblclick', function (e) {
       if (raf && !isAControl(e.target)) stop(true);
