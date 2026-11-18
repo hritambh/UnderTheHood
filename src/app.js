@@ -99,11 +99,12 @@
   })();
 
   /* ---------- auto scroll: creep the page down at a speed the reader picks ----------
-     It keeps going until the reader scrolls back up. Going the other way is the
-     same direction we are already heading, so it does not stop it. Both the
-     switch and the speed are remembered, so it carries straight on to the next
-     page. At the bottom it waits instead of switching off, and picks up again
-     when a folded section opens and makes the page taller. */
+     Scrolling by hand never stops it: the reader can run ahead or drop back and
+     it carries on creeping from wherever they land. Only a double tap (or a
+     double click), the switch, or Escape stops it. Both the switch and the
+     speed are remembered, so it carries straight on to the next page. At the
+     bottom it waits instead of switching off, and picks up again when a folded
+     section opens and makes the page taller. */
   var scrollOn = $('scrollOn');
   if (scrollOn) (function () {
     var root = document.documentElement;
@@ -111,7 +112,7 @@
     var MIN = 10, MAX = 200;
     var speed = 40;       // pixels a second
     var raf = 0, last = 0, carry = 0;
-    var UP_KEYS = ['ArrowUp', 'PageUp', 'Home'];   // only the ones that go back up
+    var TAP_GAP = 350, TAP_NEAR = 40, TAP_SLOP = 10;   // double tap: ms, px apart, px of drift
 
     function stored() {
       var on = false;
@@ -180,28 +181,44 @@
       start(true);
     });
 
-    /* Only scrolling back up hands control over. Scrolling down is going the same
-       way we are, so it reads as "hurry up", not "stop", and we carry on from
-       wherever the reader landed. Escape and the switch still stop it outright. */
-    function isFromAField(e) {
-      var t = e.target;
-      return !!(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)));
+    /* Stopping is a deliberate double tap, nothing else. Scrolling by hand is
+       how the reader keeps up or drops back, so neither direction switches it
+       off; the loop just carries on from wherever they left the page. A control
+       is left alone, so double clicking the slider or a button does not stop it. */
+    function isAControl(el) {
+      return !!(el && el.closest && el.closest(
+        'input,textarea,select,button,a,summary,label,[contenteditable],.read-panel'));
     }
-    window.addEventListener('wheel', function (e) {
-      if (raf && e.deltaY < 0 && !isFromAField(e)) stop(true);
-    }, { passive: true });
-    window.addEventListener('keydown', function (e) {
-      if (raf && UP_KEYS.indexOf(e.key) >= 0 && !isFromAField(e)) stop(true);
-    }, { passive: true });
-    // a finger sliding down the screen drags the page up, which is the opposite way
-    var touchFrom = null;
+    document.addEventListener('dblclick', function (e) {
+      if (raf && !isAControl(e.target)) stop(true);
+    });
+
+    /* The same thing by finger. A tap only counts if it did not drag, so a swipe
+       through the page is never half of a double tap. */
+    var tapAt = 0, tapX = 0, tapY = 0, fromX = 0, fromY = 0, dragged = true;
     window.addEventListener('touchstart', function (e) {
-      touchFrom = e.touches && e.touches.length === 1 ? e.touches[0].clientY : null;
+      dragged = !e.touches || e.touches.length !== 1;
+      if (dragged) return;
+      fromX = e.touches[0].clientX;
+      fromY = e.touches[0].clientY;
     }, { passive: true });
     window.addEventListener('touchmove', function (e) {
-      if (!raf || touchFrom === null || !e.touches || e.touches.length !== 1) return;
-      if (e.touches[0].clientY - touchFrom > 10) stop(true);     // dragged down
+      if (dragged || !e.touches || e.touches.length !== 1) return;
+      if (Math.abs(e.touches[0].clientX - fromX) > TAP_SLOP ||
+          Math.abs(e.touches[0].clientY - fromY) > TAP_SLOP) dragged = true;
     }, { passive: true });
+    window.addEventListener('touchend', function (e) {
+      if (dragged) { tapAt = 0; return; }          // that was a swipe
+      var now = Date.now();
+      var near = Math.abs(fromX - tapX) < TAP_NEAR && Math.abs(fromY - tapY) < TAP_NEAR;
+      if (tapAt && now - tapAt < TAP_GAP && near) {
+        tapAt = 0;
+        if (raf && !isAControl(e.target)) stop(true);
+        return;
+      }
+      tapAt = now; tapX = fromX; tapY = fromY;
+    }, { passive: true });
+
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && raf) stop(true);
     });
