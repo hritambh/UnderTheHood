@@ -1,0 +1,225 @@
+<!--
+title: Caching and Invalidation
+summary: Keeping a copy of a slow answer somewhere fast, and throwing that copy away when the real data changes. The second half is the hard one.
+category: Performance
+order: 25
+related: redis-persistence, cqrs, indexing-strategies, doctor-appointment-booking
+-->
+
+<!-- section: what -->
+<p>A <strong>cache</strong> is a copy of an answer kept somewhere fast, so the next request for it doesn't pay full price. The copy lives in memory; the real data stays where it was.</p>
+<p><strong>Invalidation</strong> is getting rid of that copy once the real data changes. Without it the cache keeps handing out an answer that stopped being true.</p>
+<p>They are two halves of one job, and only the first half is easy. Examples use <strong>Redis</strong> as the cache and <strong>PostgreSQL</strong> as the truth, but nothing below depends on either.</p>
+<p class="note">One-line version: a cache is a bet that the same question gets asked again. Invalidation is how you stop winning that bet with an answer that is out of date.</p>
+
+<!-- section: why -->
+<p>Some answers are expensive and asked for constantly. A product page joins four tables and takes 20 ms. Ten thousand people load it an hour, so the database does that work ten thousand times for a row that changed once last Tuesday.</p>
+<p>Without a cache you buy your way out with a bigger database, and pay for it on every request forever. With one, the first request pays and the rest are nearly free.</p>
+<p>But the same fact now lives in two places, and the moment someone edits that product one of them is lying. So the real question is not &ldquo;should I cache this?&rdquo; &mdash; it is <strong>how wrong may this be, and for how long?</strong></p>
+
+<!-- section: realWorld -->
+<p>A café keeps its real price list in the office. Out front is a chalkboard.</p>
+<p>Customers read the board, not the office list. That is the point: the board is three steps away and the office is upstairs. Hundreds read it a day and nobody waits.</p>
+<ul>
+<li><strong>The board</strong> is the cache. <strong>The office list</strong> is the database.</li>
+<li><strong>Wiping the board</strong> each night is eviction. <strong>Rewriting it</strong> each morning is a cache fill.</li>
+<li><strong>Raising a price in the office</strong> is a write. Until someone walks down and changes the board it is wrong, and that gap is the <strong>staleness window</strong>.</li>
+</ul>
+<p>The costs show up fast. Somebody has to update the board every time, and forgetting is silent &mdash; customers just get quoted yesterday's price. And on the morning the board is blank, the first twenty customers are all sent upstairs at once: the exact queue the board existed to prevent.</p>
+
+<!-- section: software -->
+<p>A product endpoint, <strong>cache-aside</strong>: the app checks the cache and fills it on a miss.</p>
+
+<pre><code>// products.service.ts
+async findOne(id: number): Promise&lt;Product&gt; {
+  const key = `product:v2:${id}`;
+  const hit = await this.redis.get(key);
+  if (hit) return JSON.parse(hit);                 // cache hit
+
+  const row = await this.repo.findOneBy({ id });   // miss: go to Postgres
+  if (row) await this.redis.set(key, JSON.stringify(row), 'EX', 300);
+  return row;
+}
+
+async update(id: number, patch: Partial&lt;Product&gt;) {
+  await this.repo.update(id, patch);               // database first
+  await this.redis.del(`product:v2:${id}`);        // then drop the copy
+}</code></pre>
+
+<p>Three things there are deliberate. <strong>Database first, cache second</strong> &mdash; the other order can cache a write that then fails. <strong>Delete, don't overwrite</strong>: two writers racing to <code>set</code> can leave the older value in the cache, while two racing to <code>del</code> cannot. And <code>EX 300</code> is a backstop, not the plan &mdash; it caps the damage when a <code>del</code> never runs.</p>
+<p>What is now harder: two stores to keep in step, a second schema in Redis that deploys must match, and twice as many answers to &ldquo;why is this page wrong?&rdquo;</p>
+
+<!-- section: internals -->
+<div class="diagram">
+<svg viewBox="0 0 640 260" role="img" aria-label="A read checks the cache first. On a hit the answer comes straight back. On a miss the app queries the database, writes the answer into the cache, and returns it. A write updates the database and then deletes the cached copy.">
+<defs><marker id="ah-caching-and-invalidation" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="16" y="54" width="104" height="48" rx="8" class="box"/>
+<text x="68" y="83" text-anchor="middle" class="lbl">App</text>
+
+<rect x="236" y="54" width="130" height="48" rx="8" class="box hi"/>
+<text x="301" y="76" text-anchor="middle" class="lbl">Cache</text>
+<text x="301" y="93" text-anchor="middle" class="sub">product:v2:42</text>
+
+<rect x="480" y="54" width="130" height="48" rx="8" class="box"/>
+<text x="545" y="76" text-anchor="middle" class="lbl">Database</text>
+<text x="545" y="93" text-anchor="middle" class="sub">the truth</text>
+
+<line x1="120" y1="70" x2="232" y2="70" class="arr" marker-end="url(#ah-caching-and-invalidation)"/>
+<text x="176" y="62" text-anchor="middle" class="sub">1 · get</text>
+<line x1="232" y1="90" x2="124" y2="90" class="arr dim" marker-end="url(#ah-caching-and-invalidation)"/>
+<text x="176" y="108" text-anchor="middle" class="sub">2 · hit: done, 0.5 ms</text>
+
+<line x1="366" y1="64" x2="476" y2="64" class="arr" marker-end="url(#ah-caching-and-invalidation)"/>
+<text x="421" y="56" text-anchor="middle" class="sub">3 · miss: query</text>
+<line x1="476" y1="92" x2="370" y2="92" class="arr dim" marker-end="url(#ah-caching-and-invalidation)"/>
+<text x="421" y="110" text-anchor="middle" class="sub">4 · row, 20 ms</text>
+<path d="M430,100 Q400,136 330,106" class="arr" marker-end="url(#ah-caching-and-invalidation)"/>
+<text x="378" y="140" text-anchor="middle" class="sub">5 · fill, with a TTL</text>
+
+<rect x="16" y="190" width="104" height="48" rx="8" class="box warn"/>
+<text x="68" y="212" text-anchor="middle" class="lbl">Write</text>
+<text x="68" y="229" text-anchor="middle" class="sub">edit a product</text>
+<line x1="120" y1="206" x2="476" y2="94" class="arr warnline" marker-end="url(#ah-caching-and-invalidation)"/>
+<text x="300" y="176" text-anchor="middle" class="sub">6 · update the database first</text>
+<line x1="120" y1="220" x2="286" y2="108" class="arr warnline" marker-end="url(#ah-caching-and-invalidation)"/>
+<text x="250" y="232" text-anchor="middle" class="sub">7 · then delete the key</text>
+</svg>
+</div>
+
+<ol>
+<li>A request arrives. The app builds a key from whatever makes the answer unique: <code>product:v2:42</code>.</li>
+<li><strong>Hit</strong> &mdash; the key is there, so parse it and return. The database is never touched.</li>
+<li><strong>Miss</strong> &mdash; nothing under that key, so the app queries the database itself.</li>
+<li>The row comes back and is served.</li>
+<li>The app writes it into the cache with a TTL, so the next reader hits.</li>
+<li>A write updates the database first, while the stale copy is still being served.</li>
+<li>Then the key is deleted, and the next reader refills from the new truth.</li>
+</ol>
+<p>None of this is automatic. The cache is a plain key-value store doing what it is told; every step above is code someone has to keep right.</p>
+
+<!-- section: types -->
+<p>Three ways to stop serving a stale answer.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="Three invalidation strategies on a timeline. With a time to live the cache stays wrong from the write until the entry expires. With delete on write the wrong window is milliseconds. With versioned keys the new version misses immediately and the old key is never read again.">
+<text x="16" y="20" class="lbl">TTL only</text>
+<rect x="16" y="28" width="604" height="26" rx="5" class="box faintbox"/>
+<rect x="190" y="28" width="300" height="26" rx="5" class="box warn"/>
+<text x="340" y="46" text-anchor="middle" class="sub">wrong for up to the whole TTL</text>
+<line x1="190" y1="60" x2="190" y2="70" class="arr warnline"/>
+<text x="190" y="82" text-anchor="middle" class="sub">write</text>
+<line x1="490" y1="60" x2="490" y2="70" class="arr dim"/>
+<text x="490" y="82" text-anchor="middle" class="sub">expires</text>
+
+<text x="16" y="118" class="lbl">Delete on write</text>
+<rect x="16" y="126" width="604" height="26" rx="5" class="box faintbox"/>
+<rect x="190" y="126" width="14" height="26" rx="4" class="box warn"/>
+<text x="300" y="144" text-anchor="middle" class="sub">wrong only between the write and the delete</text>
+<line x1="190" y1="158" x2="190" y2="168" class="arr warnline"/>
+<text x="190" y="180" text-anchor="middle" class="sub">write, then del</text>
+
+<text x="16" y="200" class="lbl">Versioned keys</text>
+<rect x="16" y="208" width="604" height="22" rx="5" class="box hi"/>
+<text x="340" y="223" text-anchor="middle" class="sub">the write changes the key, so the new read cannot find an old answer</text>
+</svg>
+</div>
+
+<h4>Let it expire (TTL)</h4>
+<p>Give every entry a lifetime and let it die on its own. One argument on the <code>set</code>, nothing to wire up &mdash; and wrong for up to a whole TTL after every write. Shortening the TTL to fix that throws away hit rate.</p>
+
+<h4>Delete on write</h4>
+<p>Whoever changes the row deletes the key, so the wrong window shrinks to milliseconds. It only covers the paths you remember: a job or an admin tool writing straight to the database will not, and nothing tells you.</p>
+
+<h4>Versioned keys</h4>
+<p>Put something that changes on every write into the key, like <code>product:42:v7</code> or the row's <code>updated_at</code>. The old key becomes unreachable rather than wrong &mdash; nothing to delete, no race &mdash; but you need the version before you can build the key.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>TTL only</th><th>Delete on write</th><th>Versioned keys</th></tr>
+<tr><td>Wrong for</td><td>Up to the whole TTL</td><td>Milliseconds</td><td>Never</td></tr>
+<tr><td>Work to set up</td><td>One argument</td><td>Every write path</td><td>Key design, plus the version</td></tr>
+<tr><td>Memory</td><td>Tight</td><td>Tight</td><td>Old versions linger</td></tr>
+<tr><td>Fails when</td><td>Staleness matters</td><td>Something writes behind your back</td><td>The version costs as much as the data</td></tr>
+<tr><td>Use for</td><td>Anything that can be a bit old</td><td>Most app caches</td><td>Data that must never be stale</td></tr>
+</table></div>
+
+<p>These stack: most systems delete on write <em>and</em> keep a TTL underneath, so a missed delete heals itself.</p>
+
+<!-- section: numbers -->
+<p><strong>Assumptions, made up:</strong> one product endpoint at 2,000 requests a second, 20 ms to build the answer from PostgreSQL, 0.5 ms to read it from Redis, 50,000 products at 2 KB of JSON each.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Working</th><th>Result</th></tr>
+<tr><td>Average time, 90% hits</td><td>(0.9 &times; 0.5) + (0.1 &times; 20.5)</td><td><strong>2.5 ms</strong>, 8&times; faster</td></tr>
+<tr><td>Database load, 90% hits</td><td>2,000 &times; 0.1</td><td><strong>200 queries/s</strong></td></tr>
+<tr><td>Average time, 50% hits</td><td>(0.5 &times; 0.5) + (0.5 &times; 20.5)</td><td><strong>10.5 ms</strong></td></tr>
+<tr><td>Database load, 50% hits</td><td>2,000 &times; 0.5</td><td><strong>1,000 queries/s</strong></td></tr>
+<tr><td>Memory for everything</td><td>50,000 &times; 2 KB</td><td><strong>98 MB</strong></td></tr>
+<tr><td>Hot key expires</td><td>2,000/s &times; 0.020 s</td><td><strong>40 requests</strong> hit the database for one row</td></tr>
+</table></div>
+
+<p>Two things fall out. <strong>Hit rate is the whole feature</strong>: 90% to 50% costs four times the latency and five times the database load. And the last row is the <strong>cache stampede</strong> &mdash; in the 20 ms the first reader takes to refill a hot key, 40 more find it missing and go to the database for the same row.</p>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Speed vs truth.</strong> Every cache serves what was true a moment ago. You choose how long a moment may be.</li>
+<li><strong>Long TTL vs short TTL.</strong> Long keeps the hit rate up and the staleness window open; short does the opposite. A very short TTL is a slow database with extra parts. Caching everything costs memory, while the hot few per cent usually gets most of the win.</li>
+<li><strong>Delete on write vs let it expire.</strong> Deleting is nearly always right, and has to be wired into every write path. Expiring is one line and wrong more often.</li>
+<li><strong>One more thing to break.</strong> If a Redis outage takes the site down with it, the cache stopped being an optimisation and became a dependency.</li>
+</ul>
+
+<!-- section: whenToUse -->
+<h4>Reach for it when</h4>
+<ul>
+<li>The same answers are asked over and over, and reads heavily outnumber writes &mdash; a product page read 10,000 times and edited once a week.</li>
+<li>The answer is expensive: a big join, an external API call, a rendered page.</li>
+<li>Being a few seconds out of date costs nothing anyone notices.</li>
+</ul>
+
+<h4>You don't need one when</h4>
+<ul>
+<li><strong>The query is already fast.</strong> A 1 ms indexed lookup needs no 0.5 ms cache in front of it.</li>
+<li><strong>Every read must be exact.</strong> Account balances, stock at checkout, anything a decision is made on.</li>
+<li><strong>Writes are as common as reads.</strong> Invalidation costs more than the reads save.</li>
+<li><strong>Nobody asks twice.</strong> A per-user feed nobody reloads has nothing to hit.</li>
+</ul>
+
+<!-- section: mistakes -->
+<ul>
+<li><strong>Writing the new value into the cache instead of deleting it.</strong> Two writers can finish in one order and <code>set</code> in the other, leaving the older value cached. Delete and let the next reader refill.</li>
+<li><strong>No TTL behind the delete.</strong> One missed invalidation, from a job or a manual <code>UPDATE</code>, is wrong forever. A TTL turns &ldquo;forever&rdquo; into &ldquo;five minutes&rdquo;.</li>
+<li><strong>The same TTL on everything.</strong> Fill a cache in one batch and it empties in one batch. Add a random spread, 300 seconds plus up to 60, so they expire apart.</li>
+<li><strong>Ignoring the stampede.</strong> Those 40 queries for one row arrive exactly when the key is hottest. Let one request refill while the rest wait or serve the old value.</li>
+<li><strong>Caching failures.</strong> A <code>null</code> from a timeout, cached for five minutes, turns a blip into an outage.</li>
+<li><strong>Keys with no shape.</strong> Without a prefix and a version you can't clear one kind of entry, and a deploy that changes the JSON breaks every reader holding the old shape.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>Common questions</h4>
+<ul>
+<li><strong>Why is invalidation hard?</strong> The cache has no idea the data changed. Something outside it must catch every write on every path, and missing one is silent.</li>
+<li><strong>Delete the key or update it?</strong> Delete &mdash; two writes can <code>set</code> in the wrong order, and deleting has no such race.</li>
+<li><strong>What is a cache stampede?</strong> A hot key expires and every request in the refill window hits the database at once. Fix it with a lock so one request refills, or serve the stale value meanwhile.</li>
+<li><strong>Cache-aside or write-through?</strong> Cache-aside keeps the cache out of the write path and survives a cache outage. Write-through keeps the two in step, but every write now depends on the cache.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li>How would you measure the hit rate, and what would you do at 40%?</li>
+<li>What happens to your service when Redis goes down?</li>
+</ul>
+
+<h4>How it fits a bigger design</h4>
+<p>Caching is the second answer, not the first: fix the query and the index first, because a cache in front of a bad query hides it until the day the cache is cold. When it does go in, every write path has to know about it &mdash; which is why &ldquo;who invalidates this?&rdquo; is a fair question about any box with a cache next to it.</p>
+
+<!-- section: revision -->
+<ul>
+<li>A cache is a copy of an expensive answer kept somewhere fast; invalidation is dropping that copy when the real data changes. The design question is not whether to cache, but how stale the answer may be.</li>
+<li>Cache-aside means the app checks the cache, and on a miss queries the database and fills the cache.</li>
+<li>On a write, update the database first, then <strong>delete</strong> the key. Overwriting it lets two racing writers leave the older value behind.</li>
+<li>Three ways to invalidate: a TTL, a delete on write, or a version in the key so old entries can't be found. Most systems do the second with the first underneath.</li>
+<li>Hit rate is the whole feature: 90% hits gave 2.5 ms and 200 queries/s, 50% gave 10.5 ms and 1,000.</li>
+<li>When a hot key expires, every request during the refill hits the database &mdash; 40 in the example. That is a cache stampede.</li>
+<li>Give every entry a TTL with some random spread, never cache a timeout for long, and put a prefix and a version in every key.</li>
+<li>Skip it when the query is already fast, when reads must be exact, or when writes are as common as reads.</li>
+</ul>
