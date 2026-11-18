@@ -11,6 +11,7 @@
   var LS_READING = 'sd-hub-reading';
   var LS_READ_INT = 'sd-hub-reading-intensity';
   var LS_SIDEBAR = 'sd-hub-sidebar';
+  var LS_SCROLL_ON = 'sd-hub-autoscroll';
   var LS_SCROLL_SPEED = 'sd-hub-autoscroll-speed';
   var LABEL = { not: 'Not started', progress: 'In progress', done: 'Completed' };
 
@@ -98,8 +99,11 @@
   })();
 
   /* ---------- auto scroll: creep the page down at a speed the reader picks ----------
-     The speed is remembered; the on/off state is not, so a page never starts
-     moving on its own when it is opened. Any scroll or arrow key stops it. */
+     It keeps going until the reader takes over. A scroll, an arrow key or Escape
+     switches it off; nothing else does. Both the switch and the speed are
+     remembered, so it carries straight on to the next page. At the bottom it
+     waits instead of switching off, and picks up again when a folded section
+     opens and makes the page taller. */
   var scrollOn = $('scrollOn');
   if (scrollOn) (function () {
     var root = document.documentElement;
@@ -109,17 +113,24 @@
     var raf = 0, last = 0, carry = 0;
     var STOP_KEYS = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
 
-    try {
-      var n = parseInt(localStorage.getItem(LS_SCROLL_SPEED), 10);
-      if (n >= MIN && n <= MAX) speed = n;
-    } catch (e) {}
-
+    function stored() {
+      var on = false;
+      try {
+        on = localStorage.getItem(LS_SCROLL_ON) === '1';
+        var n = parseInt(localStorage.getItem(LS_SCROLL_SPEED), 10);
+        if (n >= MIN && n <= MAX) speed = n;
+      } catch (e) {}
+      return on;
+    }
+    function remember(on) {
+      try {
+        localStorage.setItem(LS_SCROLL_ON, on ? '1' : '0');
+        localStorage.setItem(LS_SCROLL_SPEED, String(speed));
+      } catch (e) {}
+    }
     function paintSpeed() {
       range.value = speed;
       val.textContent = speed + ' px/s';
-    }
-    function atBottom() {
-      return window.innerHeight + window.scrollY >= root.scrollHeight - 1;
     }
     /* One frame. We keep the leftover fraction of a pixel, so even the slowest
        speed keeps moving instead of rounding down to nothing every frame. */
@@ -133,36 +144,40 @@
       var px = Math.floor(carry);
       if (px < 1) return;
       carry -= px;
-      var before = window.scrollY;
-      // 'instant' matters: the page sets scroll-behavior:smooth, which would fight this
+      // 'instant' matters: the page sets scroll-behavior:smooth, which would fight this.
+      // At the bottom this moves nothing, and we keep running: a section opening
+      // below makes the page taller, and then there is somewhere to go again.
       window.scrollBy({ top: px, left: 0, behavior: 'instant' });
-      if (window.scrollY === before && atBottom()) stop();
     }
-    function start() {
+    function start(save) {
+      if (save) remember(true);
+      scrollOn.checked = true;
+      root.setAttribute('data-autoscroll', '');
       if (raf) return;
       carry = 0;
       last = window.performance ? performance.now() : Date.now();
-      root.setAttribute('data-autoscroll', '');
-      scrollOn.checked = true;
       raf = requestAnimationFrame(step);
     }
-    function stop() {
+    function stop(save) {
+      if (save) remember(false);
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
       root.removeAttribute('data-autoscroll');
       scrollOn.checked = false;
     }
 
+    var wasOn = stored();
     paintSpeed();
+    if (wasOn) start(false);        // it was still running when the last page was left
+
     scrollOn.addEventListener('change', function () {
-      if (scrollOn.checked) start(); else stop();
+      if (scrollOn.checked) start(true); else stop(true);
     });
     // moving the slider starts it, so the new speed can be seen straight away
     range.addEventListener('input', function () {
       speed = Number(range.value);
-      try { localStorage.setItem(LS_SCROLL_SPEED, String(speed)); } catch (e) {}
       paintSpeed();
-      start();
+      start(true);
     });
 
     // anything that means "I am steering now" hands control back to the reader
@@ -171,18 +186,21 @@
       var t = e.target;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       if (e.type === 'keydown' && STOP_KEYS.indexOf(e.key) < 0) return;
-      stop();
+      stop(true);
     }
     ['wheel', 'touchstart', 'keydown'].forEach(function (type) {
       window.addEventListener(type, handOver, { passive: true });
     });
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && raf) stop();
+      if (e.key === 'Escape' && raf) stop(true);
     });
     window.addEventListener('storage', function (e) {
-      if (e.key !== LS_SCROLL_SPEED) return;
-      var v = parseInt(e.newValue, 10);
-      if (v >= MIN && v <= MAX) { speed = v; paintSpeed(); }
+      if (e.key === LS_SCROLL_SPEED) {
+        var v = parseInt(e.newValue, 10);
+        if (v >= MIN && v <= MAX) { speed = v; paintSpeed(); }
+      } else if (e.key === LS_SCROLL_ON) {
+        if (e.newValue === '1') start(false); else stop(false);
+      }
     });
   })();
 
