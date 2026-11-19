@@ -39,11 +39,11 @@ related: authentication-authorisation, indexing-strategies, caching-and-invalida
 <tr><td>Store the ancestor path as a string and match on prefix</td><td>One column, and a prefix match uses an index.</td><td>Breaks on exceptions &mdash; a manager covering two unrelated branches has no single prefix &mdash; and re-parenting rewrites every descendant’s string anyway.</td></tr>
 <tr><td><strong>Chosen:</strong> a flat array of group ids on both sides, matched by intersection</td><td>One indexed check, the same rule in every store, and exceptions are just more array elements.</td><td>The arrays have to be kept right, which moves real work to write time.</td></tr>
 </table></div>
-<p>So each <strong>user</strong> carries <code>authorised_regions</code>: the groups they may see. Each <strong>record</strong> carries <code>granted_regions</code>: its full lineage upward, plus any explicit grants. A user may see a record when those two arrays share at least one id.</p>
+<p>So each <strong>user</strong> carries <code>authorised_regions</code>: the groups they may see. Each <strong>record</strong> carries <code>accessible_regions</code>: its full lineage upward, plus any explicit grants. A user may see a record when those two arrays share at least one id.</p>
 
 <!-- section: architecture -->
 <div class="diagram">
-<svg viewBox="0 0 640 250" role="img" aria-label="A five-level hierarchy from WEST zone down through MP 2 cluster, MP state, Bhopal city to the Hoshangabad branch. A lead in the Hoshangabad branch stores all five ids as its granted regions. A field officer is authorised for Hoshangabad only, an area head for Bhopal, a zonal head for WEST.">
+<svg viewBox="0 0 640 250" role="img" aria-label="A five-level hierarchy from WEST zone down through MP 2 cluster, MP state, Bhopal city to the Hoshangabad branch. A lead in the Hoshangabad branch stores all five ids as its accessible regions. A field officer is authorised for Hoshangabad only, an area head for Bhopal, a zonal head for WEST.">
 <defs><marker id="ah-group-hierarchy-access" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
 
 <text x="20" y="20" class="sub">the hierarchy</text>
@@ -64,7 +64,7 @@ related: authentication-authorisation, indexing-strategies, caching-and-invalida
 <line x1="490" y1="47" x2="508" y2="47" class="arr dim"/>
 
 <rect x="20" y="104" width="602" height="46" rx="8" class="box hi"/>
-<text x="321" y="123" text-anchor="middle" class="lbl">a lead in that branch stores the whole path as granted_regions</text>
+<text x="321" y="123" text-anchor="middle" class="lbl">a lead in that branch stores the whole path as accessible_regions</text>
 <text x="321" y="140" text-anchor="middle" class="sub">[ WEST, MP_2, MP, BHOPAL, HOSHANGABAD ]</text>
 <path d="M 566 86 L 566 102" class="arr" fill="none" marker-end="url(#ah-group-hierarchy-access)"/>
 
@@ -85,14 +85,14 @@ related: authentication-authorisation, indexing-strategies, caching-and-invalida
 <!-- section: build -->
 <p>The whole rule is “do these two arrays share anything?”, which every store we used can answer from an index:</p>
 <pre><code>-- PostgreSQL: overlap operator, backed by a GIN index on the array
-CREATE INDEX leads_granted_regions ON leads USING gin (granted_regions);
+CREATE INDEX leads_accessible_regions ON leads USING gin (accessible_regions);
 
 SELECT * FROM leads
-WHERE  granted_regions &amp;&amp; $1      -- $1 = the user's authorised_regions
+WHERE  accessible_regions &amp;&amp; $1      -- $1 = the user's authorised_regions
 AND    status = 'open';</code></pre>
-<pre><code>// MongoDB: $in against a multikey index on granted_regions
+<pre><code>// MongoDB: $in against a multikey index on accessible_regions
 db.leads.find({
-  granted_regions: { $in: user.authorised_regions },
+  accessible_regions: { $in: user.authorised_regions },
   status: 'open',
 });</code></pre>
 <p>In the search index it is a <code>terms</code> filter on the same field. Three stores, one rule, and no join or recursion in any of them.</p>
@@ -101,9 +101,9 @@ db.leads.find({
 <!-- section: hardParts -->
 <h4>The check itself is the easy half</h4>
 <div class="diagram">
-<svg viewBox="0 0 640 170" role="img" aria-label="The lead's granted regions list is compared with three users. The field officer in Hoshangabad shares the Hoshangabad id and is allowed. A field officer in Indore shares nothing and is denied. The zonal head for WEST shares the WEST id and is allowed.">
+<svg viewBox="0 0 640 170" role="img" aria-label="The lead's accessible regions list is compared with three users. The field officer in Hoshangabad shares the Hoshangabad id and is allowed. A field officer in Indore shares nothing and is denied. The zonal head for WEST shares the WEST id and is allowed.">
 <rect x="20" y="16" width="600" height="40" rx="8" class="box hi"/>
-<text x="320" y="33" text-anchor="middle" class="sub">the lead’s granted_regions</text>
+<text x="320" y="33" text-anchor="middle" class="sub">the lead’s accessible_regions</text>
 <text x="320" y="49" text-anchor="middle" class="lbl">WEST · MP_2 · MP · BHOPAL · HOSHANGABAD</text>
 
 <rect x="20" y="76" width="196" height="36" rx="6" class="box"/>
@@ -184,7 +184,7 @@ db.leads.find({
 <ul>
 <li>Field teams sit in a five-level geography, and row visibility follows that tree.</li>
 <li>Walking the tree per request makes authorisation cost more than the query it protects, and hurts senior users most.</li>
-<li>Each record stores <code>granted_regions</code>: its full lineage upward, plus explicit grants.</li>
+<li>Each record stores <code>accessible_regions</code>: its full lineage upward, plus explicit grants.</li>
 <li>Each user stores <code>authorised_regions</code>: the group ids their role and posting allow.</li>
 <li>Access is granted when the two arrays share at least one id.</li>
 <li>That intersection is one indexed operation in Postgres, Mongo and Elasticsearch alike.</li>
