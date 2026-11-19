@@ -1,6 +1,6 @@
 <!--
 title: Flattening a Group Hierarchy for Row-Level Access
-summary: Who can see which lead, across a five-level geography and 10,000-plus users. Instead of walking the tree on every request, both sides carry a flat array of region ids and the check becomes one indexed intersection.
+summary: Who can see which lead, across a five-level geography and 10,000-plus users. A cron expands each person’s posting down into every group beneath it, records carry their lineage upward, and access is one indexed overlap check.
 category: Vymo
 order: 10
 related: authentication-authorisation, indexing-strategies, caching-and-invalidation
@@ -11,13 +11,13 @@ related: authentication-authorisation, indexing-strategies, caching-and-invalida
 <p>This was at <strong>Vymo</strong>, a sales engagement platform used by banks, insurers and lenders. Their field teams are organised by geography, and so is everything they are allowed to see.</p>
 <p>A typical client hierarchy runs five levels deep:</p>
 <p><code>Zone → Region / Cluster → State → City → Branch</code>, for example <code>WEST → MP 2 → MP → BHOPAL → HOSHANGABAD</code>.</p>
-<p class="note">One-line version: I replaced walking the org tree on every read with two flat arrays &mdash; what a user may see, and which groups a record belongs to &mdash; so authorisation became a single indexed array intersection.</p>
+<p class="note">One-line version: I replaced walking the org tree on every read with flat arrays of group ids on both sides &mdash; expanded downward for people, upward for records &mdash; so authorisation became a single indexed overlap check.</p>
 
 <!-- section: problem -->
 <p>Every list, search and report has the same question behind it: <em>which rows is this person allowed to see?</em> And the answer depends on where they sit:</p>
 <ul>
 <li>A <strong>field officer</strong> sees their own branch.</li>
-<li>An <strong>area head</strong> sees every branch in their city.</li>
+<li>A <strong>state manager</strong> sees every city and branch in their state.</li>
 <li>A <strong>zonal head</strong> sees everything under their zone, which is hundreds of branches.</li>
 </ul>
 <p>Done the obvious way, that is a tree walk on every request: find the user’s node, collect every node beneath it, then filter the records by that set. With 10,000-plus users and millions of leads, loans and collection accounts, the authorisation check costs more than the query it is protecting. It also has to work the same way across more than one datastore, which rules out anything clever that only one of them can do.</p>
@@ -25,133 +25,136 @@ related: authentication-authorisation, indexing-strategies, caching-and-invalida
 <!-- section: constraints -->
 <ul>
 <li><strong>Five levels, and the shape differs per client.</strong> One client’s “cluster” is another’s “region”.</li>
-<li><strong>Reads dominate heavily.</strong> People scroll lists all day; the hierarchy changes rarely.</li>
+<li><strong>Reads dominate heavily.</strong> People scroll lists all day; postings and hierarchies change rarely.</li>
 <li><strong>It had to hold in every store.</strong> The same rule applies to the document store and to the search index behind list and search APIs.</li>
 <li><strong>Exceptions are normal, not rare.</strong> A manager covering two branches during a handover isn’t a special case, it’s Tuesday.</li>
 <li><strong>Nothing may leak.</strong> A visibility bug here shows one bank’s branch the wrong customers.</li>
 </ul>
 
 <!-- section: approach -->
-<p>Every record already belongs to a branch, and a branch has exactly one path up to its zone. That path never changes between reads. So compute it once, at write time, and store it.</p>
+<p>The tree walk is the same every time until something is re-organised. So do it off the request path and store the answer.</p>
 <div class="table-wrap"><table>
 <tr><th>Option</th><th>Why it was tempting</th><th>Why it lost</th></tr>
 <tr><td>Walk the tree per request (recursive query or graph hop)</td><td>Always correct, nothing to keep in sync, the hierarchy is the only source of truth.</td><td>Paid on every read, by every user, forever. A zonal head’s walk is the biggest one and they are the busiest users.</td></tr>
 <tr><td>Store the ancestor path as a string and match on prefix</td><td>One column, and a prefix match uses an index.</td><td>Breaks on exceptions &mdash; a manager covering two unrelated branches has no single prefix &mdash; and re-parenting rewrites every descendant’s string anyway.</td></tr>
-<tr><td><strong>Chosen:</strong> a flat array of group ids on both sides, matched by intersection</td><td>One indexed check, the same rule in every store, and exceptions are just more array elements.</td><td>The arrays have to be kept right, which moves real work to write time.</td></tr>
+<tr><td><strong>Chosen:</strong> flat arrays of group ids on both sides, matched by overlap</td><td>One indexed check, the same rule in every store, and exceptions are just more array elements.</td><td>Two derived arrays to keep right, so real work moves to write time and to a background job.</td></tr>
 </table></div>
-<p>So each <strong>user</strong> carries <code>authorised_regions</code>: the groups they may see. Each <strong>record</strong> carries <code>accessible_regions</code>: its full lineage upward, plus any explicit grants. A user may see a record when those two arrays share at least one id.</p>
+<p>Three fields carry it, and it is worth keeping them straight:</p>
+<ul>
+<li><code>user.granted_regions</code> &mdash; <strong>what the person was assigned.</strong> A state manager gets a zone, a region and a state, so their profile holds <code>ga_west, ga_MP_2, ga_MP</code>. Nothing below that.</li>
+<li><code>user.authorised_regions</code> &mdash; <strong>what that expands to.</strong> A cron walks down from the deepest assigned node and writes back every group under it.</li>
+<li><code>record.accessible_regions</code> &mdash; <strong>the record’s lineage.</strong> A lead in Hoshangabad carries its whole path upward, plus any explicit grants.</li>
+</ul>
 
 <!-- section: architecture -->
 <div class="diagram">
-<svg viewBox="0 0 640 250" role="img" aria-label="A five-level hierarchy from WEST zone down through MP 2 cluster, MP state, Bhopal city to the Hoshangabad branch. A lead in the Hoshangabad branch stores all five ids as its accessible regions. A field officer is authorised for Hoshangabad only, an area head for Bhopal, a zonal head for WEST.">
+<svg viewBox="0 0 640 262" role="img" aria-label="A five-level hierarchy from WEST zone down through MP 2 cluster, MP state, Bhopal city to the Hoshangabad branch. A state manager is assigned the first three levels, so their granted regions are ga_west, ga_MP_2 and ga_MP. A cron running every fifteen minutes walks down from the deepest one and writes every group beneath it into their authorised regions.">
 <defs><marker id="ah-group-hierarchy-access" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
 
-<text x="20" y="20" class="sub">the hierarchy</text>
-<rect x="20" y="30" width="108" height="34" rx="6" class="box"/><text x="74" y="52" text-anchor="middle" class="lbl">WEST</text>
-<text x="74" y="78" text-anchor="middle" class="sub">zone</text>
-<rect x="148" y="30" width="108" height="34" rx="6" class="box"/><text x="202" y="52" text-anchor="middle" class="lbl">MP 2</text>
-<text x="202" y="78" text-anchor="middle" class="sub">cluster</text>
-<rect x="276" y="30" width="86" height="34" rx="6" class="box"/><text x="319" y="52" text-anchor="middle" class="lbl">MP</text>
-<text x="319" y="78" text-anchor="middle" class="sub">state</text>
-<rect x="382" y="30" width="108" height="34" rx="6" class="box"/><text x="436" y="52" text-anchor="middle" class="lbl">BHOPAL</text>
-<text x="436" y="78" text-anchor="middle" class="sub">city</text>
-<rect x="510" y="30" width="112" height="34" rx="6" class="box hi"/><text x="566" y="52" text-anchor="middle" class="lbl">HOSHANGABAD</text>
-<text x="566" y="78" text-anchor="middle" class="sub">branch</text>
+<rect x="14" y="16" width="100" height="34" rx="6" class="box hi"/><text x="64" y="38" text-anchor="middle" class="lbl">WEST</text>
+<rect x="134" y="16" width="100" height="34" rx="6" class="box hi"/><text x="184" y="38" text-anchor="middle" class="lbl">MP 2</text>
+<rect x="254" y="16" width="86" height="34" rx="6" class="box hi"/><text x="297" y="38" text-anchor="middle" class="lbl">MP</text>
+<rect x="360" y="16" width="100" height="34" rx="6" class="box"/><text x="410" y="38" text-anchor="middle" class="lbl">BHOPAL</text>
+<rect x="480" y="16" width="142" height="34" rx="6" class="box"/><text x="551" y="38" text-anchor="middle" class="lbl">HOSHANGABAD</text>
+<line x1="114" y1="33" x2="132" y2="33" class="arr dim"/>
+<line x1="234" y1="33" x2="252" y2="33" class="arr dim"/>
+<line x1="340" y1="33" x2="358" y2="33" class="arr dim"/>
+<line x1="460" y1="33" x2="478" y2="33" class="arr dim"/>
+<text x="177" y="66" text-anchor="middle" class="sub">what a state manager is assigned</text>
+<text x="500" y="66" text-anchor="middle" class="sub">everything below is implied, not stored</text>
 
-<line x1="128" y1="47" x2="146" y2="47" class="arr dim"/>
-<line x1="256" y1="47" x2="274" y2="47" class="arr dim"/>
-<line x1="362" y1="47" x2="380" y2="47" class="arr dim"/>
-<line x1="490" y1="47" x2="508" y2="47" class="arr dim"/>
+<rect x="14" y="84" width="608" height="44" rx="8" class="box"/>
+<text x="318" y="103" text-anchor="middle" class="lbl">user.granted_regions</text>
+<text x="318" y="120" text-anchor="middle" class="sub">ga_west · ga_MP_2 · ga_MP</text>
 
-<rect x="20" y="104" width="602" height="46" rx="8" class="box hi"/>
-<text x="321" y="123" text-anchor="middle" class="lbl">a lead in that branch stores the whole path as accessible_regions</text>
-<text x="321" y="140" text-anchor="middle" class="sub">[ WEST, MP_2, MP, BHOPAL, HOSHANGABAD ]</text>
-<path d="M 566 86 L 566 102" class="arr" fill="none" marker-end="url(#ah-group-hierarchy-access)"/>
+<path d="M 318 128 L 318 158" class="arr" fill="none" marker-end="url(#ah-group-hierarchy-access)"/>
+<text x="330" y="148" class="sub">a cron every 15 minutes walks down from the deepest one</text>
 
-<text x="20" y="178" class="sub">and each user carries only what they may see</text>
-<rect x="20" y="190" width="190" height="46" rx="8" class="box"/>
-<text x="115" y="209" text-anchor="middle" class="lbl">field officer</text>
-<text x="115" y="226" text-anchor="middle" class="sub">[ HOSHANGABAD ]</text>
-<rect x="226" y="190" width="190" height="46" rx="8" class="box"/>
-<text x="321" y="209" text-anchor="middle" class="lbl">area head</text>
-<text x="321" y="226" text-anchor="middle" class="sub">[ BHOPAL ]</text>
-<rect x="432" y="190" width="190" height="46" rx="8" class="box"/>
-<text x="527" y="209" text-anchor="middle" class="lbl">zonal head</text>
-<text x="527" y="226" text-anchor="middle" class="sub">[ WEST ]</text>
+<rect x="14" y="164" width="608" height="44" rx="8" class="box hi"/>
+<text x="318" y="183" text-anchor="middle" class="lbl">user.authorised_regions</text>
+<text x="318" y="200" text-anchor="middle" class="sub">every group under MP: BHOPAL · HOSHANGABAD · INDORE · …</text>
+
+<rect x="14" y="220" width="608" height="36" rx="8" class="box"/>
+<text x="318" y="243" text-anchor="middle" class="sub">a lead in that branch stores its lineage upward: WEST · MP_2 · MP · BHOPAL · HOSHANGABAD</text>
 </svg>
 </div>
-<p>Groups are created up front, one per node, per client. A user’s role and posting decide which group ids land in <code>authorised_regions</code>. A record’s branch decides its lineage.</p>
+<p>Groups are created up front, one per node, per client. The cron is what makes a posting mean something: without it a state manager holds three ids that match no record, because a record never stores an assignment id.</p>
 
 <!-- section: build -->
-<p>The whole rule is “do these two arrays share anything?”, which every store we used can answer from an index:</p>
+<p>At read time the whole rule is “do these two arrays share anything?”, which every store we used can answer from an index:</p>
 <pre><code>-- PostgreSQL: overlap operator, backed by a GIN index on the array
 CREATE INDEX leads_accessible_regions ON leads USING gin (accessible_regions);
 
 SELECT * FROM leads
-WHERE  accessible_regions &amp;&amp; $1      -- $1 = the user's authorised_regions
+WHERE  accessible_regions &amp;&amp; $1   -- $1 = the user's authorised_regions
 AND    status = 'open';</code></pre>
 <pre><code>// MongoDB: $in against a multikey index on accessible_regions
 db.leads.find({
   accessible_regions: { $in: user.authorised_regions },
   status: 'open',
 });</code></pre>
-<p>In the search index it is a <code>terms</code> filter on the same field. Three stores, one rule, and no join or recursion in any of them.</p>
-<p>The check never changes shape, whatever the user is. A zonal head’s array has one element, the same as a field officer’s. Depth in the tree costs nothing at read time, because the lineage was written down when the record was written.</p>
+<p>In the search index it is a <code>terms</code> filter on the same field. Three stores, one rule, no join and no recursion in any of them.</p>
+<p>Both sides being flattened means a match can land at any level. It also means an exception works from either end: give a person an extra branch id, or give one record an extra region id, and the same query honours it with no new branch in the code.</p>
 
 <!-- section: hardParts -->
-<h4>The check itself is the easy half</h4>
 <div class="diagram">
-<svg viewBox="0 0 640 170" role="img" aria-label="The lead's accessible regions list is compared with three users. The field officer in Hoshangabad shares the Hoshangabad id and is allowed. A field officer in Indore shares nothing and is denied. The zonal head for WEST shares the WEST id and is allowed.">
+<svg viewBox="0 0 640 170" role="img" aria-label="A lead in Hoshangabad carries WEST, MP 2, MP, Bhopal and Hoshangabad. The state manager's expanded array contains Hoshangabad so they are allowed. A field officer in Indore shares nothing and is denied. The zonal head's expanded array also contains Hoshangabad so they are allowed.">
 <rect x="20" y="16" width="600" height="40" rx="8" class="box hi"/>
 <text x="320" y="33" text-anchor="middle" class="sub">the lead’s accessible_regions</text>
 <text x="320" y="49" text-anchor="middle" class="lbl">WEST · MP_2 · MP · BHOPAL · HOSHANGABAD</text>
 
 <rect x="20" y="76" width="196" height="36" rx="6" class="box"/>
-<text x="118" y="99" text-anchor="middle" class="lbl">[ HOSHANGABAD ]</text>
+<text x="118" y="92" text-anchor="middle" class="sub">state manager, expanded</text>
+<text x="118" y="106" text-anchor="middle" class="lbl">… HOSHANGABAD …</text>
 <rect x="222" y="76" width="196" height="36" rx="6" class="box warn"/>
-<text x="320" y="99" text-anchor="middle" class="lbl">[ INDORE ]</text>
+<text x="320" y="92" text-anchor="middle" class="sub">officer in Indore</text>
+<text x="320" y="106" text-anchor="middle" class="lbl">INDORE</text>
 <rect x="424" y="76" width="196" height="36" rx="6" class="box"/>
-<text x="522" y="99" text-anchor="middle" class="lbl">[ WEST ]</text>
+<text x="522" y="92" text-anchor="middle" class="sub">zonal head, expanded</text>
+<text x="522" y="106" text-anchor="middle" class="lbl">… HOSHANGABAD …</text>
 
 <text x="118" y="134" text-anchor="middle" class="lbl">ALLOWED</text>
-<text x="118" y="151" text-anchor="middle" class="sub">shares HOSHANGABAD</text>
+<text x="118" y="151" text-anchor="middle" class="sub">arrays overlap</text>
 <text x="320" y="134" text-anchor="middle" class="lbl">DENIED</text>
-<text x="320" y="151" text-anchor="middle" class="sub">shares nothing</text>
+<text x="320" y="151" text-anchor="middle" class="sub">nothing in common</text>
 <text x="522" y="134" text-anchor="middle" class="lbl">ALLOWED</text>
-<text x="522" y="151" text-anchor="middle" class="sub">shares WEST</text>
+<text x="522" y="151" text-anchor="middle" class="sub">arrays overlap</text>
 </svg>
 </div>
-<p>The hard half is keeping both arrays true as the business moves underneath them.</p>
+<p>The check is the easy half. Keeping both arrays true as the business moves underneath them is the rest of it.</p>
 
-<h4>When the hierarchy itself is re-mapped</h4>
-<p>Move a branch from one cluster to another and every record under it is now carrying a stale lineage. There is no clever trick: the affected records have to be recomputed and backfilled, in the background, in batches. The job has to be restartable and idempotent, because it will be interrupted.</p>
+<h4>The fifteen-minute window</h4>
+<p>A new joiner, a promotion or a transfer changes <code>granted_regions</code> immediately, but they can see nothing new until the cron expands it. Fifteen minutes of “I’ve been moved and the app disagrees” is a support ticket, so the expansion also has to be triggerable on demand for the cases people actually notice.</p>
 
-<h4>When a person moves</h4>
-<p>A promotion or a transfer changes <code>authorised_regions</code>. That part is one record. The catch is anything that cached the old array &mdash; a session, a token, a warm cache &mdash; because until it is invalidated the person keeps their old view. Caching the array is the obvious optimisation and the obvious bug.</p>
+<h4>Re-mapping a branch moves work at both ends</h4>
+<p>Move a branch under a different cluster and two things are now stale: every record beneath it is carrying the old lineage, and every user whose expansion included it has the wrong set. Records need an asynchronous backfill in batches; users get fixed by the next cron run. The backfill has to be restartable and idempotent, because it will be interrupted.</p>
+
+<h4>Senior users carry enormous arrays</h4>
+<p>A zonal head’s expansion is every group in the zone. That array is big in the user record, big in the cache, and big as the right-hand side of the query. It is the cost of making depth free at read time, and it lands hardest on exactly the users who read the most.</p>
 
 <!-- section: results -->
-<div class="note"><strong>To fill in:</strong> the numbers &mdash; query times before and after, how many clients or users it rolled out to, and anything measured on the backfill.</div>
+<div class="note"><strong>To fill in:</strong> the numbers &mdash; query times before and after, how many clients or users it rolled out to, and anything measured on the cron or the backfill.</div>
 <ul>
-<li><strong>Authorisation stopped scaling with depth.</strong> A zonal head’s query costs the same as a field officer’s.</li>
+<li><strong>Authorisation stopped scaling with depth.</strong> A zonal head’s query is the same shape as a field officer’s.</li>
 <li><strong>One rule, three stores.</strong> The document store, the relational store and the search index all express the same check natively.</li>
 <li><strong>Exceptions stopped being code.</strong> A manager covering two branches is two ids in an array, not a branch in the query builder.</li>
-<li><strong>The hierarchy got out of the request path.</strong> Reads no longer touched the group tree at all.</li>
+<li><strong>The hierarchy left the request path.</strong> Reads no longer touch the group tree at all; only the cron and the backfill do.</li>
 </ul>
 
 <!-- section: tradeoffs -->
 <ul>
-<li><strong>Write amplification.</strong> One branch re-map can touch an enormous number of records. The cost didn’t go away, it moved to where it is paid rarely instead of constantly.</li>
-<li><strong>A window of being wrong.</strong> Between the re-map and the end of the backfill, some records answer with the old lineage. Correctness is now eventual, and that has to be stated out loud rather than discovered.</li>
-<li><strong>Grants only, no denies.</strong> The model can say “you may see this”. It cannot say “you may see everything in the zone except this one branch”, which would need a second, opposite check.</li>
-<li><strong>The arrays are a derived copy.</strong> The tree is still the truth, so a reconcile job that re-derives and compares isn’t optional.</li>
+<li><strong>Access is eventually consistent.</strong> Up to fifteen minutes between a posting change and the view that matches it. Fine for a transfer, awkward for a new joiner on day one.</li>
+<li><strong>Two derived arrays, not one.</strong> Strictly, the overlap only needs one side flattened. Doing both buys exceptions from either end, and costs a second thing that can drift.</li>
+<li><strong>Write amplification.</strong> One branch re-map can touch an enormous number of records. The cost didn’t go away; it moved to where it is paid rarely instead of constantly.</li>
+<li><strong>Grants only, no denies.</strong> The model can say “you may see this”. It cannot say “everything in the zone except this one branch”, which needs a second, opposite check.</li>
 </ul>
-<p>What I’d do differently: build the verifier before the backfill. A job that walks the tree and reports records whose lineage disagrees is what makes the whole design trustworthy, and it is the thing that gets written last.</p>
+<p>What I’d do differently: build the verifier before the backfill. A job that walks the tree and reports every user and record whose array disagrees with it is what makes the design trustworthy, and it is the thing that gets written last.</p>
 
 <!-- section: learnings -->
 <ul>
-<li><strong>Put the cost where the traffic isn’t.</strong> When reads outnumber writes by orders of magnitude, almost any amount of write-time work is a good trade.</li>
-<li><strong>A tree you only ask one question of is a set.</strong> “Is this record under that node?” doesn’t need a tree at read time &mdash; it needs the ancestors written down.</li>
-<li><strong>Make the exception use the normal path.</strong> Cross-region access needed no new code because it was the same array with another id in it.</li>
+<li><strong>Put the cost where the traffic isn’t.</strong> When reads outnumber writes by orders of magnitude, almost any amount of background work is a good trade.</li>
+<li><strong>A tree you only ask one question of is a set.</strong> “Is this record under that node?” doesn’t need a tree at read time, it needs the membership written down.</li>
+<li><strong>A periodic job needs a manual trigger.</strong> Fifteen minutes is fine on average and unacceptable in the one case a person is watching.</li>
 <li><strong>Derived data needs a verifier, not just a writer.</strong> Anything you compute and store will drift, and you want to find out before a customer does.</li>
 </ul>
 
@@ -160,23 +163,23 @@ db.leads.find({
 <ol>
 <li>“Field teams are organised five levels deep, and what you can see depends on where you sit in that tree.”</li>
 <li>“The naive version walks the tree on every read, and the heaviest users are the ones highest up.”</li>
-<li>“So we flattened it. Each record stores its full lineage as an array of group ids; each user stores the ids they’re allowed to see.”</li>
-<li>“Visibility is then one indexed array intersection, which Postgres, Mongo and Elasticsearch all do natively.”</li>
-<li>“The cost moves to write time: re-mapping a branch means backfilling its records, and moving a person means invalidating anything that cached their array.”</li>
+<li>“So we flattened it both ways. A person is assigned a path; a cron expands the deepest node into every group beneath it. A record stores its lineage upward.”</li>
+<li>“Visibility is then one indexed array overlap, which Postgres, Mongo and Elasticsearch all do natively.”</li>
+<li>“The cost moves off the request path: a posting change waits for the cron, and a branch re-map means backfilling records.”</li>
 </ol>
 
 <h4>Questions it invites</h4>
 <ul>
-<li><strong>What happens during a re-map?</strong> A window where some records are stale. Eventual, and known.</li>
+<li><strong>Why a cron and not compute it on assignment?</strong> Because the tree moves too, not just the person. A periodic re-derive catches both; on-demand is the optimisation on top.</li>
+<li><strong>Why flatten both sides?</strong> One would do for the basic rule. Both lets an exception be added from either end.</li>
 <li><strong>Can you express a deny?</strong> No. It is a grant model, and that is a real limit.</li>
-<li><strong>Why not a recursive query?</strong> Correct, but paid on every read by the busiest users.</li>
 <li><strong>How do you know the arrays are right?</strong> A reconcile job that re-derives from the tree and reports disagreements.</li>
 </ul>
 
 <h4>Traps</h4>
 <ul>
-<li>Selling it as free. It is a trade, and the write-time half is the interesting half.</li>
-<li>Forgetting the cache. The first thing anyone does is cache the user’s array.</li>
+<li>Saying “union”. It is an overlap: the two arrays must share an id. A union would match everything.</li>
+<li>Selling it as free. The write-time half is the interesting half.</li>
 <li>Claiming the whole platform. Be clear which parts were mine.</li>
 </ul>
 
@@ -184,12 +187,12 @@ db.leads.find({
 <ul>
 <li>Field teams sit in a five-level geography, and row visibility follows that tree.</li>
 <li>Walking the tree per request makes authorisation cost more than the query it protects, and hurts senior users most.</li>
-<li>Each record stores <code>accessible_regions</code>: its full lineage upward, plus explicit grants.</li>
-<li>Each user stores <code>authorised_regions</code>: the group ids their role and posting allow.</li>
-<li>Access is granted when the two arrays share at least one id.</li>
-<li>That intersection is one indexed operation in Postgres, Mongo and Elasticsearch alike.</li>
-<li>Depth stops mattering: a zonal head’s check costs the same as a field officer’s.</li>
-<li>Exceptions like a cross-region manager are extra ids, not extra query logic.</li>
-<li>The cost moves to write time: re-mapping a branch means an asynchronous backfill of its records.</li>
-<li>The arrays are derived data, so they need a reconcile job and careful cache invalidation.</li>
+<li>A user’s <code>granted_regions</code> is only what they were assigned &mdash; a state manager gets zone, region and state, nothing below.</li>
+<li>A cron every fifteen minutes walks down from the deepest assigned node and writes every group beneath it into <code>authorised_regions</code>.</li>
+<li>A record’s <code>accessible_regions</code> holds its lineage upward, plus explicit grants.</li>
+<li>Access is granted when the user’s expanded array and the record’s array overlap &mdash; share at least one id.</li>
+<li>That overlap is one indexed operation in Postgres, Mongo and Elasticsearch alike.</li>
+<li>Exceptions work from either end, because both sides are flat arrays.</li>
+<li>The price is eventual consistency: up to fifteen minutes between a posting change and the matching view.</li>
+<li>Re-mapping a branch leaves records stale until a backfill, and users stale until the next cron run.</li>
 </ul>
