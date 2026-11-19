@@ -1,0 +1,231 @@
+<!--
+title: Two Sum
+summary: Find the two numbers in an array that add up to a target, and return their positions. One pass, one hash map, and the “look for the partner” move behind a whole family of problems.
+category: Hash Map
+order: 20
+related: longest-subarray-sum-k
+-->
+
+<!-- section: problem -->
+<p>You get an array of whole numbers, <code>nums</code>, and a number <code>target</code>. Find the two numbers that add up to <code>target</code>, and return their <strong>positions</strong> in the array.</p>
+<p>Two rules. You can’t use the same position twice &mdash; <code>[3]</code> with a target of 6 is not an answer. The same <em>value</em> twice is fine, as long as it sits at two different positions.</p>
+<p>Limits for this version: 2 to 100,000 numbers, each between −1,000,000,000 and 1,000,000,000. The array is not sorted, it may hold repeats, and exactly one pair works. Return the two positions in any order. This is the problem usually listed as “Two Sum”.</p>
+<p class="note">One-line version: walk the array once, and at each number ask a map “have I already seen <code>target − this number</code>?”</p>
+
+<!-- section: examples -->
+<div class="table-wrap"><table>
+<tr><th><code>nums</code></th><th><code>target</code></th><th>Answer</th><th>Why</th></tr>
+<tr><td><code>[2, 7, 11, 15]</code></td><td>9</td><td><code>[0, 1]</code></td><td>2 + 7 = 9. The pair is right at the front.</td></tr>
+<tr><td><code>[3, 2, 4]</code></td><td>6</td><td><code>[1, 2]</code></td><td>2 + 4 = 6. The tempting wrong answer is 3 + 3, which would use position 0 twice.</td></tr>
+<tr><td><code>[3, 3]</code></td><td>6</td><td><code>[0, 1]</code></td><td>The same value at two positions. Both are real, so this one counts.</td></tr>
+</table></div>
+<p>The last two rows are the whole difficulty: a position can’t pair with itself, but two equal values can pair with each other.</p>
+
+<!-- section: think -->
+<h4>Questions to ask the interviewer</h4>
+<ul>
+<li><strong>Positions or values?</strong> Positions here. It matters, because sorting the array throws the original positions away.</li>
+<li><strong>Can one position be used twice?</strong> No. Can the same value appear twice? Yes.</li>
+<li><strong>Is it sorted?</strong> No. If it were, there is a cheaper solution &mdash; see the pattern section.</li>
+<li><strong>Always exactly one answer?</strong> Here, yes. Ask anyway, because “none” and “several” change what you return.</li>
+</ul>
+
+<h4>What the limits tell you</h4>
+<ul>
+<li>100,000 numbers means about 5 billion pairs. Too many, so checking every pair is out.</li>
+<li>Negative numbers are allowed, so nothing may assume sums only grow.</li>
+</ul>
+
+<h4>What the examples have in common</h4>
+<p>Once you fix one number, the other one is decided: it has to be <code>target − that number</code>. So this is not really a search for a pair. It is a search for <strong>one</strong> value, repeated for every number in the array.</p>
+
+<!-- section: brute -->
+<p>The obvious way: take each number, and try it against every number after it.</p>
+<pre><code>// two-sum-slow.ts
+function twoSumSlow(nums: number[], target: number): [number, number] | null {
+  for (let i = 0; i &lt; nums.length; i++) {
+    for (let j = i + 1; j &lt; nums.length; j++) {   // start at i + 1
+      if (nums[i] + nums[j] === target) return [i, j];
+    }
+  }
+  return null;
+}</code></pre>
+<p>Starting the inner loop at <code>i + 1</code> is what stops a position pairing with itself, and it means no pair is tried twice. The cost is <strong>O(n²) time</strong> &mdash; the inner step runs n × (n − 1) ÷ 2 times &mdash; and <strong>O(1) space</strong>.</p>
+<p>At n = 100,000 that is about <strong>5 billion</strong> checks when the pair sits at the end. At a billion steps a second (a round number, not a measurement) that is several seconds for an answer you can get in 100,000 steps.</p>
+
+<!-- section: idea -->
+<p>The slow way searches the rest of the array for the partner. But we don’t need to search: the partner’s <em>value</em> is known the moment we pick a number. For <code>nums[j]</code>, the partner must be <code>target − nums[j]</code>. Call it <code>need</code>.</p>
+<p>So keep a <strong>map</strong> of every value seen so far, pointing at the position it was seen at. A map answers “is this value in here?” in about the same time however big it gets. The search becomes one lookup.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 205" role="img" aria-label="At position 2 of the array 3, 2, 4 with target 6, the number needed is 6 minus 4 equals 2. A map of values seen so far holds 3 at index 0 and 2 at index 1, so the lookup finds 2 at index 1 and the answer is positions 1 and 2.">
+<defs><marker id="ah-two-sum" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<text x="30" y="26" class="sub">position</text>
+<text x="126" y="26" text-anchor="middle" class="sub">0</text>
+<text x="206" y="26" text-anchor="middle" class="sub">1</text>
+<text x="286" y="26" text-anchor="middle" class="sub">2</text>
+<rect x="90" y="36" width="72" height="42" rx="6" class="box"/><text x="126" y="63" text-anchor="middle" class="lbl">3</text>
+<rect x="170" y="36" width="72" height="42" rx="6" class="box"/><text x="206" y="63" text-anchor="middle" class="lbl">2</text>
+<rect x="250" y="36" width="72" height="42" rx="6" class="box hi"/><text x="286" y="63" text-anchor="middle" class="lbl">4</text>
+<text x="286" y="96" text-anchor="middle" class="sub">we are here</text>
+
+<text x="30" y="132" class="lbl">need = 6 − 4 = 2</text>
+<line x1="180" y1="127" x2="386" y2="127" class="arr" marker-end="url(#ah-two-sum)"/>
+<text x="283" y="118" text-anchor="middle" class="sub">is it in the map?</text>
+
+<rect x="390" y="36" width="225" height="112" rx="8" class="box"/>
+<text x="502" y="60" text-anchor="middle" class="sub">seen so far: value → position</text>
+<text x="502" y="88" text-anchor="middle" class="lbl">3 → 0</text>
+<rect x="432" y="98" width="140" height="30" rx="5" class="box hi"/>
+<text x="502" y="118" text-anchor="middle" class="lbl">2 → 1</text>
+
+<text x="320" y="175" text-anchor="middle" class="lbl">found at position 1, so the answer is [1, 2]</text>
+<text x="320" y="194" text-anchor="middle" class="sub">one lookup instead of scanning everything to the right</text>
+</svg>
+</div>
+
+<p>One detail makes it correct: <strong>look before you store</strong>. The map only ever holds numbers from <em>earlier</em> positions, so a number can never find itself. It is the same guard as <code>j = i + 1</code> in the slow version. It is also why <code>[3, 3]</code> works: the 3 at position 1 looks up a map that already holds the 3 at position 0.</p>
+
+<!-- section: walkthrough -->
+<p><code>nums = [3, 2, 4]</code>, <code>target = 6</code>. The map, <code>seen</code>, starts empty.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 215" role="img" aria-label="Three steps. At j equals 0 the number is 3, it needs 3, the map is empty so 3 maps to 0 is stored. At j equals 1 the number is 2, it needs 4, not found, so 2 maps to 1 is stored. At j equals 2 the number is 4, it needs 2, which is in the map at position 1, so the answer is positions 1 and 2.">
+<text x="20" y="42" class="lbl">j = 0</text>
+<rect x="80" y="20" width="56" height="34" rx="5" class="box hi"/><text x="108" y="43" text-anchor="middle" class="lbl">3</text>
+<rect x="144" y="20" width="56" height="34" rx="5" class="box"/><text x="172" y="43" text-anchor="middle" class="lbl">2</text>
+<rect x="208" y="20" width="56" height="34" rx="5" class="box"/><text x="236" y="43" text-anchor="middle" class="lbl">4</text>
+<text x="290" y="35" class="lbl">need 3 — map is empty</text>
+<text x="290" y="51" class="sub">store 3 → 0</text>
+
+<text x="20" y="112" class="lbl">j = 1</text>
+<rect x="80" y="90" width="56" height="34" rx="5" class="box"/><text x="108" y="113" text-anchor="middle" class="lbl">3</text>
+<rect x="144" y="90" width="56" height="34" rx="5" class="box hi"/><text x="172" y="113" text-anchor="middle" class="lbl">2</text>
+<rect x="208" y="90" width="56" height="34" rx="5" class="box"/><text x="236" y="113" text-anchor="middle" class="lbl">4</text>
+<text x="290" y="105" class="lbl">need 4 — not in the map</text>
+<text x="290" y="121" class="sub">store 2 → 1</text>
+
+<text x="20" y="182" class="lbl">j = 2</text>
+<rect x="80" y="160" width="56" height="34" rx="5" class="box"/><text x="108" y="183" text-anchor="middle" class="lbl">3</text>
+<rect x="144" y="160" width="56" height="34" rx="5" class="box warn"/><text x="172" y="183" text-anchor="middle" class="lbl">2</text>
+<rect x="208" y="160" width="56" height="34" rx="5" class="box hi"/><text x="236" y="183" text-anchor="middle" class="lbl">4</text>
+<text x="290" y="175" class="lbl">need 2 — found at 1</text>
+<text x="290" y="191" class="sub">return [1, 2], the loop stops here</text>
+</svg>
+</div>
+
+<div class="table-wrap"><table>
+<tr><th><code>j</code></th><th><code>nums[j]</code></th><th><code>need</code></th><th>Is <code>need</code> in <code>seen</code>?</th><th><code>seen</code> after this step</th></tr>
+<tr><td>0</td><td>3</td><td>3</td><td>No, it is empty</td><td>3 → 0</td></tr>
+<tr><td>1</td><td>2</td><td>4</td><td>No</td><td>3 → 0, 2 → 1</td></tr>
+<tr><td>2</td><td>4</td><td>2</td><td>Yes, at 1. Answer <code>[1, 2]</code></td><td>never stored, we returned</td></tr>
+</table></div>
+<p>Row 0 is the one to notice. The number is 3 and it needs a 3, but nothing is stored yet, so it doesn’t match itself. Had we stored first and looked after, it would have returned <code>[0, 0]</code>.</p>
+
+<!-- section: code -->
+<pre><code>// two-sum.ts
+function twoSum(nums: number[], target: number): [number, number] | null {
+  const seen = new Map&lt;number, number&gt;();   // value -&gt; position
+
+  for (let j = 0; j &lt; nums.length; j++) {
+    const need = target - nums[j];          // the partner we want
+
+    // look first: the map holds earlier positions only
+    if (seen.has(need)) return [seen.get(need)!, j];
+
+    seen.set(nums[j], j);                   // then add this one
+  }
+  return null;                              // no pair
+}</code></pre>
+<ul>
+<li><strong>The order of the two lines is the whole trick.</strong> Looking up before storing is what keeps a position from pairing with itself.</li>
+<li><strong>Repeats overwrite, and that is fine.</strong> Only one position per value is ever needed, and a later one works just as well.</li>
+<li><strong>The <code>!</code> is only for TypeScript</strong> &mdash; <code>has</code> already proved the value is there.</li>
+<li><strong>Returning <code>null</code></strong> covers no pair, one number, or none at all. The limits promise a pair; the function still shouldn’t fall over without one.</li>
+</ul>
+
+<!-- section: complexity -->
+<div class="table-wrap"><table>
+<tr><th></th><th>Time</th><th>Space</th></tr>
+<tr><td>Every pair</td><td>O(n²)</td><td>O(1)</td></tr>
+<tr><td>One pass with a map</td><td>O(n)</td><td>O(n)</td></tr>
+</table></div>
+<ul>
+<li><strong>Time O(n).</strong> Each number is looked at once, and the lookup and the store each take about the same time whatever the map holds. Ten times more numbers, ten times more work.</li>
+<li><strong>Space O(n).</strong> In the worst case the pair is the last two numbers, so almost every value ends up in the map.</li>
+<li><strong>The slow one is O(1) space</strong> and that is its only advantage. It is the trade: a map full of numbers in return for 100,000 steps instead of 5 billion.</li>
+</ul>
+
+<!-- section: edgeCases -->
+<div class="table-wrap"><table>
+<tr><th>Input</th><th>Should return</th><th>Why it is easy to get wrong</th></tr>
+<tr><td><code>[3, 2, 4]</code>, target 6</td><td><code>[1, 2]</code></td><td>Store before you look, and 3 finds itself: <code>[0, 0]</code>.</td></tr>
+<tr><td><code>[3, 3]</code>, target 6</td><td><code>[0, 1]</code></td><td>Equal values must still pair. A “skip values I already stored” guard breaks this.</td></tr>
+<tr><td><code>[0, 0]</code>, target 0</td><td><code>[0, 1]</code></td><td>Zero and a target of 0: <code>need</code> and the value are the same number again.</td></tr>
+<tr><td><code>[4, 4, 4, 4]</code>, target 8</td><td><code>[0, 1]</code></td><td>All the same. The first pair found is the first two positions.</td></tr>
+<tr><td><code>[-4, 1, -6, 10]</code>, target −10</td><td><code>[0, 2]</code></td><td>Negatives. Subtraction handles them; anything that assumes growing sums does not.</td></tr>
+<tr><td><code>[]</code> or <code>[5]</code></td><td><code>null</code></td><td>The loop runs 0 or 1 times and never matches. Don’t return undefined or throw.</td></tr>
+<tr><td>100,000 numbers, pair at the end</td><td>the last two positions</td><td>The largest input, and the worst case for both time and memory.</td></tr>
+</table></div>
+<p>Both solutions on this page were run on every row above and on the three examples, and they give the same answers.</p>
+
+<!-- section: pattern -->
+<p>The technique is a <strong>complement lookup</strong>: when two things must combine to a known total, fix one and the other is decided. All that is left is “have I seen that value?”, which a hash map answers in one step. Walk once, look up the partner, then store yourself.</p>
+
+<h4>Signals that point to it</h4>
+<ul>
+<li>“Find two things that add up to / differ by / multiply to” some exact value.</li>
+<li>The input is unsorted, and sorting would lose something you need (here, the positions).</li>
+<li>The obvious solution is every pair, and the limits make that too slow.</li>
+</ul>
+
+<h4>When a different move is better</h4>
+<div class="table-wrap"><table>
+<tr><th>Situation</th><th>Better move</th><th>Cost</th></tr>
+<tr><td>Array is already sorted</td><td>Two pointers, one at each end: too big, move the right one in; too small, move the left one out.</td><td>O(n) time, O(1) space</td></tr>
+<tr><td>Many targets, same array</td><td>Build the map once, answer each target with one pass.</td><td>O(n) once, then O(n) each</td></tr>
+<tr><td>Three numbers adding to a target</td><td>Sort, fix one number, two pointers on the rest.</td><td>O(n²) time</td></tr>
+</table></div>
+<p>The same move works on stretches of an array instead of single numbers: keep a running sum and look up <code>sum − k</code>. That is the Longest Subarray With Sum K topic, and the family is the same.</p>
+<p>Other well-known problems on this pattern: Two Sum II &mdash; Input Array Is Sorted, 3Sum, and Subarray Sum Equals K.</p>
+
+<!-- section: interview -->
+<h4>How to talk through it</h4>
+<ol>
+<li><strong>Repeat the two rules back:</strong> a position can’t be used twice, equal values at different positions can.</li>
+<li><strong>Say the slow solution and its cost:</strong> every pair, O(n²), about 5 billion checks at these limits. Don’t write it unless asked.</li>
+<li><strong>State the idea in one sentence:</strong> “Once I pick a number, its partner is decided, so I look it up instead of searching for it.”</li>
+<li><strong>Say the guard out loud:</strong> look before you store, so nothing pairs with itself.</li>
+<li><strong>Write it, trace <code>[3, 2, 4]</code> through it,</strong> and give the cost: O(n) time, O(n) space.</li>
+</ol>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>Sorted input?</strong> Two pointers from both ends. O(1) extra space.</li>
+<li><strong>Return every pair, not the first?</strong> Don’t return early, and store a list of positions per value.</li>
+<li><strong>No pair exists?</strong> Say what you return &mdash; <code>null</code>, an empty array, or an exception &mdash; and be consistent.</li>
+<li><strong>Numbers arrive as a stream?</strong> The same map works. It is already one pass and never looks back.</li>
+<li><strong>Too big to fit in memory?</strong> Sort on disk, then two pointers, carrying the original positions along with the values.</li>
+</ul>
+
+<h4>Mistakes people make</h4>
+<ul>
+<li>Storing before looking up, so a number pairs with itself.</li>
+<li>Skipping a value already in the map, which breaks <code>[3, 3]</code>.</li>
+<li>Sorting first, then returning positions from the sorted array.</li>
+<li>Returning values instead of positions.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>Two Sum asks for the positions of the two numbers that add up to a target, in an unsorted array that may hold repeats.</li>
+<li>A position can’t pair with itself, but two equal values at different positions can pair with each other.</li>
+<li>Checking every pair is correct and O(n²), which is about 5 billion checks at 100,000 numbers.</li>
+<li>Once you pick a number, its partner is decided: it has to be <code>target − that number</code>.</li>
+<li>A hash map from value to position turns the search for the partner into one lookup.</li>
+<li>Look up the partner before storing the current number, so the map only ever holds earlier positions.</li>
+<li>The one-pass solution is O(n) time and O(n) space, trading memory for speed.</li>
+<li>If the array is sorted, two pointers from both ends solve it in O(1) extra space.</li>
+<li>The same complement move with a running sum solves subarray-sum problems.</li>
+</ul>
