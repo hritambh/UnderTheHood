@@ -9,7 +9,7 @@ Read both before writing: this file, then `formats/<track>.md`.
 
 ## 1. Tracks: what goes where
 
-The home page is split into nine groups called **tracks**. Every topic belongs to exactly one.
+The home page is split into ten groups called **tracks**. Every topic belongs to exactly one.
 
 | # | Track | Folder and format file | What it holds | Example topics |
 |---|---|---|---|---|
@@ -22,20 +22,24 @@ The home page is split into nine groups called **tracks**. Every topic belongs t
 | 7 | Problem Solving & DSA | `dsa` | Algorithms, data structures, interview problems | Sliding Window, Two Pointers |
 | 8 | Security Engineering | `security` | An attack and its defence | SQL Injection, XSS, Secrets Management |
 | 9 | Engineering Decisions & Trade-offs | `decisions` | A choice between reasonable options | SQL vs NoSQL, Monolith vs Microservices |
+| 10 | Work Experience & Projects | `experience` | One piece of work you did yourself, written up to tell in an interview | Rebuilding the Lead Assignment Engine |
 
 ### Picking the track
 
 Ask these questions in order. The first "yes" wins.
 
-1. Is it the story of a real failure? → `incidents`
-2. Is it a choice between two or three options ("X vs Y")? → `decisions`
-3. Is it the whole design of one product? → `system-design`
-4. Is it an algorithm, a data structure, or an interview coding problem? → `dsa`
-5. Is it an attack, or a defence against attacks? → `security`
-6. Is it about how one named tool works on the inside? → `internals`
-7. Is it about using or running a database? → `databases`
-8. Is it a named solution you could tell a teammate to "use here"? → `patterns`
-9. Otherwise, it is a general idea. → `core-concepts`
+1. Is it a piece of work the user did themselves, at a named employer? → `experience`
+2. Is it the story of a real failure? → `incidents`
+3. Is it a choice between two or three options ("X vs Y")? → `decisions`
+4. Is it the whole design of one product? → `system-design`
+5. Is it an algorithm, a data structure, or an interview coding problem? → `dsa`
+6. Is it an attack, or a defence against attacks? → `security`
+7. Is it about how one named tool works on the inside? → `internals`
+8. Is it about using or running a database? → `databases`
+9. Is it a named solution you could tell a teammate to "use here"? → `patterns`
+10. Otherwise, it is a general idea. → `core-concepts`
+
+Question 1 is about where the content comes from, not what shape it has, which is why it goes first. "How we moved reporting off the main database at Vymo" is `experience`, even though the same subject as a general idea would be `databases`.
 
 If two tracks still fit, pick the one whose format lets you say the most useful things, and say why in your report.
 The same subject can appear in two tracks from two angles. "PostgreSQL MVCC" in `internals` and "Isolation Levels" in `databases` are both fine. They must not repeat each other. Each one links to the other in `related`.
@@ -110,6 +114,7 @@ Every track has exactly 12 sections. They are listed, in order, in the track's f
 | Problem Solving & DSA | `formats/dsa.md` |
 | Security Engineering | `formats/security.md` |
 | Engineering Decisions & Trade-offs | `formats/decisions.md` |
+| Work Experience & Projects | `formats/experience.md` |
 
 Rules that hold for every track:
 
@@ -403,7 +408,8 @@ Before and after:
 - Images, iframes, or anything loaded from another website.
 - Inline colours (`style="color:..."`, `fill="#..."`).
 - A line that looks like `<!-- section: ... -->` inside the content. The build reads it as a new section.
-- **Private details.** This site is public. Never write a real employer's or customer's name, internal host names or URLs, real keys or passwords, or real customer data. This matters most in `incidents`, and applies everywhere.
+- **Private details.** This site is public. Never write a real customer's name, internal host names or URLs, real keys or passwords, or real customer data. This matters most in `incidents`, and applies everywhere.
+  The user's **own** employers may be named, but only in the `experience` track, where the write-up is the user's own work and is kept to what they would say in a public interview. See `formats/experience.md`. Everywhere else, no employer names.
 - Text copied from a book, a course, or another website.
 
 ## 10. Checklist before publishing

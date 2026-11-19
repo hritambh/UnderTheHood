@@ -1,6 +1,6 @@
 ---
 name: add-topic
-description: Write and add a new topic to the UnderTheHood site (formerly the System Design Learning Hub). This skill decides by itself which track the topic belongs in (Core Concepts, System Design, Internals & Deep Dives, Incidents & Production Learnings, Engineering Patterns & Practices, Database Engineering, Problem Solving & DSA, Security Engineering, Engineering Decisions & Trade-offs), then applies that track's own playbook and format guide. Use whenever the user asks to add, create, write or draft a topic, a design, an incident write-up, a pattern, a DSA problem or an "X vs Y" comparison for the hub, with or without naming a track, or whenever a new file is about to be created in content/topics/.
+description: Write and add a new topic to the UnderTheHood site (formerly the System Design Learning Hub). This skill decides by itself which track the topic belongs in (Core Concepts, System Design, Internals & Deep Dives, Incidents & Production Learnings, Engineering Patterns & Practices, Database Engineering, Problem Solving & DSA, Security Engineering, Engineering Decisions & Trade-offs, Work Experience & Projects), then applies that track's own playbook and format guide. Use whenever the user asks to add, create, write or draft a topic, a design, an incident write-up, a pattern, a DSA problem, an "X vs Y" comparison or a write-up of their own past work for the hub, with or without naming a track, or whenever a new file is about to be created in content/topics/.
 ---
 
 # Add a topic to the hub
@@ -30,11 +30,11 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
 1. **Read `TOPIC_STYLE.md` from start to end.** Do this every time, even if you think you remember it. It may have changed.
 
 2. **Decide the track yourself.**
-   - Take what the user asked for and go through the nine questions under "Picking the track" in `TOPIC_STYLE.md`, in order. The first "yes" is the track.
-   - A subject can often be written from more than one angle. "Kafka" could be how it stores messages (`internals`), message queues in general (`core-concepts`), or "Kafka vs RabbitMQ" (`decisions`). Go by the words the user used. A bare tool name means `internals`. "X vs Y" means `decisions`. "Design X" means `system-design`. A story of a failure means `incidents`.
+   - Take what the user asked for and go through the ten questions under "Picking the track" in `TOPIC_STYLE.md`, in order. The first "yes" is the track.
+   - A subject can often be written from more than one angle. "Kafka" could be how it stores messages (`internals`), message queues in general (`core-concepts`), or "Kafka vs RabbitMQ" (`decisions`). Go by the words the user used. A bare tool name means `internals`. "X vs Y" means `decisions`. "Design X" means `system-design`. A story of a failure means `incidents`. Work the user did themselves, at a named employer, means `experience`.
    - If two tracks still fit, pick the one whose format lets you say the most useful things. Don't stop to ask.
    - Say your decision in one line before you write: the track, the reason, and the runner-up if there was one. Example: "Putting this in Engineering Patterns & Practices, because Circuit Breaker is a named solution you can tell a teammate to use. Runner-up: Core Concepts."
-   - If the user named a track, use theirs. If the nine questions point somewhere else, say so in the same one line, then carry on with their choice.
+   - If the user named a track, use theirs. If the ten questions point somewhere else, say so in the same one line, then carry on with their choice.
    - Ask the user only when you cannot tell what the topic is about at all.
 
 3. **Open the track's two files and read both from start to end:**
@@ -52,7 +52,7 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
    - **It is already covered.** An existing topic explains this subject, fully or in a long sub-section. Say which topic and which section.
    - **It belongs inside another topic.** The new content is small or is really one part of an existing topic.
    - **Existing content belongs in the new topic.** An older topic holds a long explanation that should live in the new topic, with the older topic keeping a short mention and a `related` link.
-   - **An existing topic is in the wrong track.** By the nine questions, it fits another track better.
+   - **An existing topic is in the wrong track.** By the ten questions, it fits another track better.
    - **Existing content is in the wrong topic or section.** You notice it while searching, even if it is not about the new topic.
 
    For each one, say what it is, where it is now, and where you think it should be. Do not move, cut or merge existing content yourself. If the subject is already fully covered, stop and ask whether to update that topic instead. Otherwise flag and carry on. If nothing is misplaced, say so in one line.

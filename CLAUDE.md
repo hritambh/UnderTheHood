@@ -6,8 +6,8 @@ A plain static website of engineering topics, grouped into tracks. It started as
 
 ## How it fits together
 
-- **Home page** — it shows only the nine track tiles, with a count and a progress bar on each. Topics are not listed there. Clicking a tile (address `index.html#t-<track>`) swaps the tiles for that track's topics, with the status filters, the filter box and the grid/list switch. The user asked for the home page to stay this clean, so don't add topic lists or other panels to it.
-- **Tracks** — the nine groups on the home page: Core Concepts, System Design, Internals & Deep Dives, Incidents & Production Learnings, Engineering Patterns & Practices, Database Engineering, Problem Solving & DSA, Security Engineering, Engineering Decisions & Trade-offs. They are defined, in order, in `content/hub.json`.
+- **Home page** — it shows only the ten track tiles, with a count and a progress bar on each. Topics are not listed there. Clicking a tile (address `index.html#t-<track>`) swaps the tiles for that track's topics, with the status filters, the filter box and the grid/list switch. The user asked for the home page to stay this clean, so don't add topic lists or other panels to it.
+- **Tracks** — the ten groups on the home page: Core Concepts, System Design, Internals & Deep Dives, Incidents & Production Learnings, Engineering Patterns & Practices, Database Engineering, Problem Solving & DSA, Security Engineering, Engineering Decisions & Trade-offs, Work Experience & Projects. They are defined, in order, in `content/hub.json`.
 - `content/topics/<track>/<id>.html` — one file per topic. The folder is the track. **This is what the site is built from.**
 - `TOPIC_STYLE.md` — the rules shared by every topic: how to pick a track, file layout, building blocks, tone, what is not allowed.
 - `formats/<track>.md` — one file per track: its 12 sections, what goes in each, its "Must have" list, and a skeleton to copy.
@@ -31,12 +31,12 @@ Topic pages are served at `/topics/<id>.html` whatever the track, so an id must 
 
 These apply every time a topic is added or edited, with or without the skills:
 
-- **The skill picks the track.** When the user asks for a topic, don't ask them which track. Decide with the nine questions under "Picking the track" in `TOPIC_STYLE.md`, say the choice and the reason in one line, and carry on. If the user did name a track, use theirs.
+- **The skill picks the track.** When the user asks for a topic, don't ask them which track. Decide with the ten questions under "Picking the track" in `TOPIC_STYLE.md`, say the choice and the reason in one line, and carry on. If the user did name a track, use theirs.
 - **Same format every time.** A topic uses exactly the 12 sections of its track, as listed in `formats/<track>.md`, with every "Must have" item, written by following the track's playbook. Read `TOPIC_STYLE.md`, the track's format file and its playbook before writing.
 - **Short, moderate depth, visual.** Topics are for learning, not for reference. 1,400 to 1,900 words (a 7 to 10 minute read), 100 to 150 per section, at least two diagrams. `system-design` gets 1,800 to 2,300, because its format makes every topic carry six tables and a schema. Cover the fundamentals, how it works, where it is used and what it costs, then stop. Prefer a diagram, table or numbered list over paragraphs. The build prints a `Note:` when a topic runs long or has too few diagrams. The full rule is part 7 of `TOPIC_STYLE.md`.
 - **Tone.** Topics are written the way one developer explains something to another: plain everyday words, short sentences, no formal or academic English. The full rule and the word list are under "Writing style" in `TOPIC_STYLE.md`.
 - **Placement.** Before adding a topic or any content, look through the existing topics in every track. Flag it to the user if the content is already covered, belongs inside another topic or another track, or if existing content sits in the wrong place. Flag only; don't move existing content without the user saying so.
-- **Public site.** No real employer or customer names, internal host names, keys, or real customer data in any topic.
+- **Public site.** No real customer names, internal host names, keys, or real customer data in any topic. The one carve-out is the `experience` track, which is the user's own work history: it may name the user's own employers, and nothing else on that list. It is kept to what the user would say in a public interview. `formats/experience.md` has the full rule.
 - **No quiz features.** The user reads and revises from plain summaries. Don't add recall, quiz or flashcard features.
 
 ## Changing tracks or formats

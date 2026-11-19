@@ -496,6 +496,61 @@
           "Quick revision"
         ]
       ]
+    },
+    {
+      "id": "experience",
+      "title": "Work Experience & Projects",
+      "description": "Work I shipped, written up so I can tell the story well in an interview.",
+      "sections": [
+        [
+          "context",
+          "The context"
+        ],
+        [
+          "problem",
+          "The problem"
+        ],
+        [
+          "constraints",
+          "What I had to work within"
+        ],
+        [
+          "approach",
+          "What I decided to do"
+        ],
+        [
+          "architecture",
+          "How it fitted together"
+        ],
+        [
+          "build",
+          "What I built"
+        ],
+        [
+          "hardParts",
+          "The hard parts"
+        ],
+        [
+          "results",
+          "What changed"
+        ],
+        [
+          "tradeoffs",
+          "Trade-offs and what I'd do differently"
+        ],
+        [
+          "learnings",
+          "What I took away"
+        ],
+        [
+          "interview",
+          "Telling the story in an interview"
+        ],
+        [
+          "revision",
+          "Quick revision"
+        ]
+      ]
     }
   ]
 }

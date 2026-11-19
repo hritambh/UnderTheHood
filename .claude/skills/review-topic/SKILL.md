@@ -28,7 +28,7 @@ The first thing to check is always the same: **is this easy to learn from?** Mod
 4. **Read the whole topic file** and check what the build cannot:
 
    **Track and structure**
-   - The topic is in the right track, by the nine questions under "Picking the track" in `TOPIC_STYLE.md`.
+   - The topic is in the right track, by the ten questions under "Picking the track" in `TOPIC_STYLE.md`.
    - All 12 sections of that track are there, in order.
    - Each section holds what its row in the format table asks for. It is not a section from another track's format under a different name.
    - Every item in the format file's "Must have" list is there.
