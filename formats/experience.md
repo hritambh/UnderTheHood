@@ -31,6 +31,7 @@ This is the one track that names a real employer, and the rule is the same one a
 public interview answer follows. Write freely about:
 
 - the shape of the problem, your design, and why you chose it
+- the name of a component you built, and what it does. The internal addresses it lives at are a different thing, and they stay out
 - technologies, patterns and schema ideas
 - what you learnt, and what you would do differently
 - numbers your employer has already published, or rough ones you are free to share
@@ -38,7 +39,7 @@ public interview answer follows. Write freely about:
 Never write:
 
 - a customer's name, or anything that identifies one
-- internal host names, service names, repository names, URLs, IP addresses, ticket numbers
+- internal host names, URLs, IP addresses, repository paths, environment variable names, internal API routes, ticket numbers
 - real keys, passwords, config, or any customer data
 - revenue, contract values, or internal metrics you were not cleared to share
 - code copied from the employer's codebase

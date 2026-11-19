@@ -1,0 +1,220 @@
+<!--
+title: Building a Hook Orchestrator
+summary: A service that turned “this customer needs a different rule” from a code change into a row in a table. One blocking path that can refuse a write, one background path that cannot, and a scheduler for the rules that fire days later.
+category: Neutrinos
+order: 10
+related: redis-job-scheduler, rabbitmq-routing, notification-service
+-->
+
+<!-- section: context -->
+<div class="note"><strong>To fill in before this is final:</strong> the dates, the team size, and which parts were mine against the team’s. Everything else here comes from the design itself.</div>
+<p>This was at <strong>Neutrinos</strong>, on a low-code platform. Customers model their own entities &mdash; a lead, a claim, a policy &mdash; and a shared <strong>data service</strong> handles create, update and delete for all of them. One codebase, many tenants, each with their own schemas.</p>
+<p>That shared service is the problem and the opportunity. Every customer wants slightly different behaviour on the same entity, and none of them want to wait for a release to get it.</p>
+<p class="note">One-line version: I built a hook orchestrator that lets each tenant attach rules and side effects to entity events as configuration &mdash; some of them able to block the write, most of them running after it, and some firing days later.</p>
+
+<!-- section: problem -->
+<p>Business rules were ending up inside the data service. “Reject a lead over a certain value unless an external system approves it.” “Message the team channel when a claim is approved.” “Chase the customer two days after the quote goes out.”</p>
+<p>Each one is small. Together they are a mess:</p>
+<ul>
+<li><strong>A rule meant a deploy.</strong> One tenant’s policy change went through code review, a release and a regression pass.</li>
+<li><strong>The data service collected everyone’s logic.</strong> The service that should only know how to write a row knew about approvals, channels and reminders.</li>
+<li><strong>Tenants bled into each other.</strong> A rule written for one customer sat in code shared with all of them.</li>
+</ul>
+<p>If nobody fixed it, the data service would keep growing a branch per customer, and the release that broke one tenant would break all of them.</p>
+
+<!-- section: constraints -->
+<ul>
+<li><strong>Writes had to stay fast.</strong> Most events must not pay for the rules engine at all.</li>
+<li><strong>Some rules must block.</strong> “Don’t let this row be written” can’t be done after the transaction commits.</li>
+<li><strong>Most rules must not block.</strong> A Teams message failing must never fail a customer’s save.</li>
+<li><strong>Events already flowed over RabbitMQ.</strong> The data service published entity events, so the async path had a pipe to use.</li>
+<li><strong>The broker delivers at least once</strong>, and sends events in bulk batches. Duplicates were a given, not an edge case.</li>
+<li><strong>Multi-tenant.</strong> A tenant must never see, or be affected by, another tenant’s hooks.</li>
+</ul>
+
+<!-- section: approach -->
+<p>A <strong>hook</strong> is a row that ties a trigger to a list of actions. The trigger is an entity, an operation (create, update, delete) and a timing (before, on success, on failure). The actions are things to do: call an API, evaluate an expression, send a message, create a calendar item.</p>
+<div class="table-wrap"><table>
+<tr><th>Option</th><th>Why it was tempting</th><th>Why it lost</th></tr>
+<tr><td>Keep the rules in the data service, behind per-tenant config</td><td>No new service, no new database, no new failure mode.</td><td>Every new <em>kind</em> of rule is still a deploy, and the data service keeps owning logic that isn’t its job.</td></tr>
+<tr><td>An off-the-shelf workflow engine</td><td>Scheduling, retries and a designer already solved.</td><td>Heavy to run, and awkward at the one thing we most needed: refusing a write, synchronously, in the middle of a request.</td></tr>
+<tr><td>A separate event-driven hook service <strong>(chosen)</strong></td><td>Rules become data. The data service goes back to writing rows.</td><td>Two paths to build and keep honest, and a new service in the write path.</td></tr>
+</table></div>
+<p>The decision that shaped everything else: <strong>one flag, <code>awaits_response</code>, decides which path a hook takes.</strong> True means the data service blocks on an HTTP call and honours the answer. False means the hook rides the queue and can never hurt the write.</p>
+
+<!-- section: architecture -->
+<div class="diagram">
+<svg viewBox="0 0 640 265" role="img" aria-label="A caller posts to the data service. Before its transaction the data service makes a blocking call to the hook orchestrator, which answers allow or deny. After the transaction commits it publishes an event to RabbitMQ, which the orchestrator consumes in the background and runs actions, or registers a job with the scheduler service that comes back through the queue later.">
+<defs><marker id="ah-hook-orchestrator" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="14" y="60" width="96" height="44" rx="8" class="box"/>
+<text x="62" y="80" text-anchor="middle" class="lbl">Caller</text>
+<text x="62" y="96" text-anchor="middle" class="sub">create a lead</text>
+
+<rect x="152" y="60" width="118" height="44" rx="8" class="box"/>
+<text x="211" y="80" text-anchor="middle" class="lbl">Data service</text>
+<text x="211" y="96" text-anchor="middle" class="sub">owns the rows</text>
+
+<rect x="330" y="20" width="140" height="48" rx="8" class="box hi"/>
+<text x="400" y="40" text-anchor="middle" class="lbl">Hook orchestrator</text>
+<text x="400" y="57" text-anchor="middle" class="sub">blocking: allow / deny</text>
+
+<rect x="330" y="140" width="140" height="48" rx="8" class="box hi"/>
+<text x="400" y="160" text-anchor="middle" class="lbl">Hook orchestrator</text>
+<text x="400" y="177" text-anchor="middle" class="sub">background: run actions</text>
+
+<rect x="152" y="140" width="118" height="44" rx="8" class="box"/>
+<text x="211" y="160" text-anchor="middle" class="lbl">RabbitMQ</text>
+<text x="211" y="176" text-anchor="middle" class="sub">entity events</text>
+
+<rect x="330" y="212" width="140" height="42" rx="8" class="box"/>
+<text x="400" y="238" text-anchor="middle" class="lbl">Scheduler service</text>
+
+<rect x="506" y="60" width="118" height="44" rx="8" class="box"/>
+<text x="565" y="80" text-anchor="middle" class="lbl">Database</text>
+<text x="565" y="96" text-anchor="middle" class="sub">the write itself</text>
+
+<line x1="110" y1="82" x2="150" y2="82" class="arr" marker-end="url(#ah-hook-orchestrator)"/>
+<path d="M 250 60 L 250 44 L 328 44" class="arr" fill="none" marker-end="url(#ah-hook-orchestrator)"/>
+<text x="290" y="36" text-anchor="middle" class="sub">1. before</text>
+<path d="M 330 66 L 252 66 L 252 60" class="arr dim" fill="none" marker-end="url(#ah-hook-orchestrator)"/>
+<line x1="270" y1="82" x2="504" y2="82" class="arr" marker-end="url(#ah-hook-orchestrator)"/>
+<text x="387" y="76" text-anchor="middle" class="sub">2. only if allowed</text>
+<path d="M 200 104 L 200 138" class="arr" fill="none" marker-end="url(#ah-hook-orchestrator)"/>
+<text x="196" y="124" text-anchor="end" class="sub">3. after</text>
+<line x1="270" y1="162" x2="328" y2="162" class="arr" marker-end="url(#ah-hook-orchestrator)"/>
+<path d="M 400 188 L 400 210" class="arr" fill="none" marker-end="url(#ah-hook-orchestrator)"/>
+<path d="M 330 233 L 211 233 L 211 186" class="arr dim" fill="none" marker-end="url(#ah-hook-orchestrator)"/>
+<text x="268" y="228" text-anchor="middle" class="sub">4. fires days later, back through the queue</text>
+</svg>
+</div>
+<p>NestJS and TypeScript, PostgreSQL for the hook configuration and the audit trail, RabbitMQ for events, Redis for locks and short-lived caching. The data service and the broker already existed; the orchestrator and its database did not.</p>
+
+<!-- section: build -->
+<p>Three tables carry the whole thing. A hook, its actions, and a row for every execution.</p>
+<pre><code>-- re-created here as a small example of the shape, not the real schema
+CREATE TABLE hooks (
+  id              uuid PRIMARY KEY,
+  tenant_id       text NOT NULL,
+  entity_name     text NOT NULL,          -- "lead", "claim"
+  trigger_event   text NOT NULL,          -- CREATE | UPDATE | DELETE
+  trigger_timing  text[] NOT NULL,        -- BEFORE | ON_SUCCESS | ON_FAILURE
+  awaits_response boolean NOT NULL,       -- true = it can refuse the write
+  execution_order int NOT NULL DEFAULT 0,
+  schedule        jsonb                   -- null = run now
+);
+
+CREATE TABLE hook_actions (
+  id              uuid PRIMARY KEY,
+  hook_id         uuid REFERENCES hooks(id) ON DELETE CASCADE,
+  action_type     text NOT NULL,          -- HTTP_REQUEST, SEND_EMAIL, ...
+  configuration   jsonb NOT NULL,
+  execution_order int NOT NULL DEFAULT 0
+);</code></pre>
+<p>The lookup on every event is <code>tenant + entity + operation + timing + awaits_response</code>, so that is the index. Tenant comes first, which also keeps one customer’s hooks out of another’s results.</p>
+<p>Each action type gets a class behind one small interface, and the processor holds a map from action type to class. Adding “send a Slack message” is a new class and a map entry, not a change to the engine. Conditions are a list of <code>path, operator, value</code> rows joined by AND or OR, so a rule like “amount is over 700 and status is not rejected” is config, not code.</p>
+
+<!-- section: hardParts -->
+<h4>Fail closed, not open</h4>
+<p>On the blocking path, anything unexpected means <em>deny</em>. A hook naming an action type with no executor behind it refuses the write rather than waving it through. A rules engine that allows when it is confused is worse than none.</p>
+
+<h4>The same event arriving twice</h4>
+<p>At-least-once delivery means a redelivered event would send the email twice. Every event takes a Redis lock keyed on the transaction, record, phase and operation. No lock, no work.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 150" role="img" aria-label="Two deliveries of the same entity event both try to take one Redis lock keyed on transaction, record, phase and operation. The first delivery gets the lock and runs the actions. The redelivery finds the lock taken and is dropped without doing anything.">
+<rect x="16" y="20" width="132" height="40" rx="8" class="box"/>
+<text x="82" y="38" text-anchor="middle" class="lbl">delivery 1</text>
+<text x="82" y="53" text-anchor="middle" class="sub">the event</text>
+<rect x="16" y="92" width="132" height="40" rx="8" class="box"/>
+<text x="82" y="110" text-anchor="middle" class="lbl">delivery 2</text>
+<text x="82" y="125" text-anchor="middle" class="sub">a redelivery</text>
+
+<rect x="208" y="48" width="188" height="56" rx="8" class="box hi"/>
+<text x="302" y="70" text-anchor="middle" class="lbl">one Redis lock</text>
+<text x="302" y="88" text-anchor="middle" class="sub">transaction : record : phase : op</text>
+
+<rect x="456" y="20" width="168" height="40" rx="8" class="box"/>
+<text x="540" y="45" text-anchor="middle" class="lbl">run the actions</text>
+<rect x="456" y="92" width="168" height="40" rx="8" class="box faintbox"/>
+<text x="540" y="117" text-anchor="middle" class="sub">dropped, nothing happens</text>
+
+<path d="M 148 40 L 178 40 L 178 64 L 206 64" class="arr" fill="none"/>
+<path d="M 148 112 L 178 112 L 178 88 L 206 88" class="arr dim" fill="none"/>
+<path d="M 396 64 L 426 64 L 426 40 L 454 40" class="arr" fill="none"/>
+<text x="426" y="32" text-anchor="middle" class="sub">got it</text>
+<path d="M 396 88 L 426 88 L 426 112 L 454 112" class="arr faint" fill="none"/>
+<text x="428" y="128" text-anchor="middle" class="sub">no lock</text>
+</svg>
+</div>
+
+<p>The blocking path also caches an <em>allow</em> per transaction, so a retried write doesn’t pay for the external approval call twice. Only an allow is cached: a deny is cheap to recompute, and caching one would be a nasty way to make a block stick.</p>
+
+<h4>Jobs that outlive their configuration</h4>
+<p>A job registered today fires in two days, by which time the hook may have been edited or deleted. The job carries its audit row id, and on firing the orchestrator re-reads the hook. If the row is cancelled, or the schedule no longer matches what was registered, the job is deregistered instead of run.</p>
+<p>Recurring jobs need two kinds of row: a <strong>template</strong> saying the schedule exists, and an <strong>instance</strong> per firing. Without the split you can’t tell “the schedule is live” from “this run failed”.</p>
+
+<!-- section: results -->
+<div class="note"><strong>To fill in:</strong> the numbers &mdash; how many hooks or tenants ended up using it, and how long a new rule took before and after.</div>
+<ul>
+<li><strong>A rule became a row.</strong> Changing one tenant’s behaviour stopped needing a release of the shared data service.</li>
+<li><strong>A new action type became one class.</strong> The engine stopped changing every time the list of things a hook could do grew.</li>
+<li><strong>Every run got a record.</strong> Each execution writes its status and response, so “did the reminder go out?” is a query, with a timeline covering past runs and the ones still scheduled.</li>
+<li><strong>The data service shrank back</strong> to writing rows and publishing events.</li>
+</ul>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>A blocking hook puts a network call in the write path.</strong> It is opt-in per hook, but every tenant that opts in makes the orchestrator a hard dependency of their writes.</li>
+<li><strong>Config in JSONB means we own the validation.</strong> The database won’t catch a malformed action, so the API has to, and the rules for what a synchronous hook may contain live in code.</li>
+<li><strong>The audit table grows with traffic</strong>, not with the number of hooks. It needs a retention plan from day one.</li>
+<li><strong>Power to misconfigure.</strong> A wrong condition in a blocking hook can refuse perfectly good writes, and the person who wrote it is not an engineer.</li>
+</ul>
+<p>What I’d do differently: make the blocking path degrade on its own. Today a configured sync hook is a dependency; a per-hook “on timeout, allow” setting with a circuit breaker would let a tenant choose availability over strictness instead of the choice being made for them.</p>
+
+<!-- section: learnings -->
+<ul>
+<li><strong>Fail closed on anything that can say no.</strong> The default answer of a validation path has to be the safe one, including on bugs it doesn’t understand.</li>
+<li><strong>At-least-once delivery makes idempotency the feature.</strong> It isn’t a hardening pass at the end; the key you dedupe on is part of the design.</li>
+<li><strong>Separate the schedule from the firing.</strong> A template row plus instance rows answered questions that one row per job could not.</li>
+<li><strong>Configuration is a product.</strong> Once rules are data, they need validation, export and import, and a history, or you have moved the problem rather than solved it.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The two-minute version</h4>
+<ol>
+<li>“We had one shared data service doing writes for every tenant, and business rules were leaking into it. A rule change meant a release.”</li>
+<li>“So we pulled rules out into configuration: a hook ties an entity event to a list of actions.”</li>
+<li>“The hard part is that some rules must block the write and most must not. One flag decides. Blocking hooks are a synchronous call made before the transaction; everything else rides the event queue after it commits.”</li>
+<li>“Scheduled rules register a job and come back through the queue later.”</li>
+<li>“The two things I’d call out are failing closed on the blocking path, and idempotency, because the broker delivers at least once.”</li>
+</ol>
+
+<h4>Questions it invites</h4>
+<ul>
+<li><strong>What if the orchestrator is down?</strong> Async hooks queue and catch up. Blocking hooks are the real exposure, and that is the trade a tenant makes by using one.</li>
+<li><strong>Why not run the blocking check over the queue?</strong> The caller is waiting on a response. A queue gives no answer in time.</li>
+<li><strong>Duplicate side effects?</strong> The Redis lock, plus caching an allow per transaction.</li>
+<li><strong>Tenant isolation?</strong> Tenant is the first column of the lookup index, and another tenant’s hook answers as not found.</li>
+</ul>
+
+<h4>Traps</h4>
+<ul>
+<li>Calling it “a workflow engine”. It is narrower, and the narrowness is the point.</li>
+<li>Glossing over the blocking path. It is the interesting half and the risky half.</li>
+<li>Claiming the whole platform. Be clear which parts were mine.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A shared data service was collecting per-tenant business rules, so every rule change meant a release.</li>
+<li>A hook is a row: an entity event plus an ordered list of actions, scoped to one tenant.</li>
+<li>One flag, <code>awaits_response</code>, decides whether a hook can refuse the write or merely reacts to it.</li>
+<li>Blocking hooks run as a synchronous call before the transaction; everything else runs off the event queue after it commits.</li>
+<li>Scheduled hooks register a job with a scheduler and come back through the queue when they are due.</li>
+<li>An executor class per action type keeps the engine closed to change as the action list grows.</li>
+<li>The blocking path fails closed: anything it doesn’t understand is a deny, never an allow.</li>
+<li>At-least-once delivery was handled with a Redis lock per transaction, record, phase and operation.</li>
+<li>Only an allow is cached, never a deny.</li>
+<li>Scheduled jobs are re-checked against the live hook when they fire, and a recurring schedule keeps a template row plus one instance row per run.</li>
+</ul>

@@ -55,7 +55,7 @@ The file order is fixed by the guide. This is the order to think in.
 Go through the finished file once, looking only for this:
 
 - customer names, or details that identify a customer
-- internal host names, service names, repository names, URLs, ticket numbers
+- internal host names, URLs, repository paths, environment variable names, internal API routes, ticket numbers
 - keys, passwords, config, customer data
 - internal revenue or metrics the user isn't free to share
 - code or schema that looks copied from the employer's codebase

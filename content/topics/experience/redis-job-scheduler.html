@@ -1,0 +1,201 @@
+<!--
+title: A Scheduler Built on a Redis Sorted Set
+summary: One service that other services hand “run this later” to. A sorted set is the timer, a Lua script hands each job to exactly one worker, and a reaper picks up after any worker that dies holding one.
+category: Neutrinos
+order: 20
+related: hook-orchestrator, rabbitmq-routing, redis-persistence
+-->
+
+<!-- section: context -->
+<div class="note"><strong>To fill in before this is final:</strong> the dates, the team size, and which parts were mine against the team’s. Everything else here comes from the design itself.</div>
+<p>Same platform at <strong>Neutrinos</strong> as the hook orchestrator. Several services had grown their own version of “do this later”: a reminder two days after a quote, a nightly sync, an SLA timer that has to fire if nobody responds in four hours.</p>
+<p>Each service had solved it for itself with timers inside the process. That works until the process restarts.</p>
+<p class="note">One-line version: I built a scheduler service where a Redis sorted set is the clock, a Lua script makes sure exactly one worker gets each due job, and the job is delivered as an ordinary queue message so callers didn’t have to change how they receive work.</p>
+
+<!-- section: problem -->
+<p>In-process timers look free and then quietly cost you everything:</p>
+<ul>
+<li><strong>A restart loses them.</strong> A deploy at 4pm silently dropped every reminder due that evening.</li>
+<li><strong>Two replicas both fire.</strong> Scale a service to three pods and the nightly job runs three times.</li>
+<li><strong>Nothing can be cancelled.</strong> Once a timer is set in memory there is no way to reach it from an API.</li>
+<li><strong>No record.</strong> “Did the four-hour SLA timer fire?” had no answer.</li>
+</ul>
+<p>Left alone, every new service would write a fourth version of the same broken thing, and the bugs would be per-service.</p>
+
+<!-- section: constraints -->
+<ul>
+<li><strong>Must survive restarts</strong> and run with several replicas, with no job firing twice and none lost.</li>
+<li><strong>Delays from seconds to months.</strong> An SLA timer is minutes away; a renewal reminder is a year away.</li>
+<li><strong>Callers shouldn’t change how they receive work.</strong> Everything already consumed RabbitMQ, so a due job should arrive as a normal message.</li>
+<li><strong>Cancellable and pausable</strong> from an API, including while a job is being handed out.</li>
+<li><strong>Working hours matter.</strong> An SLA timer must not expire on a Sunday, so due times are computed against a per-project calendar.</li>
+<li><strong>Redis and PostgreSQL were already running.</strong> No appetite for a new piece of infrastructure.</li>
+</ul>
+
+<!-- section: approach -->
+<div class="table-wrap"><table>
+<tr><th>Option</th><th>Why it was tempting</th><th>Why it lost</th></tr>
+<tr><td>Keep in-process timers, one per service</td><td>No infrastructure, no new service.</td><td>The four problems above. All of them.</td></tr>
+<tr><td>Poll a table: rows due now, locked and skipped if taken</td><td>One durable store, nothing new to learn, and the lock is the database’s problem.</td><td>A hot table polled forever, and the poll interval becomes your accuracy. Cheap timers need to be free when nothing is due.</td></tr>
+<tr><td>A delayed message in the broker</td><td>No store at all &mdash; publish it now, it arrives later.</td><td>Once published, a message can’t be cancelled, paused or moved, and there is nothing to query.</td></tr>
+<tr><td><strong>Chosen:</strong> sorted set as the clock, table as the record, queue for delivery</td><td>Each part does what it is good at, and all three were already there.</td><td>Two stores to keep in agreement, and the trickiest logic ends up in Lua.</td></tr>
+</table></div>
+<p>The shape: <strong>PostgreSQL</strong> holds what a job is, so it survives anything. <strong>Redis</strong> holds when it is next due, because a sorted set answers “what is due now?” and “what is due next?” in one cheap call. <strong>RabbitMQ</strong> delivers it, so consumers see a message like any other.</p>
+
+<!-- section: architecture -->
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="A caller registers a job, which is written to PostgreSQL and added to a Redis sorted set scored by its due time. A worker sleeps until the next due time, claims due jobs with a Lua script, publishes each to RabbitMQ and marks it enqueued. A reaper moves claims that have gone stale back into the ready set.">
+<defs><marker id="ah-redis-job-scheduler" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="14" y="18" width="116" height="42" rx="8" class="box"/>
+<text x="72" y="38" text-anchor="middle" class="lbl">Caller</text>
+<text x="72" y="54" text-anchor="middle" class="sub">register a job</text>
+
+<rect x="176" y="18" width="128" height="42" rx="8" class="box"/>
+<text x="240" y="38" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="240" y="54" text-anchor="middle" class="sub">what the job is</text>
+
+<rect x="176" y="92" width="128" height="48" rx="8" class="box hi"/>
+<text x="240" y="112" text-anchor="middle" class="lbl">sorted set</text>
+<text x="240" y="129" text-anchor="middle" class="sub">score = due time</text>
+
+<rect x="360" y="92" width="130" height="48" rx="8" class="box hi"/>
+<text x="425" y="112" text-anchor="middle" class="lbl">Worker</text>
+<text x="425" y="129" text-anchor="middle" class="sub">sleeps till next due</text>
+
+<rect x="528" y="92" width="98" height="48" rx="8" class="box"/>
+<text x="577" y="112" text-anchor="middle" class="lbl">RabbitMQ</text>
+<text x="577" y="129" text-anchor="middle" class="sub">the consumer</text>
+
+<rect x="360" y="178" width="130" height="40" rx="8" class="box warn"/>
+<text x="425" y="203" text-anchor="middle" class="lbl">Reaper</text>
+
+<line x1="130" y1="39" x2="174" y2="39" class="arr" marker-end="url(#ah-redis-job-scheduler)"/>
+<path d="M 150 39 L 150 114 L 174 114" class="arr" fill="none" marker-end="url(#ah-redis-job-scheduler)"/>
+<line x1="304" y1="114" x2="358" y2="114" class="arr" marker-end="url(#ah-redis-job-scheduler)"/>
+<text x="331" y="106" text-anchor="middle" class="sub">claim</text>
+<line x1="490" y1="114" x2="526" y2="114" class="arr" marker-end="url(#ah-redis-job-scheduler)"/>
+<path d="M 360 198 L 240 198 L 240 142" class="arr warnline" fill="none" marker-end="url(#ah-redis-job-scheduler)"/>
+<text x="300" y="214" text-anchor="middle" class="sub">puts stale claims back</text>
+<path d="M 425 140 L 425 176" class="arr dim" fill="none"/>
+</svg>
+</div>
+<p>NestJS and TypeScript, PostgreSQL for the durable row, Redis for the timing state, RabbitMQ for delivery. The worker and the reaper run in the same service, and several replicas of it can run at once.</p>
+
+<!-- section: build -->
+<p>Three keys carry the timing. A sorted set of jobs waiting, a sorted set of jobs currently being handed out, and a hash per job.</p>
+<pre><code>-- what the keys hold (names simplified for this write-up)
+ready    ZSET   member = job id, score = due time in ms
+claimed  ZSET   member = job id, score = when it was claimed
+job:ID   HASH   status, payload, runAtMs, attempts</code></pre>
+<p>Taking work is one Lua script, so Redis runs it start to finish with nothing in between:</p>
+<pre><code>-- claim up to N jobs that are due, re-created and trimmed for this write-up
+local ids = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1],
+                       'LIMIT', 0, ARGV[2])
+for _, id in ipairs(ids) do
+  redis.call('ZREM', KEYS[1], id)                 -- out of ready
+  redis.call('ZADD', KEYS[2], ARGV[1], id)        -- into claimed, stamped now
+  redis.call('HSET', ARGV[3] .. id, 'status', 'claimed')
+  redis.call('HINCRBY', ARGV[3] .. id, 'attempts', 1)
+end
+return ids</code></pre>
+<p>Reading what is due and moving it are one operation. Two workers running this at the same moment cannot come away with the same job: whichever gets there second finds the ready set already empty of it.</p>
+
+<!-- section: hardParts -->
+<h4>A worker that dies holding a job</h4>
+<p>Claiming is only half the problem. A pod killed mid-deploy leaves its jobs sitting in the claimed set, owned by nobody.</p>
+<p>That is why claimed is a sorted set and not a list: its score is <em>when</em> the claim happened. A reaper runs every half minute, takes anything claimed longer ago than the timeout, and puts it back in the ready set at its original due time. The attempt counter on the hash means a job that keeps killing its worker can be spotted rather than looping forever.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 165" role="img" aria-label="A job moves from the ready set to the claimed set when a worker takes it, then out of the claimed set once it has been published to the queue. If a worker dies while holding a claim, the reaper moves the job from the claimed set back to the ready set.">
+<defs><marker id="ah-redis-job-scheduler-2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="26" y="52" width="140" height="48" rx="8" class="box"/>
+<text x="96" y="72" text-anchor="middle" class="lbl">ready</text>
+<text x="96" y="89" text-anchor="middle" class="sub">score = due time</text>
+
+<rect x="250" y="52" width="140" height="48" rx="8" class="box hi"/>
+<text x="320" y="72" text-anchor="middle" class="lbl">claimed</text>
+<text x="320" y="89" text-anchor="middle" class="sub">score = claimed at</text>
+
+<rect x="474" y="52" width="140" height="48" rx="8" class="box"/>
+<text x="544" y="72" text-anchor="middle" class="lbl">published</text>
+<text x="544" y="89" text-anchor="middle" class="sub">off the books</text>
+
+<line x1="166" y1="76" x2="248" y2="76" class="arr" marker-end="url(#ah-redis-job-scheduler-2)"/>
+<text x="207" y="68" text-anchor="middle" class="sub">a worker takes it</text>
+<line x1="390" y1="76" x2="472" y2="76" class="arr" marker-end="url(#ah-redis-job-scheduler-2)"/>
+<text x="431" y="68" text-anchor="middle" class="sub">on the queue</text>
+
+<path d="M 300 100 L 300 134 L 116 134 L 116 102" class="arr warnline" fill="none" marker-end="url(#ah-redis-job-scheduler-2)"/>
+<text x="208" y="152" text-anchor="middle" class="sub">the reaper, if the claim goes stale: the worker died holding it</text>
+</svg>
+</div>
+
+<h4>Sleeping exactly long enough</h4>
+<p>No polling loop. After draining everything due, the worker asks the ready set for the lowest score and arms a single timer for that moment. Registering a job that is due sooner re-arms it. When nothing is due, nothing runs at all.</p>
+<p>The one trap: a timer can’t be set further out than about 24 days, so anything beyond that is capped and re-armed on waking. A year-long reminder is a few sleeps, not one.</p>
+
+<!-- section: results -->
+<div class="note"><strong>To fill in:</strong> the numbers &mdash; how many services moved onto it, how many jobs it carries, and anything you measured before and after.</div>
+<ul>
+<li><strong>Timers stopped dying on deploy.</strong> A restart loses nothing, because the schedule was never in the process.</li>
+<li><strong>Replicas stopped duplicating work.</strong> Services could finally scale out without their nightly jobs multiplying.</li>
+<li><strong>Jobs became things you can ask about</strong> &mdash; cancel one, pause one, see what fired and what is still coming.</li>
+<li><strong>Nobody wrote a fourth timer.</strong> New services register a job instead of rolling their own.</li>
+</ul>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Redis is in the critical path now.</strong> The schedule lives in memory, so it has to be persisted and replicated or a failover quietly loses every pending timer.</li>
+<li><strong>Two stores must agree.</strong> A row in the table and an entry in the sorted set can drift apart, so a reconcile path is needed, not optional.</li>
+<li><strong>Lua is hard to test.</strong> The hardest logic in the service is in a language the rest of the codebase doesn’t use and the type checker can’t see.</li>
+<li><strong>Delivery is still at-least-once.</strong> A reaped job can fire twice, so every consumer has to be idempotent. The scheduler makes that easier, not unnecessary.</li>
+</ul>
+<p>What I’d do differently: make the sorted set a cache of the table rather than a second source of truth. Rebuilding it from the table on boot would turn a whole class of “they disagree” bugs into a startup step.</p>
+
+<!-- section: learnings -->
+<ul>
+<li><strong>Put the move in one atomic step.</strong> “Read what’s due, then mark it taken” is two steps and a race. One script makes it one step, and the race stops existing.</li>
+<li><strong>In-flight work needs a timestamp.</strong> Knowing a job is being worked on is useless; knowing <em>since when</em> is what makes a crash recoverable.</li>
+<li><strong>Timers beat polling.</strong> Asking “anything due?” on a loop costs the same whether there is work or not. Sleeping until the next known due time costs nothing when idle.</li>
+<li><strong>Cancel and pause are a state machine.</strong> Bolted on afterwards they are a nightmare, because a job can be mid-claim when the request arrives.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The two-minute version</h4>
+<ol>
+<li>“Every service had its own in-process timers. A restart lost them, replicas duplicated them, and nothing could be cancelled.”</li>
+<li>“So we built one scheduler. Postgres holds what a job is. A Redis sorted set holds when it is next due, scored by due time.”</li>
+<li>“A worker sleeps until the lowest score, then claims due jobs with a Lua script, so the read and the move are atomic.”</li>
+<li>“Claimed jobs sit in a second sorted set scored by claim time, and a reaper puts back anything held too long. That covers a worker dying mid-job.”</li>
+<li>“Due jobs go out on RabbitMQ, so consumers receive them like any other message.”</li>
+</ol>
+
+<h4>Questions it invites</h4>
+<ul>
+<li><strong>Why not poll a table?</strong> It works, but it costs the same idle as busy, and the poll interval becomes your accuracy.</li>
+<li><strong>What if Redis loses the set?</strong> That is the weak point. The table is the durable record, and I’d rebuild the set from it on boot.</li>
+<li><strong>Exactly once?</strong> No. At-least-once, because a reaped job can fire twice. Consumers stay idempotent.</li>
+<li><strong>Cancel a job mid-flight?</strong> Waiting, it is removed. Already claimed, the pause is recorded as a request and the worker parks it at the next safe point.</li>
+</ul>
+
+<h4>Traps</h4>
+<ul>
+<li>Saying “exactly once”. It isn’t, and the follow-up will find that out.</li>
+<li>Skipping the reaper. The claim is the easy half.</li>
+<li>Claiming the whole platform. Be clear which parts were mine.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>In-process timers lose their jobs on restart, duplicate across replicas, and can’t be cancelled or inspected.</li>
+<li>The scheduler splits the job across three stores: Postgres for what it is, Redis for when it is due, RabbitMQ for delivery.</li>
+<li>A sorted set scored by due time answers “what is due now?” and “what is due next?” cheaply.</li>
+<li>Claiming is one Lua script, so reading what is due and moving it out are atomic and two workers can’t take the same job.</li>
+<li>Claimed jobs go to a second sorted set scored by when they were claimed.</li>
+<li>A reaper puts stale claims back in the ready set, which is how a dead worker’s jobs are recovered.</li>
+<li>The worker sleeps until the next due time rather than polling, and nothing runs when nothing is due.</li>
+<li>Timers can’t be set past about 24 days, so long waits are capped and re-armed.</li>
+<li>Delivery is at-least-once, so consumers still have to be idempotent.</li>
+<li>Two sources of truth can drift; the sorted set would be better rebuilt from the table on boot.</li>
+</ul>
