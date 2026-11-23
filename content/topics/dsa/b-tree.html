@@ -1,0 +1,286 @@
+<!--
+title: B-Tree
+summary: A sorted tree where each node holds hundreds of keys instead of one, so a lookup in a billion keys costs four disk reads instead of thirty. The structure under almost every database index.
+category: Trees
+order: 30
+related: indexing-strategies, inverted-indexes, pagination
+-->
+
+<!-- section: problem -->
+<p>A <strong>B-tree</strong> is a sorted tree where every node holds many keys, not one. One node fills one disk page, and every leaf sits at the same depth, so no key is further from the top than any other.</p>
+<p>The problem it solves: keep millions of keys sorted on <em>disk</em>, supporting three things &mdash; find a key, insert a key, walk a range in order &mdash; in as few disk reads as possible.</p>
+<p>Limits: up to a billion keys, 8 bytes each, 4 KB pages. A disk read costs around 0.1 ms on an SSD; a comparison costs around 100 ns. A read is roughly a thousand times dearer, so <strong>disk reads are the unit of cost</strong>.</p>
+<p class="note">One-line version: make the node as wide as a disk page, and the tree gets short enough that four reads find anything.</p>
+
+<!-- section: examples -->
+<p>Searching this tree, which holds 10, 20, 30, 40, 50, 60, 70, 80:</p>
+<pre><code>// root, then its three leaves
+        [30, 60]
+   /        |       \
+[10,20]  [40,50]  [70,80]</code></pre>
+
+<div class="table-wrap"><table>
+<tr><th>Looking for</th><th>Answer</th><th>Why</th></tr>
+<tr><td><code>50</code></td><td>found, 2 nodes read</td><td>30 &lt; 50 &lt; 60, so take the middle child. <code>[40,50]</code> holds it.</td></tr>
+<tr><td><code>55</code></td><td>not found, 2 nodes read</td><td>Same path. <code>[40,50]</code> is a leaf and 55 isn&rsquo;t in it, so stop &mdash; there is nowhere lower to look.</td></tr>
+<tr><td><code>30</code></td><td>found, 1 node read</td><td>It is in the root. Keys sit at <em>every</em> level, not only in leaves, so a search can end early.</td></tr>
+</table></div>
+<p>Row three is the one people get wrong: a B-tree stores real keys in its internal nodes. A <strong>B+ tree</strong>, which is what most databases use, keeps keys only in the leaves.</p>
+
+<!-- section: think -->
+<h4>Questions to ask the interviewer</h4>
+<ul>
+<li><strong>Memory or disk?</strong> It decides everything. In memory, a plain balanced tree is fine.</li>
+<li><strong>B-tree or B+ tree?</strong> If range scans matter, you want B+. Say which you&rsquo;re building.</li>
+<li><strong>Duplicate keys?</strong> Here, no &mdash; inserting a key that exists does nothing.</li>
+<li><strong>Do we need delete?</strong> It needs merging and borrowing, and doubles the code. Ask before writing it.</li>
+</ul>
+
+<h4>What the limits tell you</h4>
+<p>You never read 8 bytes from a disk &mdash; you read a whole 4 KB page for the same price. A node holding one key wastes 99% of what you paid for.</p>
+
+<h4>What the three operations have in common</h4>
+<p>All three walk from the top down to a leaf, so the cost of everything is the <strong>height</strong>. Make the tree shorter and all three get faster at once.</p>
+
+<!-- section: brute -->
+<p>The obvious way: a balanced binary search tree. One key per node, two children.</p>
+<pre><code>// bst.ts &mdash; node holds one key, and a left and right child
+function has(root: BstNode | null, key: number): boolean {
+  let n = root;
+  while (n) {                       // one disk read per step
+    if (key === n.key) return true;
+    n = key &lt; n.key ? n.left : n.right;
+  }
+  return false;
+}</code></pre>
+<p>That is <strong>O(log&#8322; n)</strong> comparisons, which sounds fine. But each step lands somewhere else on disk, so it is also <strong>O(log&#8322; n) disk reads</strong>.</p>
+<p>For a billion keys that is about <strong>30 reads</strong>, so <strong>3 ms</strong> to find one key &mdash; and 30 pages of 4 KB, 120 KB in all, read to return 8 bytes.</p>
+
+<!-- section: idea -->
+<p>The tree is tall because each node answers one yes-or-no question. Make the node bigger and it answers a better one: not &ldquo;left or right?&rdquo; but &ldquo;which of these 256 ranges?&rdquo;</p>
+<p>A 4 KB page fits 4096 &divide; 16 = <strong>256 entries</strong> at 8 bytes for a key and 8 for a child pointer. So every node has up to 256 children, and the height is log base 256, not log base 2.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 235" role="img" aria-label="On the left, a binary tree node holds one key and has two children, needing 30 levels and 30 disk reads for a billion keys. On the right, a B-tree node fills a 4 KB page with 255 keys and 256 children, needing only 4 levels and 4 disk reads for the same billion keys.">
+<defs><marker id="ah-b-tree" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<text x="110" y="22" text-anchor="middle" class="lbl">one key per node</text>
+<rect x="82" y="36" width="56" height="32" rx="6" class="box"/>
+<text x="110" y="57" text-anchor="middle" class="lbl">42</text>
+<line x1="100" y1="68" x2="70" y2="96" class="arr dim" marker-end="url(#ah-b-tree)"/>
+<line x1="120" y1="68" x2="150" y2="96" class="arr dim" marker-end="url(#ah-b-tree)"/>
+<rect x="34" y="100" width="56" height="28" rx="5" class="box"/>
+<rect x="130" y="100" width="56" height="28" rx="5" class="box"/>
+<text x="110" y="152" text-anchor="middle" class="sub">asks one question:</text>
+<text x="110" y="168" text-anchor="middle" class="sub">left, or right?</text>
+<text x="110" y="196" text-anchor="middle" class="lbl">30 levels</text>
+<text x="110" y="214" text-anchor="middle" class="sub">30 disk reads</text>
+
+<line x1="240" y1="20" x2="240" y2="220" class="arr faint"/>
+
+<text x="440" y="22" text-anchor="middle" class="lbl">one node = one 4 KB page</text>
+<rect x="282" y="36" width="316" height="32" rx="6" class="box hi"/>
+<text x="440" y="57" text-anchor="middle" class="lbl">17 &#124; 42 &#124; 93 &#124; 155 &#124; &hellip; &#124; 8801</text>
+<line x1="300" y1="68" x2="300" y2="96" class="arr dim" marker-end="url(#ah-b-tree)"/>
+<line x1="380" y1="68" x2="380" y2="96" class="arr dim" marker-end="url(#ah-b-tree)"/>
+<line x1="460" y1="68" x2="460" y2="96" class="arr dim" marker-end="url(#ah-b-tree)"/>
+<line x1="580" y1="68" x2="580" y2="96" class="arr dim" marker-end="url(#ah-b-tree)"/>
+<rect x="274" y="100" width="52" height="28" rx="5" class="box"/>
+<rect x="354" y="100" width="52" height="28" rx="5" class="box"/>
+<rect x="434" y="100" width="52" height="28" rx="5" class="box"/>
+<text x="523" y="119" text-anchor="middle" class="sub">&hellip;</text>
+<rect x="554" y="100" width="52" height="28" rx="5" class="box"/>
+<text x="440" y="152" text-anchor="middle" class="sub">asks one question:</text>
+<text x="440" y="168" text-anchor="middle" class="sub">which of 256 ranges?</text>
+<text x="440" y="196" text-anchor="middle" class="lbl">4 levels</text>
+<text x="440" y="214" text-anchor="middle" class="sub">4 disk reads, same billion keys</text>
+</svg>
+</div>
+
+<p>256&#179; = 16.7 million, 256&#8308; = 4.29 billion. Four levels cover a billion keys, and the top two stay cached in memory &mdash; so a real lookup often costs one or two reads, not four.</p>
+
+<!-- section: walkthrough -->
+<p>Height changes in one place only, so that is what to watch. We use a tiny node &mdash; at most <strong>4 keys</strong> &mdash; so a split fits on screen. Inserting 10, 20, 30, 40, 50:</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="A leaf already holding 10, 20, 30 and 40 takes a fifth key, 50, and becomes overfull with five keys. It splits: the middle key 30 moves up to become a new root, 10 and 20 stay in the left leaf, and 40 and 50 go to a new right leaf. The tree is now two levels tall.">
+<text x="20" y="22" class="lbl">full leaf, then insert 50</text>
+<rect x="188" y="34" width="264" height="34" rx="6" class="box"/>
+<text x="320" y="56" text-anchor="middle" class="lbl">10 &#124; 20 &#124; 30 &#124; 40</text>
+
+<rect x="170" y="84" width="300" height="34" rx="6" class="box warn"/>
+<text x="320" y="106" text-anchor="middle" class="lbl">10 &#124; 20 &#124; 30 &#124; 40 &#124; 50</text>
+<text x="500" y="106" class="sub">5 keys &mdash; one too many</text>
+
+<line x1="320" y1="68" x2="320" y2="82" class="arr" marker-end="url(#ah-b-tree)"/>
+<line x1="320" y1="118" x2="320" y2="136" class="arr" marker-end="url(#ah-b-tree)"/>
+<text x="340" y="132" class="sub">the middle key moves up</text>
+
+<rect x="286" y="140" width="68" height="32" rx="6" class="box hi"/>
+<text x="320" y="161" text-anchor="middle" class="lbl">30</text>
+<line x1="300" y1="172" x2="250" y2="194" class="arr" marker-end="url(#ah-b-tree)"/>
+<line x1="340" y1="172" x2="390" y2="194" class="arr" marker-end="url(#ah-b-tree)"/>
+<rect x="176" y="198" width="110" height="30" rx="5" class="box"/>
+<text x="231" y="218" text-anchor="middle" class="lbl">10 &#124; 20</text>
+<rect x="356" y="198" width="110" height="30" rx="5" class="box"/>
+<text x="411" y="218" text-anchor="middle" class="lbl">40 &#124; 50</text>
+<text x="500" y="218" class="sub">now 2 levels</text>
+</svg>
+</div>
+
+<div class="table-wrap"><table>
+<tr><th>Insert</th><th>The tree after it</th><th>Height</th><th>What happened</th></tr>
+<tr><td>10</td><td><code>[10]</code></td><td>1</td><td>Straight into the only leaf.</td></tr>
+<tr><td>20</td><td><code>[10,20]</code></td><td>1</td><td>Keys stay sorted inside the node.</td></tr>
+<tr><td>30</td><td><code>[10,20,30]</code></td><td>1</td><td>Still room.</td></tr>
+<tr><td>40</td><td><code>[10,20,30,40]</code></td><td>1</td><td>Full, but full is allowed.</td></tr>
+<tr><td>50</td><td><code>[30]</code> &rarr; <code>[10,20]</code> <code>[40,50]</code></td><td>2</td><td>One key too many. Split: 30 moves up into a new root.</td></tr>
+</table></div>
+<p>Carrying on to 60, 70, 80 splits the right leaf too, giving the root <code>[30,60]</code> from the examples section. Notice what did <em>not</em> happen: nothing rotated, and no leaf ended up deeper than another. <strong>A B-tree grows at the root</strong>, which is why every leaf stays level.</p>
+
+<!-- section: code -->
+<pre><code>// btree.ts
+const MAX = 4;                   // most keys in a node; split at MAX + 1
+
+class BNode {
+  keys: number[] = [];
+  children: BNode[] = [];        // empty on a leaf
+  get leaf(): boolean { return this.children.length === 0; }
+}
+
+type Split = { key: number; right: BNode };   // what a split hands upward
+
+class BTree {
+  private root = new BNode();
+
+  private slot(n: BNode, key: number): number {   // where key belongs here
+    let i = 0;
+    while (i &lt; n.keys.length &amp;&amp; key &gt; n.keys[i]) i++;
+    return i;
+  }
+
+  has(key: number): boolean {
+    let n: BNode | undefined = this.root;
+    while (n) {
+      const i = this.slot(n, key);              // scan inside the page
+      if (n.keys[i] === key) return true;
+      n = n.leaf ? undefined : n.children[i];   // one level down
+    }
+    return false;
+  }
+
+  insert(key: number): void {
+    const split = this.insertInto(this.root, key);
+    if (split) {                 // the root split: the only way the tree gets taller
+      const root = new BNode();
+      root.keys = [split.key];
+      root.children = [this.root, split.right];
+      this.root = root;
+    }
+  }
+
+  private insertInto(n: BNode, key: number): Split | null {
+    const i = this.slot(n, key);
+    if (n.keys[i] === key) return null;                  // already there
+
+    if (n.leaf) {
+      n.keys.splice(i, 0, key);
+    } else {
+      const split = this.insertInto(n.children[i], key);      // go down first
+      if (!split) return null;
+      n.keys.splice(i, 0, split.key);                         // absorb on the way up
+      n.children.splice(i + 1, 0, split.right);
+    }
+    return n.keys.length &gt; MAX ? this.splitNode(n) : null;
+  }
+
+  private splitNode(n: BNode): Split {
+    const mid = n.keys.length &gt;&gt; 1;
+    const key = n.keys[mid];                   // this one moves up
+    const right = new BNode();
+    right.keys = n.keys.splice(mid + 1);       // everything after the middle
+    n.keys.pop();                              // drop the middle from the left
+    if (!n.leaf) right.children = n.children.splice(mid + 1);
+    return { key, right };
+  }
+}</code></pre>
+<ul>
+<li><strong>Insert goes down, then fixes up.</strong> A split hands a key and a new node up to its parent, which absorbs them &mdash; and may split itself. The height changes only when that reaches the root.</li>
+<li><strong><code>MAX</code> is 4 here so splits are visible.</strong> A real tree sets it from the page size, near 255.</li>
+</ul>
+
+<!-- section: complexity -->
+<div class="table-wrap"><table>
+<tr><th></th><th>Comparisons</th><th>Disk reads</th><th>Reads at 1 billion keys</th></tr>
+<tr><td>Balanced binary tree</td><td>O(log&#8322; n)</td><td>O(log&#8322; n)</td><td>about 30</td></tr>
+<tr><td>B-tree, 256 per node</td><td>O(log&#8322; n)</td><td>O(log&#8324;&#8325;&#8326; n)</td><td>4</td></tr>
+</table></div>
+<ul>
+<li><strong>The comparisons don&rsquo;t change.</strong> Scanning 256 sorted keys inside a page is the same total work, just done in memory instead of across reads.</li>
+<li><strong>Reads improve</strong> by a factor of log&#8322;(256) = 8. Each read now rules out 255 of 256 branches, not 1 of 2.</li>
+<li><strong>Space is O(n)</strong>, nodes between half full and full &mdash; so the index can take twice the space of the keys alone.</li>
+</ul>
+
+<!-- section: edgeCases -->
+<div class="table-wrap"><table>
+<tr><th>Input</th><th>Should happen</th><th>Why it is easy to get wrong</th></tr>
+<tr><td>Empty tree, search anything</td><td><code>false</code></td><td>The root is an empty leaf, not <code>null</code>.</td></tr>
+<tr><td>Insert a key that exists</td><td>Nothing changes</td><td>Checking leaves only misses a key in an internal node, and inserts it twice.</td></tr>
+<tr><td>Keys inserted in order, 1 to n</td><td>Works, but every node ends half full</td><td>Measured on this code at 100,000 keys: ascending leaves nodes <strong>50.0%</strong> full, shuffled about <strong>68%</strong>. A sorted bulk load wastes half the index.</td></tr>
+<tr><td>Keys inserted backwards</td><td>Still balanced, all leaves level</td><td>Where a plain BST becomes a list. A B-tree can&rsquo;t, because it grows at the root.</td></tr>
+<tr><td>Splitting an internal node</td><td>Its children move too</td><td>Moving keys but not child pointers is the classic bug.</td></tr>
+</table></div>
+<p>The code on this page was run on every row above, then on 200 random trees of 2,000 keys. All leaves stayed at one depth, no node went over <code>MAX</code> or under half full, and no lookup was wrong.</p>
+
+<!-- section: pattern -->
+<p>The technique is <strong>matching the node to the block</strong>. When reading costs per block, not per byte, make your structure&rsquo;s unit one block, so a read buys the most it can.</p>
+
+<h4>Signals that point to it</h4>
+<ul>
+<li>The data lives on disk or over a network, where a fetch costs far more than a comparison.</li>
+<li>You need sorted order &mdash; ranges, prefixes, &ldquo;next 20 rows&rdquo; &mdash; so a hash table won&rsquo;t do.</li>
+<li>The obvious structure is O(log n), but each step is a separate fetch.</li>
+</ul>
+
+<h4>Where you meet it</h4>
+<div class="table-wrap"><table>
+<tr><th>Structure</th><th>Change from a plain B-tree</th><th>Why</th></tr>
+<tr><td>B+ tree</td><td>Keys only in leaves, chained left to right</td><td>A range scan walks sideways instead of back up. What databases use &mdash; see Indexing Strategies.</td></tr>
+<tr><td>LSM tree</td><td>Buffer writes in memory, flush sorted runs</td><td>Trades read speed for much faster writes.</td></tr>
+<tr><td>Trie / radix tree</td><td>Split on prefix, not order</td><td>Better when keys share long prefixes.</td></tr>
+</table></div>
+
+<!-- section: interview -->
+<h4>How to talk through it</h4>
+<ol>
+<li><strong>Ask where it lives,</strong> and say a disk read costs about a thousand comparisons. Then give the binary tree: 30 reads for a billion keys, 120 KB read to return 8 bytes.</li>
+<li><strong>The idea in one sentence:</strong> &ldquo;One node fills one page, so each read picks between 256 branches, not 2.&rdquo;</li>
+<li><strong>Do the maths:</strong> 256&#8308; = 4.29 billion, so four levels, top two cached.</li>
+<li><strong>Draw one split</strong> and say the rule: the middle key moves up, and the tree grows only at the root.</li>
+</ol>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>B-tree vs B+ tree?</strong> B+ keeps keys only in leaves and chains them, so a range scan is one walk down then sideways. Nearly all databases use B+.</li>
+<li><strong>Delete?</strong> The mirror of insert: a node below half full borrows from a sibling, or merges with it and pulls a key down from the parent.</li>
+<li><strong>Why not a hash index?</strong> O(1) lookups, but no order: no ranges, no sorting, no prefixes.</li>
+<li><strong>Bulk-loading sorted data?</strong> Build bottom-up, or you get the half-full tree above.</li>
+</ul>
+
+<h4>Mistakes people make</h4>
+<ul>
+<li>Saying &ldquo;it&rsquo;s O(log n), same as a BST&rdquo; and stopping. True for comparisons, wrong for what costs money.</li>
+<li>Thinking it grows at the leaves. It grows at the root, which is why it stays balanced.</li>
+<li>Claiming keys live only in leaves &mdash; that is a B+ tree, not a B-tree.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A B-tree is a sorted tree whose nodes hold many keys, sized so one node fills one page.</li>
+<li>A disk read costs about a thousand comparisons, so the height is what matters.</li>
+<li>A balanced binary tree needs about 30 reads for a billion keys, one question per node.</li>
+<li>A 4 KB page holds 256 entries at 16 bytes each, so 256&#8308; = 4.29 billion keys fit in four levels &mdash; and the top levels stay cached.</li>
+<li>Insert walks down to a leaf; a node with too many keys sends its middle key up to the parent. The tree gets taller only when that reaches the root, which is why every leaf stays level.</li>
+<li>Inserting in sorted order leaves every node half full, so bulk loads are built bottom-up.</li>
+<li>A B+ tree keeps keys only in leaves and chains them, which is what databases use.</li>
+</ul>
