@@ -1,0 +1,288 @@
+<!--
+title: In-Memory Cache Service
+summary: A shared cache that sits between your API servers and the database, keeping hot data in memory. Sharding by key, evicting with LRU, and surviving a shard that dies.
+category: Caching
+order: 40
+related: caching-and-invalidation, redis-persistence, database-sharding, load-balancer
+-->
+
+<!-- section: problem -->
+<p>Your API servers read the same rows over and over: a user profile, a product page, a feature flag. The database answers each in 20 ms and the load keeps climbing, though the answers barely change.</p>
+<p>So we build a service that holds those answers in memory and hands them back in under a millisecond. Any API server can ask it, so a row fetched for one request is already there for the next, on a different machine. It holds a fixed amount of memory, and when it fills it throws out whatever has gone coldest.</p>
+<p>This is what Redis and Memcached do: a key-value store that lives in RAM, is shared by every server, and is allowed to forget things.</p>
+<p class="note">One-line version: a shared hash table on the network, split across a few machines, that evicts the least recently used key when memory runs out.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Store a value under a key, and read it back.</li>
+<li>Delete a key, so a write to the database can clear the stale copy.</li>
+<li>Expire a key after a time limit the caller sets.</li>
+<li>Throw out cold keys by itself when memory is full, without being asked.</li>
+<li>Read many keys in one call, so a page render is one round trip.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Fast.</strong> p99 under 2 ms inside the data centre. Slower and the database was fine.</li>
+<li><strong>Shared.</strong> Every API server sees the same entry for a key.</li>
+<li><strong>Allowed to lose data.</strong> A miss costs a database read, not a wrong answer.</li>
+<li><strong>Predictable on memory.</strong> It never grows past its limit. It evicts instead.</li>
+<li><strong>Available.</strong> One machine dying lowers the hit rate; it does not take the site down.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Durability.</strong> Nothing survives a restart. The database is the real copy, so disk would cost latency and buy little. Redis does offer it &mdash; see How Redis Saves Data to Disk.</li>
+<li><strong>Transactions across keys.</strong> One key at a time. Multi-key atomicity is a database&rsquo;s job.</li>
+<li><strong>Queries.</strong> No scans, no &ldquo;find all keys like this&rdquo;. Exact key only.</li>
+<li><strong>Cross-region replication.</strong> One cluster per region, each filled from its own database.</li>
+</ul>
+
+<!-- section: estimates -->
+<p>All of these are made up, to size the thing. They are not measurements.</p>
+<ul>
+<li>Peak traffic to the API tier: <strong>200,000 requests a second</strong>, 95% reads.</li>
+<li>Hot set: <strong>20 million keys</strong>. Average value 2 KB, key 40 bytes, about 100 bytes of bookkeeping per entry.</li>
+<li>Target hit rate: <strong>90%</strong>.</li>
+<li>One cache node: <strong>16 GB</strong> usable memory, <strong>100,000 operations a second</strong>.</li>
+</ul>
+
+<p><strong>Reads and writes.</strong> 200,000 &times; 0.95 = <strong>190,000 reads/s</strong>. 200,000 &times; 0.05 = <strong>10,000 writes/s</strong>. That is a read-to-write ratio of <strong>19:1</strong>, which is why this is worth caching at all.</p>
+<p><strong>Misses.</strong> 190,000 &times; 10% = <strong>19,000 reads/s</strong> still reach the database. The cache absorbs the other 171,000.</p>
+<p><strong>Memory.</strong> Each entry costs 2,048 + 40 + 100 &asymp; <strong>2,140 bytes</strong>. 20,000,000 &times; 2,140 = <strong>42.8 GB</strong>.</p>
+<p><strong>How many nodes.</strong> Memory says 42.8 &divide; 16 = 2.7, so <strong>3</strong>. Throughput says 200,000 &divide; 100,000 = <strong>2</strong>. Memory needs more nodes than speed does, and stays that way as we grow. Run <strong>4 shards</strong> for headroom.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Value</th></tr>
+<tr><td>Reads / writes a second</td><td>190,000 / 10,000</td></tr>
+<tr><td>Read-to-write ratio</td><td>19:1</td></tr>
+<tr><td>Misses reaching the database</td><td>19,000/s</td></tr>
+<tr><td>Memory for the hot set</td><td>42.8 GB</td></tr>
+<tr><td>Shards</td><td>4 (10.7 GB and 50,000 ops/s each)</td></tr>
+</table></div>
+
+<!-- section: api -->
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>GET /v1/keys/:key</code></td><td>&mdash;</td><td><code>200</code> with the value, or <code>404</code> on a miss</td></tr>
+<tr><td><code>PUT /v1/keys/:key</code></td><td>value, <code>ttl_seconds</code></td><td><code>204</code></td></tr>
+<tr><td><code>DELETE /v1/keys/:key</code></td><td>&mdash;</td><td><code>204</code>, whether it was there or not</td></tr>
+<tr><td><code>POST /v1/keys/batch-get</code></td><td>up to 256 keys</td><td>the keys that were found, misses left out</td></tr>
+<tr><td><code>GET /v1/stats</code></td><td>&mdash;</td><td>hit rate, memory used, evictions a second</td></tr>
+</table></div>
+
+<pre><code>// a read, and the write that follows a miss
+GET /v1/keys/user:8821
+&rarr; 404 Not Found                      // miss: the caller reads the database
+
+PUT /v1/keys/user:8821
+{ "value": "{\"id\":8821,\"name\":\"Ada\"}", "ttl_seconds": 300 }
+&rarr; 204 No Content</code></pre>
+<p><code>DELETE</code> returns <code>204</code> even for a key that was never there. The caller clearing a stale copy doesn&rsquo;t care whether one existed.</p>
+<p>Shown as HTTP because it reads clearly. A real cache uses a binary protocol over a kept-open TCP connection: at 200,000 requests a second, HTTP headers cost more than the lookup.</p>
+
+<!-- section: data -->
+<p><strong>There is no database here, and that is the design.</strong> The store is a hash table in RAM. Disk is what we are escaping, and the durable copy already sits in the database behind us.</p>
+<p>The index is the hash table itself: key to entry, one step, no scanning. Each entry carries:</p>
+
+<div class="table-wrap"><table>
+<tr><th>Field</th><th>What it holds</th><th>Why it is there</th></tr>
+<tr><td><code>key</code></td><td>the key, 40 bytes</td><td>eviction finds an entry, then needs its key to remove it from the hash table</td></tr>
+<tr><td><code>value</code></td><td>bytes, 2 KB on average</td><td>the cached answer, stored opaque &mdash; the service never parses it</td></tr>
+<tr><td><code>expires_at</code></td><td>timestamp</td><td>the TTL the caller asked for</td></tr>
+<tr><td><code>prev</code>, <code>next</code></td><td>two pointers</td><td>the entry&rsquo;s place in the use order, for eviction</td></tr>
+</table></div>
+
+<p>Those two pointers link every entry into one list, newest at the front, coldest at the back. Touching a key unhooks its entry and hooks it back at the front.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="Inside one shard, a hash table holding keys 3, 1 and 2 points down at three entries linked into a list. The list runs from a front guard to a back guard with pointers in both directions. The entry at the front was just used and the entry at the back is the coldest, which is the one evicted next.">
+<defs><marker id="ah-cache-service" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="150" y="14" width="420" height="58" rx="8" class="box"/>
+<text x="360" y="36" text-anchor="middle" class="sub">hash table: key &rarr; entry</text>
+<text x="320" y="60" text-anchor="middle" class="lbl">user:3</text>
+<text x="420" y="60" text-anchor="middle" class="lbl">user:1</text>
+<text x="520" y="60" text-anchor="middle" class="lbl">user:2</text>
+
+<line x1="320" y1="72" x2="320" y2="100" class="arr dim" marker-end="url(#ah-cache-service)"/>
+<line x1="420" y1="72" x2="420" y2="100" class="arr dim" marker-end="url(#ah-cache-service)"/>
+<line x1="520" y1="72" x2="520" y2="100" class="arr dim" marker-end="url(#ah-cache-service)"/>
+
+<rect x="196" y="104" width="62" height="44" rx="6" class="box faintbox"/>
+<text x="227" y="131" text-anchor="middle" class="sub">front</text>
+
+<rect x="282" y="104" width="76" height="44" rx="6" class="box hi"/>
+<text x="320" y="124" text-anchor="middle" class="lbl">user:3</text>
+<text x="320" y="140" text-anchor="middle" class="sub">just read</text>
+
+<rect x="382" y="104" width="76" height="44" rx="6" class="box"/>
+<text x="420" y="131" text-anchor="middle" class="lbl">user:1</text>
+
+<rect x="482" y="104" width="76" height="44" rx="6" class="box warn"/>
+<text x="520" y="124" text-anchor="middle" class="lbl">user:2</text>
+<text x="520" y="140" text-anchor="middle" class="sub">coldest</text>
+
+<rect x="568" y="104" width="58" height="44" rx="6" class="box faintbox"/>
+<text x="597" y="131" text-anchor="middle" class="sub">back</text>
+
+<line x1="258" y1="118" x2="280" y2="118" class="arr" marker-end="url(#ah-cache-service)"/>
+<line x1="358" y1="118" x2="380" y2="118" class="arr" marker-end="url(#ah-cache-service)"/>
+<line x1="458" y1="118" x2="480" y2="118" class="arr" marker-end="url(#ah-cache-service)"/>
+<line x1="558" y1="118" x2="566" y2="118" class="arr" marker-end="url(#ah-cache-service)"/>
+<line x1="280" y1="136" x2="258" y2="136" class="arr dim" marker-end="url(#ah-cache-service)"/>
+<line x1="380" y1="136" x2="358" y2="136" class="arr dim" marker-end="url(#ah-cache-service)"/>
+<line x1="480" y1="136" x2="458" y2="136" class="arr dim" marker-end="url(#ah-cache-service)"/>
+<line x1="566" y1="136" x2="558" y2="136" class="arr dim" marker-end="url(#ah-cache-service)"/>
+
+<text x="320" y="186" text-anchor="middle" class="lbl">memory full &rarr; drop the entry at the back, and remove its key</text>
+<text x="320" y="207" text-anchor="middle" class="sub">this is one shard &mdash; each of the 4 keeps its own table and its own order</text>
+</svg>
+</div>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 250" role="img" aria-label="An API server calls a cache client library, which hashes the key and talks to one of four shards. On a miss the API server reads the database itself and then writes the value back into the cache.">
+<defs><marker id="ah-cache-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="16" y="48" width="108" height="54" rx="8" class="box"/>
+<text x="70" y="70" text-anchor="middle" class="lbl">API server</text>
+<text x="70" y="88" text-anchor="middle" class="sub">many of these</text>
+
+<rect x="156" y="48" width="116" height="54" rx="8" class="box hi"/>
+<text x="214" y="70" text-anchor="middle" class="lbl">cache client</text>
+<text x="214" y="88" text-anchor="middle" class="sub">hashes the key</text>
+
+<rect x="330" y="10" width="140" height="44" rx="6" class="box"/>
+<text x="400" y="37" text-anchor="middle" class="lbl">shard 1</text>
+<rect x="330" y="64" width="140" height="44" rx="6" class="box"/>
+<text x="400" y="85" text-anchor="middle" class="lbl">shard 2</text>
+<text x="400" y="100" text-anchor="middle" class="sub">+ replica</text>
+<rect x="330" y="118" width="140" height="44" rx="6" class="box"/>
+<text x="400" y="145" text-anchor="middle" class="lbl">shards 3, 4</text>
+
+<rect x="470" y="186" width="140" height="48" rx="8" class="box warn"/>
+<text x="540" y="208" text-anchor="middle" class="lbl">database</text>
+<text x="540" y="225" text-anchor="middle" class="sub">19,000 reads/s</text>
+
+<line x1="124" y1="75" x2="154" y2="75" class="arr" marker-end="url(#ah-cache-arch)"/>
+<line x1="272" y1="66" x2="328" y2="36" class="arr" marker-end="url(#ah-cache-arch)"/>
+<line x1="272" y1="78" x2="328" y2="86" class="arr" marker-end="url(#ah-cache-arch)"/>
+<line x1="272" y1="88" x2="328" y2="138" class="arr" marker-end="url(#ah-cache-arch)"/>
+
+<path d="M70,102 L70,210 L468,210" class="arr warnline" fill="none" marker-end="url(#ah-cache-arch)"/>
+<text x="250" y="202" text-anchor="middle" class="sub">only on a miss: read it, then PUT it back</text>
+</svg>
+</div>
+
+<h4>A read</h4>
+<ol>
+<li>The <strong>API server</strong> asks the <strong>cache client</strong> for <code>user:8821</code>.</li>
+<li>The client hashes the key, picks <strong>shard 2</strong>, and sends it over a connection it already holds open.</li>
+<li>Hit: the shard moves the entry to the front of its list and returns the value, well under a millisecond.</li>
+<li>Miss: the shard returns <code>404</code>. The API server reads the <strong>database</strong>, then <code>PUT</code>s the value back with a TTL.</li>
+</ol>
+<p>The cache never talks to the database. It doesn&rsquo;t know one exists. That is <strong>cache-aside</strong>: the caller owns the filling, so the cache stays a dumb, fast box.</p>
+
+<h4>A write</h4>
+<ol>
+<li>The API server writes the row to the database.</li>
+<li>Then it sends <code>DELETE /v1/keys/user:8821</code>.</li>
+</ol>
+<p>Delete, don&rsquo;t update. Two servers writing the same key race, and the loser can leave a stale value there forever. A delete leaves no value to be wrong. Caching and Invalidation goes into this properly.</p>
+
+<!-- section: deepDives -->
+<h4>Which shard holds a key?</h4>
+<p>Plain <code>hash(key) % 4</code> works until we add a fifth shard, when almost every key moves and the hit rate falls off a cliff. So the client uses <strong>consistent hashing</strong>: shards and keys land on one ring, and a key belongs to the next shard clockwise. Adding a fifth moves roughly 1/5 of the keys. Database Sharding covers the ring itself.</p>
+<p>The client does this, not a proxy. A proxy is another hop on every one of 200,000 requests a second, and another thing to keep alive.</p>
+
+<h4>What do we throw out when memory is full?</h4>
+<div class="table-wrap"><table>
+<tr><th>Policy</th><th>Keeps</th><th>Cost</th></tr>
+<tr><td>Random</td><td>nothing in particular</td><td>free, but drops hot keys</td></tr>
+<tr><td>TTL only</td><td>whatever hasn&rsquo;t expired</td><td>memory still overflows between expiries</td></tr>
+<tr><td><strong>LRU</strong></td><td>recently used keys</td><td>two pointers per entry</td></tr>
+<tr><td>LFU</td><td>often-used keys</td><td>a counter per key, and it clings to yesterday&rsquo;s hot keys</td></tr>
+</table></div>
+<p>We pick <strong>LRU</strong>: throw out the key whose last read or write happened longest ago. It matches how traffic actually behaves &mdash; a product that was popular an hour ago usually still is.</p>
+<p>The structure in <code>data</code> is what makes it cheap. The hash table finds the key in one step; the coldest entry is simply the one at the back. Both a read and an eviction are a fixed number of pointer writes, <strong>O(1)</strong>, whether the shard holds 10 keys or 10 million. Stamping each entry with a timestamp and scanning for the oldest instead is O(n) per eviction &mdash; at 5 million entries a shard, that scan is the whole budget.</p>
+<p>A read counts as a use, not just a write. That rule keeps a hot key alive while cold neighbours are dropped around it.</p>
+
+<h4>What happens on a cold start?</h4>
+<p>Restart a shard and it holds nothing. Every request for its keys misses at once and the database takes a spike it was never sized for &mdash; a <strong>stampede</strong>. Two defences: a small random jitter on each TTL, so keys written together don&rsquo;t expire together, and a short per-key lock on a miss, so one request refills while the rest wait.</p>
+
+<!-- section: scaling -->
+<p>Growing the numbers from <code>estimates</code>, the same thing binds every time: <strong>memory, not speed</strong>.</p>
+
+<div class="table-wrap"><table>
+<tr><th></th><th>Now</th><th>10&times;</th><th>100&times;</th></tr>
+<tr><td>Requests a second</td><td>200,000</td><td>2,000,000</td><td>20,000,000</td></tr>
+<tr><td>Hot set</td><td>42.8 GB</td><td>428 GB</td><td>4.28 TB</td></tr>
+<tr><td>Shards memory needs</td><td>3</td><td>27</td><td>268</td></tr>
+<tr><td>Shards throughput needs</td><td>2</td><td>20</td><td>200</td></tr>
+<tr><td>Misses hitting the database</td><td>19,000/s</td><td>190,000/s</td><td>1,900,000/s</td></tr>
+</table></div>
+
+<ul>
+<li><strong>What breaks first at 10&times;:</strong> not the cache &mdash; the database behind it. 190,000 misses a second is more than the original uncached load. You notice database CPU climbing while the hit rate looks fine. The fix raises the hit rate rather than adding shards: longer TTLs, more memory, fewer early evictions.</li>
+<li><strong>At 100&times;:</strong> with 268 shards a key moving is routine, so the client&rsquo;s ring must come from shared config, not a list baked into each API server.</li>
+<li><strong>Hot key:</strong> one key taking 50,000 reads a second lands on one shard, and sharding cannot help &mdash; it is one key. You see one shard at 100% CPU while the rest idle. Fix it in the client: hold the few hottest keys in the API server&rsquo;s own memory for a second or two.</li>
+</ul>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>How the system handles it</th></tr>
+<tr><td>One shard dies</td><td>Nothing, for a moment pages are slower</td><td>A quarter of keys miss and refill from the database. The replica is promoted; the ring routes around it.</td></tr>
+<tr><td>The whole cache is gone</td><td>Slow pages, or an outage</td><td>19,000 misses/s becomes 190,000. The database falls over. This is the real risk: the client must cap how many misses it lets through per key.</td></tr>
+<tr><td>A shard is slow, or unreachable</td><td>Every page slow</td><td>Worse than dead. The <strong>cache client</strong> holds a hard timeout, around 10 ms, and counts a slow or unreachable shard as a miss. A cache you cannot reach must never be an error.</td></tr>
+<tr><td>Traffic spike</td><td>Lower hit rate</td><td>New keys evict old ones faster, so it degrades gradually. That is the point of a fixed memory limit. The TTL on every key is the backstop that stops anything living forever.</td></tr>
+<tr><td>The database goes down</td><td>Hits still work, misses fail</td><td>The cache keeps serving its 90% from memory, which buys time. Don&rsquo;t cache the error: a <code>500</code> written back under the key turns a database blip into a long outage.</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Cache-aside vs read-through.</strong> The caller fills the cache, so the cache knows nothing about the database &mdash; but every caller must get the miss-then-fill right. Read-through hides that, at the cost of a cache holding database credentials.</li>
+<li><strong>Delete vs update on a write.</strong> Deleting can&rsquo;t leave a wrong value, but it guarantees the next reader pays for a miss. Updating keeps the hit rate up and risks two writers landing out of order.</li>
+<li><strong>LRU vs LFU.</strong> LRU is two pointers and follows traffic quickly. LFU would survive a scan of cold keys better, but needs a counter per key and holds on to keys that were hot yesterday.</li>
+<li><strong>Client-side routing vs a proxy.</strong> Routing in the client saves a hop on every request. The cost: the ring lives in every API server, so a shard change must reach all of them.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope it, 3 min.</strong> Key-value, in memory, allowed to lose data. Say &ldquo;Not doing&rdquo; out loud: no durability, no transactions, no queries.</li>
+<li><strong>Numbers, 5 min.</strong> 19:1 reads to writes, 42.8 GB hot set, 4 shards. Say that memory decides the shard count, not throughput.</li>
+<li><strong>API and the read path, 5 min.</strong> Five endpoints, then follow a hit and a miss through the diagram.</li>
+<li><strong>Sharding and eviction, 10 min.</strong> Consistent hashing, then LRU and why the hash table plus linked list makes it O(1).</li>
+<li><strong>Failures, 5 min.</strong> Lead with the whole cache dying and the database behind it.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>Is losing the cache acceptable, or does this need to survive a restart?</li>
+<li>Who fills it &mdash; the caller, or the cache itself?</li>
+<li>How stale may a read be? That sets the TTL and decides delete versus update.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>Make eviction O(1).</strong> Hash table for lookup, linked list for order. Each entry stores its own key, or eviction finds the coldest entry but can&rsquo;t remove it from the table.</li>
+<li><strong>Two servers write the same key at once.</strong> Delete rather than update, so there is no value left to be stale.</li>
+<li><strong>Add a shard without losing everything.</strong> Consistent hashing: about 1/n of keys move, not all of them.</li>
+<li><strong>Keep it warm through a deploy.</strong> Restart one shard at a time, letting each refill first.</li>
+<li><strong>A value bigger than one node?</strong> Cache the pieces under their own keys, read them in one batch call.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A cache service is a shared hash table in RAM between the API servers and the database, and it is allowed to forget things.</li>
+<li>At 19 reads per write it removes 171,000 of 190,000 database reads a second, leaving 19,000.</li>
+<li>Memory decides the shard count, not throughput: 42.8 GB needs 3 nodes, while the traffic needs only 2.</li>
+<li>Cache-aside means the caller reads the database on a miss and writes the value back, so the cache stays simple.</li>
+<li>On a database write, delete the key rather than update it, so no wrong value can be left behind.</li>
+<li>Consistent hashing in the client lets you add a shard and move about 1/n of the keys instead of all of them.</li>
+<li>LRU evicts the key used longest ago, and a read counts as a use. A hash table plus a doubly linked list makes both a read and an eviction O(1), because the coldest entry is the one at the back.</li>
+<li>Every entry stores its own key, so evicting it can also remove it from the hash table.</li>
+<li>Losing the whole cache is the real danger: the misses it was absorbing all hit the database at once.</li>
+</ul>
