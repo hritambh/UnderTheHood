@@ -1,0 +1,302 @@
+<!--
+title: LRU Cache
+summary: Build a fixed-size cache that throws out whatever was used longest ago, with get and put both running in constant time. A hash map for finding keys, a linked list for keeping order.
+category: Design
+order: 30
+related: caching-and-invalidation, two-sum, redis-persistence
+-->
+
+<!-- section: problem -->
+<p>Build a cache that holds at most <code>capacity</code> keys. It needs two operations:</p>
+<ul>
+<li><code>get(key)</code> &mdash; return the value, or <code>-1</code> if the key isn&rsquo;t there.</li>
+<li><code>put(key, value)</code> &mdash; add the key, or update it if it already exists.</li>
+</ul>
+<p>When a <code>put</code> would push it past <code>capacity</code>, throw out the <strong>least recently used</strong> key: the one whose last <code>get</code> or <code>put</code> happened longest ago. A <code>get</code> counts as a use, not just a <code>put</code>. Both operations have to run in <strong>O(1)</strong> &mdash; the same time whether the cache holds 3 keys or 3,000.</p>
+<p>Limits for this version: capacity 1 to 3,000, keys and values are whole numbers, and up to 200,000 calls in total. This is the problem usually listed as &ldquo;LRU Cache&rdquo;.</p>
+<p class="note">One-line version: a hash map finds the key, a doubly linked list remembers the order, and every touch moves that key to the front.</p>
+
+<!-- section: examples -->
+<p>Capacity 2 in all three.</p>
+<div class="table-wrap"><table>
+<tr><th>Calls</th><th>Returns</th><th>Why</th></tr>
+<tr><td><code>put(1,1) put(2,2) get(1) put(3,3) get(2)</code></td><td><code>1</code>, then <code>-1</code></td><td>The <code>get(1)</code> makes 1 the freshest, so <code>put(3,3)</code> drops 2 instead.</td></tr>
+<tr><td><code>put(1,1) put(2,2) put(1,10) put(3,3) get(2)</code></td><td><code>-1</code></td><td>Updating key 1 also counts as using it. Again 2 is the oldest, so 2 goes.</td></tr>
+<tr><td><code>put(1,1) put(2,2) get(1) get(1) put(3,3) get(2) get(1)</code></td><td><code>1</code>, <code>1</code>, <code>-1</code>, <code>1</code></td><td>Reading 1 twice doesn&rsquo;t make it any safer than reading it once. Only the <em>last</em> use matters.</td></tr>
+</table></div>
+<p>Row one is the whole problem in a line. Drop the <code>get(1)</code> and the answer flips: 1 would be the one thrown out.</p>
+
+<!-- section: think -->
+<h4>Questions to ask the interviewer</h4>
+<ul>
+<li><strong>Does a <code>get</code> count as a use?</strong> Yes here. If only writes counted, this is a much easier problem.</li>
+<li><strong>What does a miss return?</strong> <code>-1</code> here. Sometimes it&rsquo;s <code>null</code> or a thrown error.</li>
+<li><strong>Does updating an existing key evict anything?</strong> No. The size doesn&rsquo;t grow, so nothing has to go.</li>
+<li><strong>Is O(1) required, or just asked for?</strong> Required. That one word rules out every solution that scans.</li>
+</ul>
+
+<h4>What the limits tell you</h4>
+<p>200,000 calls against a capacity of 3,000. Anything that walks the whole cache on each call does 200,000 &times; 3,000 = <strong>600 million</strong> steps. That is the gap between a few milliseconds and a few seconds.</p>
+
+<h4>What the two operations have in common</h4>
+<p>Each call asks two questions at once: <em>where is this key?</em> and <em>which key is the oldest?</em> A hash map is fast at the first and useless at the second. A sorted list is the other way round. That mismatch is the problem.</p>
+
+<!-- section: brute -->
+<p>The obvious way: store a timestamp with every entry, and when the cache is full, scan for the smallest one.</p>
+<pre><code>// lru-cache-slow.ts
+class LRUCacheSlow {
+  private store = new Map&lt;number, { value: number; used: number }&gt;();
+  private clock = 0;
+
+  constructor(private cap: number) {}
+
+  get(key: number): number {
+    const e = this.store.get(key);
+    if (e === undefined) return -1;
+    e.used = ++this.clock;              // touching it refreshes the stamp
+    return e.value;
+  }
+
+  put(key: number, value: number): void {
+    const e = this.store.get(key);
+    if (e !== undefined) { e.value = value; e.used = ++this.clock; return; }
+
+    if (this.store.size === this.cap) {
+      let oldKey = -1, oldUsed = Infinity;
+      for (const [k, v] of this.store) {      // the slow bit
+        if (v.used &lt; oldUsed) { oldUsed = v.used; oldKey = k; }
+      }
+      this.store.delete(oldKey);
+    }
+    this.store.set(key, { value, used: ++this.clock });
+  }
+}</code></pre>
+<p><code>get</code> is already O(1). <code>put</code> is <strong>O(n) time</strong> when the cache is full, because of the scan, and <strong>O(n) space</strong>.</p>
+<p>Push 100,000 fresh keys through a cache of 3,000 and that scan runs 97,000 times over 3,000 entries: about <strong>291 million</strong> steps. In a quick run that took around a second, against a few milliseconds for the solution below. Same answers, 70&times; the work.</p>
+
+<!-- section: idea -->
+<p>Stop trying to make one structure do both jobs. Use two, and keep them pointing at each other.</p>
+<ul>
+<li>A <strong>hash map</strong> from key to node. It answers &ldquo;where is this key?&rdquo; in one step.</li>
+<li>A <strong>doubly linked list</strong> of those same nodes, newest at the front, oldest at the back. It answers &ldquo;which is the oldest?&rdquo; in one step: it&rsquo;s the back one.</li>
+</ul>
+<p>A doubly linked list is a chain where each node holds a pointer to the one before it and the one after it. That second pointer is the part that matters. Holding a node, you can unhook it from the chain without walking from the front &mdash; just join its two neighbours to each other.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 235" role="img" aria-label="A hash map holding keys 3, 1 and 2 points down at three nodes in a doubly linked list. The list runs from a front guard to a back guard, with arrows in both directions. The node nearest the front is the most recently used and the node nearest the back is the least recently used, which is the one thrown out next.">
+<defs><marker id="ah-lru-cache" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="150" y="16" width="420" height="58" rx="8" class="box"/>
+<text x="360" y="38" text-anchor="middle" class="sub">map: key &rarr; node</text>
+<text x="320" y="62" text-anchor="middle" class="lbl">3</text>
+<text x="420" y="62" text-anchor="middle" class="lbl">1</text>
+<text x="520" y="62" text-anchor="middle" class="lbl">2</text>
+
+<line x1="320" y1="74" x2="320" y2="102" class="arr dim" marker-end="url(#ah-lru-cache)"/>
+<line x1="420" y1="74" x2="420" y2="102" class="arr dim" marker-end="url(#ah-lru-cache)"/>
+<line x1="520" y1="74" x2="520" y2="102" class="arr dim" marker-end="url(#ah-lru-cache)"/>
+
+<rect x="196" y="106" width="62" height="44" rx="6" class="box faintbox"/>
+<text x="227" y="133" text-anchor="middle" class="sub">front</text>
+
+<rect x="282" y="106" width="76" height="44" rx="6" class="box hi"/>
+<text x="320" y="126" text-anchor="middle" class="lbl">key 3</text>
+<text x="320" y="142" text-anchor="middle" class="sub">just used</text>
+
+<rect x="382" y="106" width="76" height="44" rx="6" class="box"/>
+<text x="420" y="133" text-anchor="middle" class="lbl">key 1</text>
+
+<rect x="482" y="106" width="76" height="44" rx="6" class="box warn"/>
+<text x="520" y="126" text-anchor="middle" class="lbl">key 2</text>
+<text x="520" y="142" text-anchor="middle" class="sub">oldest</text>
+
+<rect x="568" y="106" width="58" height="44" rx="6" class="box faintbox"/>
+<text x="597" y="133" text-anchor="middle" class="sub">back</text>
+
+<line x1="258" y1="120" x2="280" y2="120" class="arr" marker-end="url(#ah-lru-cache)"/>
+<line x1="358" y1="120" x2="380" y2="120" class="arr" marker-end="url(#ah-lru-cache)"/>
+<line x1="458" y1="120" x2="480" y2="120" class="arr" marker-end="url(#ah-lru-cache)"/>
+<line x1="558" y1="120" x2="566" y2="120" class="arr" marker-end="url(#ah-lru-cache)"/>
+<line x1="280" y1="138" x2="258" y2="138" class="arr dim" marker-end="url(#ah-lru-cache)"/>
+<line x1="380" y1="138" x2="358" y2="138" class="arr dim" marker-end="url(#ah-lru-cache)"/>
+<line x1="480" y1="138" x2="458" y2="138" class="arr dim" marker-end="url(#ah-lru-cache)"/>
+<line x1="566" y1="138" x2="558" y2="138" class="arr dim" marker-end="url(#ah-lru-cache)"/>
+
+<text x="320" y="190" text-anchor="middle" class="lbl">touch a key &rarr; unhook its node &rarr; hook it back at the front</text>
+<text x="320" y="211" text-anchor="middle" class="sub">evict &rarr; take the node at the back, and delete its key from the map</text>
+</svg>
+</div>
+
+<p>Two details make it work. Guard nodes sit at each end holding nothing, so the front and back are never empty and no step has to check for <code>null</code>. And each node stores its own <strong>key</strong>: without that you could find the oldest node but not know which map entry to delete.</p>
+
+<!-- section: walkthrough -->
+<p>Capacity 2, and the calls from the first example: <code>put(1,1)</code>, <code>put(2,2)</code>, <code>get(1)</code>, <code>put(3,3)</code>, <code>get(2)</code>.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 640 215" role="img" aria-label="Three snapshots of the list. After put 2 2 the order is 2 then 1. After get 1 the order flips to 1 then 2 because reading 1 moved it to the front. After put 3 3 the cache is full so node 2 at the back is dropped and the order becomes 3 then 1.">
+<text x="18" y="44" class="lbl">after put(2,2)</text>
+<rect x="180" y="24" width="86" height="38" rx="6" class="box"/><text x="223" y="48" text-anchor="middle" class="lbl">2</text>
+<rect x="290" y="24" width="86" height="38" rx="6" class="box"/><text x="333" y="48" text-anchor="middle" class="lbl">1</text>
+<text x="420" y="40" class="sub">front &rarr; back</text>
+<text x="420" y="56" class="sub">1 is now the oldest</text>
+
+<text x="18" y="114" class="lbl">after get(1)</text>
+<rect x="180" y="94" width="86" height="38" rx="6" class="box hi"/><text x="223" y="118" text-anchor="middle" class="lbl">1</text>
+<rect x="290" y="94" width="86" height="38" rx="6" class="box warn"/><text x="333" y="118" text-anchor="middle" class="lbl">2</text>
+<text x="420" y="110" class="sub">reading 1 moved it up</text>
+<text x="420" y="126" class="sub">2 drops to the back</text>
+
+<text x="18" y="184" class="lbl">after put(3,3)</text>
+<rect x="180" y="164" width="86" height="38" rx="6" class="box hi"/><text x="223" y="188" text-anchor="middle" class="lbl">3</text>
+<rect x="290" y="164" width="86" height="38" rx="6" class="box"/><text x="333" y="188" text-anchor="middle" class="lbl">1</text>
+<rect x="400" y="164" width="86" height="38" rx="6" class="box faintbox"/><text x="443" y="188" text-anchor="middle" class="sub">2 gone</text>
+<text x="510" y="188" class="sub">full, so the back went</text>
+</svg>
+</div>
+
+<div class="table-wrap"><table>
+<tr><th>#</th><th>Call</th><th>What happens</th><th><code>map</code> keys</th><th>List, front to back</th><th>Returned</th></tr>
+<tr><td>1</td><td><code>put(1,1)</code></td><td>New key, room left</td><td>1</td><td>1</td><td>&mdash;</td></tr>
+<tr><td>2</td><td><code>put(2,2)</code></td><td>New key, room left</td><td>1, 2</td><td>2, 1</td><td>&mdash;</td></tr>
+<tr><td>3</td><td><code>get(1)</code></td><td>Hit. Unlink 1, push it to the front</td><td>1, 2</td><td>1, 2</td><td><code>1</code></td></tr>
+<tr><td>4</td><td><code>put(3,3)</code></td><td>Full. Drop the back node, 2, and delete key 2</td><td>1, 3</td><td>3, 1</td><td>&mdash;</td></tr>
+<tr><td>5</td><td><code>get(2)</code></td><td>Not in the map any more</td><td>1, 3</td><td>3, 1</td><td><code>-1</code></td></tr>
+</table></div>
+<p>Step 3 is the one that decides the answer. Without it, 1 sits at the back and step 4 throws out 1 instead of 2.</p>
+
+<!-- section: code -->
+<pre><code>// lru-cache.ts
+class Node {
+  prev: Node | null = null;
+  next: Node | null = null;
+  constructor(public key: number, public value: number) {}
+}
+
+class LRUCache {
+  private map = new Map&lt;number, Node&gt;();
+  private head = new Node(0, 0);      // guard at the front
+  private tail = new Node(0, 0);      // guard at the back
+
+  constructor(private cap: number) {
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+  }
+
+  private unlink(n: Node): void {     // join its neighbours to each other
+    n.prev!.next = n.next;
+    n.next!.prev = n.prev;
+  }
+
+  private pushFront(n: Node): void {  // hook it in right after head
+    n.next = this.head.next;
+    n.prev = this.head;
+    this.head.next!.prev = n;
+    this.head.next = n;
+  }
+
+  get(key: number): number {
+    const n = this.map.get(key);
+    if (n === undefined) return -1;
+    this.unlink(n);
+    this.pushFront(n);                // a read counts as a use
+    return n.value;
+  }
+
+  put(key: number, value: number): void {
+    const n = this.map.get(key);
+    if (n !== undefined) {            // already here: update and move up
+      n.value = value;
+      this.unlink(n);
+      this.pushFront(n);
+      return;                         // size didn't grow, so nothing is evicted
+    }
+    if (this.map.size === this.cap) {
+      const last = this.tail.prev!;   // the oldest node
+      this.unlink(last);
+      this.map.delete(last.key);      // this is why a node stores its key
+    }
+    const fresh = new Node(key, value);
+    this.map.set(key, fresh);
+    this.pushFront(fresh);
+  }
+}</code></pre>
+<p>Every touch is the same two moves, <code>unlink</code> then <code>pushFront</code>. The <code>!</code> marks are only for TypeScript &mdash; the guards keep <code>prev</code> and <code>next</code> from ever really being <code>null</code> on a real node.</p>
+
+<!-- section: complexity -->
+<div class="table-wrap"><table>
+<tr><th></th><th><code>get</code></th><th><code>put</code></th><th>Space</th></tr>
+<tr><td>Timestamps and a scan</td><td>O(1)</td><td>O(n) when full</td><td>O(n)</td></tr>
+<tr><td>Map plus linked list</td><td>O(1)</td><td>O(1)</td><td>O(n)</td></tr>
+</table></div>
+<ul>
+<li><strong>Time O(1) both ways.</strong> One map lookup, then a fixed number of pointer swaps. Nothing in either method loops.</li>
+<li><strong>Space O(n)</strong>, where n is the capacity, not the number of calls. Each key costs one map entry and one node.</li>
+<li><strong>Why the scan version loses:</strong> its <code>put</code> cost grows with the capacity. Doubling the cache doubles the work per eviction.</li>
+</ul>
+
+<!-- section: edgeCases -->
+<div class="table-wrap"><table>
+<tr><th>Input</th><th>Should happen</th><th>Why it is easy to get wrong</th></tr>
+<tr><td>Capacity 1, then <code>put(1,1) put(2,2) get(1)</code></td><td><code>-1</code></td><td>Every new key evicts. Code that assumes two nodes between the guards breaks here.</td></tr>
+<tr><td><code>get(9)</code> on a key never added</td><td><code>-1</code></td><td>Don&rsquo;t touch the list on a miss. Unlinking <code>undefined</code> throws.</td></tr>
+<tr><td><code>put</code> on a key already there, cache exactly full</td><td>Update, move to front, evict nothing</td><td>Checking the size before checking whether the key exists evicts for no reason, and leaves two nodes for one key.</td></tr>
+<tr><td>Same key read twice in a row</td><td>Second read changes nothing</td><td>It&rsquo;s already at the front. Unlink and push front has to survive that.</td></tr>
+<tr><td>100,000 fresh keys, capacity 3,000</td><td>Only the last 3,000 survive</td><td>The largest case, and the one that shows the scan version up.</td></tr>
+</table></div>
+<p>Both solutions on this page were run on every row above, on the three examples, and against each other on 300 random sequences of 200 calls. They agree everywhere.</p>
+
+<!-- section: pattern -->
+<p>The technique is <strong>pairing two structures</strong> so each covers the other&rsquo;s weak spot. They share the same objects, so a hit in one is a handle into the other.</p>
+
+<h4>Signals that point to it</h4>
+<ul>
+<li>The problem asks for O(1) on two operations that pull in different directions, like &ldquo;find by key&rdquo; and &ldquo;find the smallest&rdquo;.</li>
+<li>You need to remove something from the middle of an ordering, not just the ends.</li>
+</ul>
+
+<h4>Why a plain array or a heap doesn&rsquo;t do</h4>
+<div class="table-wrap"><table>
+<tr><th>Structure</th><th>Find a key</th><th>Move it to the front</th></tr>
+<tr><td>Array in use order</td><td>O(n) scan</td><td>O(n), everything after it shifts</td></tr>
+<tr><td>Heap on timestamps</td><td>O(n) without a side map</td><td>O(log n) to re-sort</td></tr>
+<tr><td>Map + doubly linked list</td><td>O(1)</td><td>O(1), four pointer writes</td></tr>
+</table></div>
+<p>Other well-known problems built the same way: LFU Cache, Insert Delete GetRandom O(1), and All O&lsquo;one Data Structure.</p>
+
+<!-- section: interview -->
+<h4>How to talk through it</h4>
+<ol>
+<li><strong>Pin down the rules:</strong> a <code>get</code> is a use, and an update evicts nothing.</li>
+<li><strong>Name the conflict:</strong> each call needs fast lookup <em>and</em> fast ordering, and no single structure gives both.</li>
+<li><strong>Offer the scan version:</strong> O(n) per eviction, which the O(1) rule forbids.</li>
+<li><strong>State the fix in one sentence:</strong> &ldquo;A map from key to node, and a doubly linked list of those nodes in use order.&rdquo;</li>
+<li><strong>Write <code>unlink</code> and <code>pushFront</code> first,</strong> then <code>get</code> and <code>put</code> on top. Say why nodes carry their key; interviewers wait for that.</li>
+</ol>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>Without a linked list?</strong> A JavaScript <code>Map</code> keeps insertion order, so <code>delete</code> then <code>set</code> moves a key to the back. It leans on a language promise instead of your own structure.</li>
+<li><strong>Thread-safe?</strong> One lock around both structures. They must change together, or a lookup finds a node that isn&rsquo;t in the list.</li>
+<li><strong>A time limit per key?</strong> Put an expiry on the node and treat an expired hit as a miss.</li>
+<li><strong>Least <em>often</em> used instead?</strong> That is LFU: a count per key, and a list per count.</li>
+</ul>
+
+<h4>Mistakes people make</h4>
+<ul>
+<li>A singly linked list, so unhooking needs a walk and <code>put</code> is O(n) again.</li>
+<li>Forgetting that <code>get</code> is a use, which fails the first example.</li>
+<li>Not storing the key on the node, so eviction can&rsquo;t clean up the map.</li>
+<li>Evicting on an update, which shrinks the cache for nothing.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>An LRU cache holds a fixed number of keys and throws out the one used longest ago.</li>
+<li>A <code>get</code> counts as a use, so reading a key protects it from the next eviction.</li>
+<li>Each call asks two questions at once: where is this key, and which key is the oldest.</li>
+<li>Timestamps plus a scan for the smallest is correct, but <code>put</code> becomes O(n) once the cache is full.</li>
+<li>A hash map from key to node gives O(1) lookup; a doubly linked list of those nodes gives O(1) reordering.</li>
+<li>Two pointers per node are what let you unhook a node from the middle without walking the list.</li>
+<li>Each node stores its own key, so evicting the back node can also delete it from the map.</li>
+<li>Both operations end up O(1) time, with O(capacity) space.</li>
+</ul>
