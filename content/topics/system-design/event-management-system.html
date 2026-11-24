@@ -1,0 +1,326 @@
+<!--
+title: Event Management System
+summary: Organisers publish events, thousands of people try to buy in the first minute, and staff scan everyone in at the door. The average is under one ticket a second. The peak is three thousand times that, all for one row.
+category: Ticketing
+order: 60
+related: doctor-appointment-booking, cache-service, redis-persistence, caching-and-invalidation, pagination
+-->
+
+<!-- section: problem -->
+<p>An organiser sets up a concert, adds two ticket tiers, and puts it on sale at 10:00 on Friday. At 09:59 fifty thousand people have the page open. Twenty minutes later it is sold out. Three weeks after that, five thousand of them walk through a gate while someone scans their phone.</p>
+<p>Eventbrite, BookMyShow and Ticketmaster are the well-known versions. Most of the time this system is nearly idle. For about sixty seconds per popular event it is one of the busiest things you will ever run, and every request wants the same number.</p>
+<p class="note">One-line version: a quiet system with a brutal spike. The design is about absorbing a crowd that all wants one row, then getting them through a door on bad wifi.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>An organiser creates an event with ticket tiers, prices and quantities, then publishes it.</li>
+<li>Anyone can browse published events by city and date.</li>
+<li>Buy tickets: hold them, pay, get a ticket with a scannable code.</li>
+<li>Scan a ticket at the door. Each one works exactly once.</li>
+<li>The organiser sees sales and attendance as they happen.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Correct:</strong> never sell more tickets than exist. Not once, not by one.</li>
+<li><strong>On-sale:</strong> survive 50,000 people arriving in sixty seconds. Nobody gets a blank error page.</li>
+<li><strong>Checkout:</strong> the buyer knows within 3 seconds whether they have tickets.</li>
+<li><strong>Door:</strong> a scan answers in under 500 ms, and keeps working when the venue wifi dies.</li>
+<li><strong>Uptime:</strong> 99.9%. During an on-sale, buying matters more than browsing.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Taking the money.</strong> We call a payment provider and keep a reference.</li>
+<li><strong>Reserved seating.</strong> Tiers are a count, not a seat map. Picking seat J14 is the one-slot-one-buyer problem from <em>Doctor Appointment Booking</em>.</li>
+<li><strong>Refunds and resale.</strong> Both change who owns a ticket, and both deserve their own design.</li>
+<li><strong>Sending the emails.</strong> We hand a job to the notification service.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong>, made up: 2 million tickets sold a month, 50,000 people hitting one big on-sale in the first minute, 3 requests each while they retry, 5,000 attendees through a gate in 20 minutes, 300 bytes per ticket row.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Working</th><th>Result</th></tr>
+<tr><td>Average sales</td><td>2,000,000 &divide; 30 &divide; 86,400</td><td><strong>0.77/s</strong></td></tr>
+<tr><td>On-sale peak</td><td>150,000 requests &divide; 60 s</td><td><strong>2,500/s</strong></td></tr>
+<tr><td>Peak over average</td><td>2,500 &divide; 0.77</td><td><strong>3,250&times;</strong></td></tr>
+<tr><td>One row&rsquo;s share</td><td>all 2,500/s hit one tier row</td><td><strong>100%</strong></td></tr>
+<tr><td>Door scans</td><td>5,000 &divide; 20 min</td><td><strong>4.2/s</strong> per event</td></tr>
+<tr><td>Ticket rows a year</td><td>2m &times; 12 &times; 300 bytes</td><td><strong>24m rows</strong>, 7.2 GB</td></tr>
+</table></div>
+
+<p>That third row is the whole topic. A system averaging <strong>0.77 writes a second</strong> needs no cleverness at all. But the peak is <strong>3,250 times</strong> the average, it lands in one minute, and every request wants the same counter. Capacity is not the problem. <strong>Contention on one row</strong> is.</p>
+
+<!-- section: api -->
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>POST /v1/events</code></td><td>Title, venue, start time, tiers</td><td><code>201</code>, status <code>draft</code></td></tr>
+<tr><td><code>POST /v1/events/{id}/publish</code></td><td>On-sale time</td><td><code>200</code>, status <code>published</code></td></tr>
+<tr><td><code>GET /v1/events</code></td><td>City, date range, cursor</td><td>A page of events</td></tr>
+<tr><td><code>POST /v1/orders</code></td><td>Tier, quantity, idempotency key</td><td>A 10-minute hold, a queue place, or <code>409</code></td></tr>
+<tr><td><code>POST /v1/orders/{id}/pay</code></td><td>Payment reference</td><td>The tickets and their codes</td></tr>
+<tr><td><code>POST /v1/checkins</code></td><td>Ticket code, device id, scan time</td><td><code>200</code> admitted, or <code>409</code> used</td></tr>
+</table></div>
+
+<pre><code>POST /v1/orders
+{ "tierId": "t_ga", "quantity": 2,
+  "idempotencyKey": "user-918-t_ga-1" }
+
+201 Created -&gt; { "orderId": "o_4d9", "holdExpiresAt": "...", "amount": 3000 }
+202 Accepted -&gt; { "queueToken": "q_8f1", "aheadOfYou": 14820 }
+409 Conflict -&gt; { "error": "sold_out" }</code></pre>
+
+<ul>
+<li><strong><code>202</code> is the normal answer during an on-sale.</strong> You are in the queue, here is your place. Not an error, and the client must not retry it.</li>
+<li><strong>The idempotency key</strong> is a name the client invents for this attempt. A retry on a dropped connection returns the same order, not a second one.</li>
+<li><strong>The hold, not the ticket, comes first.</strong> You have ten minutes to pay.</li>
+</ul>
+
+<!-- section: data -->
+<p><strong>PostgreSQL</strong> holds the truth: 7.2 GB a year, and an order is a small transaction across three tables. <strong>Redis</strong> holds the live ticket count and the waiting room, because one row in a relational database cannot take 2,500 writes a second and a Redis key can.</p>
+
+<pre><code>CREATE TABLE events (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  organiser_id BIGINT NOT NULL,
+  city_id      INTEGER NOT NULL,
+  starts_at    TIMESTAMPTZ NOT NULL,
+  on_sale_at   TIMESTAMPTZ NOT NULL,
+  status       TEXT NOT NULL            -- draft|published|closed
+);
+
+CREATE TABLE tiers (
+  id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  event_id  BIGINT NOT NULL REFERENCES events(id),
+  name      TEXT NOT NULL,
+  price     INTEGER NOT NULL,          -- in paise, never a float
+  quantity  INTEGER NOT NULL,          -- how many exist
+  sold      INTEGER NOT NULL DEFAULT 0,
+  CHECK (sold &lt;= quantity)             -- the guard that cannot be skipped
+);
+
+CREATE TABLE orders (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tier_id    BIGINT NOT NULL REFERENCES tiers(id),
+  buyer_id   BIGINT NOT NULL,
+  quantity   SMALLINT NOT NULL,
+  status     TEXT NOT NULL,            -- held|paid|expired|cancelled
+  held_until TIMESTAMPTZ,
+  idem_key   TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE tickets (
+  id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  order_id BIGINT NOT NULL REFERENCES orders(id),
+  code     TEXT NOT NULL UNIQUE,       -- signed, this is what the QR holds
+  used_at  TIMESTAMPTZ,
+  device   TEXT                        -- which scanner let them in
+);
+
+CREATE INDEX events_browse_idx ON events (city_id, starts_at)
+  WHERE status = 'published';
+CREATE INDEX orders_sweep_idx ON orders (held_until) WHERE status = 'held';</code></pre>
+
+<p>Redis is fast but it can lose its last few writes (see <em>How Redis Saves Data to Disk</em>). So <code>CHECK (sold &lt;= quantity)</code> stays in the schema. If the counter is ever wrong, the database refuses the sale rather than printing a ticket nobody can use.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 320" role="img" aria-label="Buyers and door staff reach a load balancer, which routes to an event service, an order service and a check-in service. The order service uses Redis for the ticket counter and waiting room, calls an outside payment provider, and writes orders to PostgreSQL. The event and check-in services read and write PostgreSQL.">
+<defs><marker id="ah-ems-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="12" y="26" width="124" height="48" rx="8" class="box"/>
+<text x="74" y="48" text-anchor="middle" class="lbl">Buyers</text>
+<text x="74" y="65" text-anchor="middle" class="sub">2,500/s at on-sale</text>
+
+<rect x="12" y="246" width="124" height="48" rx="8" class="box"/>
+<text x="74" y="268" text-anchor="middle" class="lbl">Door staff</text>
+<text x="74" y="285" text-anchor="middle" class="sub">scanner app</text>
+
+<rect x="156" y="130" width="100" height="52" rx="8" class="box"/>
+<text x="206" y="152" text-anchor="middle" class="lbl">Load</text>
+<text x="206" y="169" text-anchor="middle" class="sub">balancer</text>
+
+<rect x="288" y="20" width="146" height="48" rx="8" class="box"/>
+<text x="361" y="42" text-anchor="middle" class="lbl">Event service</text>
+<text x="361" y="59" text-anchor="middle" class="sub">pages, browsing</text>
+
+<rect x="288" y="128" width="146" height="54" rx="8" class="box hi"/>
+<text x="361" y="150" text-anchor="middle" class="lbl">Order service</text>
+<text x="361" y="167" text-anchor="middle" class="sub">holds and payment</text>
+
+<rect x="288" y="250" width="146" height="48" rx="8" class="box"/>
+<text x="361" y="272" text-anchor="middle" class="lbl">Check-in service</text>
+<text x="361" y="289" text-anchor="middle" class="sub">4.2/s per event</text>
+
+<rect x="478" y="20" width="148" height="48" rx="8" class="box"/>
+<text x="552" y="42" text-anchor="middle" class="lbl">Payment provider</text>
+<text x="552" y="59" text-anchor="middle" class="sub">outside our system</text>
+
+<rect x="478" y="112" width="148" height="48" rx="8" class="box hi"/>
+<text x="552" y="134" text-anchor="middle" class="lbl">Redis</text>
+<text x="552" y="151" text-anchor="middle" class="sub">counter, waiting room</text>
+
+<rect x="478" y="202" width="148" height="56" rx="8" class="box"/>
+<text x="552" y="223" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="552" y="239" text-anchor="middle" class="sub">events, orders, tickets</text>
+<text x="552" y="252" text-anchor="middle" class="sub">the truth</text>
+
+<line x1="136" y1="58" x2="154" y2="134" class="arr" marker-end="url(#ah-ems-arch)"/>
+<line x1="136" y1="262" x2="154" y2="180" class="arr" marker-end="url(#ah-ems-arch)"/>
+<line x1="256" y1="142" x2="284" y2="58" class="arr" marker-end="url(#ah-ems-arch)"/>
+<line x1="256" y1="156" x2="284" y2="156" class="arr" marker-end="url(#ah-ems-arch)"/>
+<line x1="256" y1="170" x2="284" y2="260" class="arr" marker-end="url(#ah-ems-arch)"/>
+
+<path d="M434,44 L456,44 L456,218 L474,218" class="arr dim" marker-end="url(#ah-ems-arch)"/>
+<path d="M444,136 L444,44 L474,44" class="arr dim" marker-end="url(#ah-ems-arch)"/>
+<line x1="434" y1="140" x2="474" y2="136" class="arr" marker-end="url(#ah-ems-arch)"/>
+<line x1="434" y1="168" x2="474" y2="210" class="arr" marker-end="url(#ah-ems-arch)"/>
+<path d="M434,274 L552,274 L552,262" class="arr" marker-end="url(#ah-ems-arch)"/>
+</svg>
+</div>
+
+<p><strong>Buying during an on-sale</strong>: the order service asks Redis for a place. If the queue is short it decrements the ticket counter atomically, writes a <code>held</code> order to PostgreSQL, and returns a hold. If the queue is long the buyer gets a <code>202</code> and a position. Paying calls the payment provider, then flips the order to <code>paid</code> and writes the ticket rows.</p>
+<p><strong>At the door</strong>: the scanner app pulled this event&rsquo;s codes before doors opened. It checks the signature on the phone, lets the person in, and tells the check-in service, which stamps <code>used_at</code> in PostgreSQL. Browsing and the organiser&rsquo;s sales view are plain reads through the event service.</p>
+
+<!-- section: deepDives -->
+<h4>How do 50,000 people buy 5,000 tickets at once?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 250" role="img" aria-label="Two ways to handle an on-sale. Sending every buyer straight at one database row means they queue on a single lock. A waiting room plus a Redis counter lets a fixed rate through and gives everyone else a place in line.">
+<defs><marker id="ah-ems-sale" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<text x="20" y="20" class="lbl">Straight at the row</text>
+<circle cx="34" cy="62" r="5" class="box"/><circle cx="34" cy="86" r="5" class="box"/><circle cx="34" cy="110" r="5" class="box"/><circle cx="34" cy="134" r="5" class="box"/><circle cx="34" cy="158" r="5" class="box"/>
+<rect x="170" y="86" width="112" height="56" rx="6" class="box warn"/>
+<text x="226" y="110" text-anchor="middle" class="lbl">tier row</text>
+<text x="226" y="127" text-anchor="middle" class="sub">one lock</text>
+<line x1="44" y1="62" x2="166" y2="100" class="arr warnline"/>
+<line x1="44" y1="86" x2="166" y2="106" class="arr warnline"/>
+<line x1="44" y1="110" x2="166" y2="112" class="arr warnline"/>
+<line x1="44" y1="134" x2="166" y2="118" class="arr warnline"/>
+<line x1="44" y1="158" x2="166" y2="124" class="arr warnline"/>
+<text x="150" y="196" text-anchor="middle" class="sub">2 ms a turn is a 500/s ceiling</text>
+<text x="150" y="212" text-anchor="middle" class="sub">2,500/s arriving: the wait grows</text>
+
+<text x="340" y="20" class="lbl">Waiting room, then a counter</text>
+<rect x="340" y="86" width="80" height="56" rx="6" class="box faintbox"/>
+<text x="380" y="110" text-anchor="middle" class="lbl">Queue</text>
+<text x="380" y="127" text-anchor="middle" class="sub">49,500</text>
+<rect x="444" y="86" width="74" height="56" rx="6" class="box hi"/>
+<text x="481" y="110" text-anchor="middle" class="lbl">Gate</text>
+<text x="481" y="127" text-anchor="middle" class="sub">500/s</text>
+<rect x="542" y="86" width="86" height="56" rx="6" class="box"/>
+<text x="585" y="110" text-anchor="middle" class="lbl">Redis</text>
+<text x="585" y="127" text-anchor="middle" class="sub">DECRBY</text>
+<line x1="420" y1="114" x2="440" y2="114" class="arr" marker-end="url(#ah-ems-sale)"/>
+<line x1="518" y1="114" x2="538" y2="114" class="arr" marker-end="url(#ah-ems-sale)"/>
+<text x="484" y="196" text-anchor="middle" class="sub">everyone gets a place, nobody gets an error</text>
+<text x="484" y="212" text-anchor="middle" class="sub">then one small write to PostgreSQL</text>
+</svg>
+</div>
+<p>A transaction that locks the tier row takes about 2 ms, so one row can serve roughly 500 buyers a second however many servers you add. At 2,500 a second the wait grows until everything times out.</p>
+<ul>
+<li><strong>Lock the row</strong> (<code>SELECT ... FOR UPDATE</code>): correct, and capped at that 500/s.</li>
+<li><strong>Update without a lock</strong> (<code>UPDATE ... WHERE sold + 2 &lt;= quantity</code>): no waiting, but it is still one hot row, and losers retry and make it worse.</li>
+<li><strong>Count in Redis</strong>: one <code>DECRBY</code> per buy, atomic, and a single key handles tens of thousands a second.</li>
+</ul>
+<p>We take Redis, with a <strong>waiting room</strong> in front: a token queue that lets about 500 buyers a second through and tells everyone else their position. Postgres then sees a calm 500 writes a second instead of 2,500, and its <code>CHECK</code> is the last word if the counter ever drifts.</p>
+
+<h4>How does the door keep moving when the wifi dies?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 190" role="img" aria-label="Offline check-in. Before doors open the scanner downloads the event's ticket codes. When the wifi dies, scans still work from the local copy. When it comes back, scans sync. A cloned code can admit two people, which is only found at sync time.">
+<defs><marker id="ah-ems-door" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<rect x="14" y="20" width="176" height="52" rx="8" class="box"/>
+<text x="102" y="42" text-anchor="middle" class="lbl">Before doors open</text>
+<text x="102" y="59" text-anchor="middle" class="sub">5,000 signed codes pulled down</text>
+<rect x="232" y="20" width="176" height="52" rx="8" class="box hi"/>
+<text x="320" y="42" text-anchor="middle" class="lbl">Wifi dies</text>
+<text x="320" y="59" text-anchor="middle" class="sub">scans carry on locally</text>
+<rect x="450" y="20" width="176" height="52" rx="8" class="box"/>
+<text x="538" y="42" text-anchor="middle" class="lbl">Back online</text>
+<text x="538" y="59" text-anchor="middle" class="sub">scans sync, duplicates flagged</text>
+<line x1="190" y1="46" x2="228" y2="46" class="arr" marker-end="url(#ah-ems-door)"/>
+<line x1="408" y1="46" x2="446" y2="46" class="arr" marker-end="url(#ah-ems-door)"/>
+<rect x="232" y="110" width="394" height="52" rx="8" class="box warn"/>
+<text x="429" y="132" text-anchor="middle" class="lbl">The price of staying open</text>
+<text x="429" y="149" text-anchor="middle" class="sub">a copied code can get two people in, and we only learn at sync</text>
+</svg>
+</div>
+<p>Sending every scan to the server sounds right until the uplink drops and a queue of two thousand people stops moving. So the scanner is offline-first. The code is signed, so a forged one fails on the phone, and a code used twice on the <em>same</em> device is caught instantly.</p>
+<p>Two people with the same code at two gates both get in, and the clash only shows up at sync. We accept that: a door that stops is a worse failure than a handful of duplicates an organiser can investigate afterwards.</p>
+
+<h4>What if payment hangs?</h4>
+<p>The hold is what makes this safe. The ticket is already counted out of Redis and the order is <code>held</code> for ten minutes. If the provider times out, we neither sell nor cancel &mdash; we ask it about our order by its idempotency key, because a timeout means &ldquo;unknown&rdquo;, not &ldquo;failed&rdquo;. A sweeper over <code>orders_sweep_idx</code> releases holds that expire and puts the count back.</p>
+
+<!-- section: scaling -->
+<div class="table-wrap"><table>
+<tr><th>Growth</th><th>What breaks first</th><th>How you notice</th><th>Fix</th></tr>
+<tr><td>10&times; &mdash; 25,000/s at on-sale</td><td>The waiting-room page itself</td><td>Load balancer saturated before anyone reaches Redis</td><td>Serve the queue page from a CDN; the client polls its token, so the origin sees one small call every few seconds</td></tr>
+<tr><td>10&times; &mdash; 500 writes/s to Postgres</td><td>Still nothing. It is a one-row insert</td><td>&mdash;</td><td>Watch connection count, not throughput</td></tr>
+<tr><td>10&times; &mdash; 240m ticket rows</td><td>The tickets table stops fitting in memory</td><td>Check-in lookups start reading disk</td><td>Partition <code>tickets</code> by event month and archive past events</td></tr>
+<tr><td>100&times; &mdash; many big on-sales at once</td><td>One Redis node is hot across events</td><td>Redis CPU at 100% while traffic is spread over events</td><td>Shard Redis by event id. A counter never spans events, so nothing crosses shards</td></tr>
+<tr><td>100&times; &mdash; 420 scans/s</td><td>Not the servers &mdash; the sync bursts</td><td>Spikes of writes when a venue reconnects</td><td>Scanners sync in batches with jitter, so devices do not land together</td></tr>
+</table></div>
+
+<p>The pattern repeats: the write path is tiny, the queue in front of it is not. The real limit is how many people can be told &ldquo;you are number 14,820&rdquo; at once.</p>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>What the system does</th></tr>
+<tr><td>Redis down during an on-sale</td><td>Buying pauses with a clear message</td><td>Rebuild the counter from <code>tiers.sold</code> and sell from PostgreSQL at 500/s. Slower, never oversold</td></tr>
+<tr><td>PostgreSQL primary down</td><td>Browsing works; buying and check-in return a clear error</td><td>Promote a replica. Scanners carry on offline from their local copy</td></tr>
+<tr><td>Payment provider slow or down</td><td>&ldquo;We could not take payment, your tickets are held&rdquo;</td><td>The order stays <code>held</code>. We query the provider by idempotency key before deciding</td></tr>
+<tr><td>Order service crashes mid-order</td><td>No confirmation; a retry works</td><td>The idempotency key returns the same order. If nothing committed, the hold expires</td></tr>
+<tr><td>Venue wifi dies</td><td>Nothing. The queue keeps moving</td><td>Scanners validate signatures locally and sync later</td></tr>
+<tr><td>Event service down</td><td>No browsing or organiser dashboard; buying still works</td><td>Serve cached event pages from the CDN; the order path does not need it</td></tr>
+<tr><td>Surprise traffic spike</td><td>A queue position instead of an error</td><td>The waiting room absorbs it. That is the only job it has</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Redis counter vs database row.</strong> We get 2,500 buys a second against one key instead of 500, and pay by keeping the count in two places. The database <code>CHECK</code> keeps us honest.</li>
+<li><strong>Waiting room vs first come, first served.</strong> Everyone gets a place in line instead of a timeout, but the honest cost is that some people wait twenty minutes to be told it is sold out.</li>
+<li><strong>Offline scanning vs server-checked scanning.</strong> The door never stops. A cloned ticket can admit two people, and we only find out at sync.</li>
+<li><strong>Holds vs instant purchase.</strong> A ten-minute hold stops people losing tickets at the payment step, and briefly hides tickets nobody ends up buying.</li>
+<li><strong>Tiers vs seat maps.</strong> A count is one number and scales easily. Sell seat J14 and it becomes one row per seat, a different design.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope, 3 min.</strong> The five things it does, and that seating, refunds and payments are out.</li>
+<li><strong>Numbers, 5 min.</strong> 0.77/s average against 2,500/s peak on one row. Say the ratio out loud.</li>
+<li><strong>API and schema, 6 min.</strong> Show the hold, the idempotency key and <code>CHECK (sold &lt;= quantity)</code>.</li>
+<li><strong>Diagram, 4 min.</strong> Draw it, then walk a purchase and a scan through it.</li>
+<li><strong>Deep dive, 12 min.</strong> The on-sale spike first. That is what they want.</li>
+<li><strong>Scaling and failure, 5 min.</strong> 10&times; and 100&times;, then what breaks when Redis dies mid-sale.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>General admission or numbered seats? They are different systems.</li>
+<li>Is a waiting room acceptable, or must it be pure first come, first served?</li>
+<li>Do we take the money, or hand off to a provider?</li>
+<li>How bad is overselling &mdash; refund and apologise, or never?</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>Stopping bots?</strong> Queue tokens tied to an account, a cap per buyer in the same Redis step, and rate limits per IP.</li>
+<li><strong>Live sales dashboard?</strong> Read the Redis counter, not the database. It is the number that changes.</li>
+<li><strong>What if Redis says 0 but Postgres says 4,998 sold?</strong> Postgres wins &mdash; it is the only copy that cannot oversell. Rebuild from it.</li>
+<li><strong>Multiple tiers selling together?</strong> One key per tier, so they never contend with each other.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>Ticketing is a quiet system with a brutal spike: 0.77 sales a second on average, 2,500 a second for one minute.</li>
+<li>That peak is 3,250 times the average and every request wants the same tier row. Contention, not capacity, is the problem.</li>
+<li>A locked row serves about 500 buyers a second however many servers you add, so the live count lives in Redis as one key changed with an atomic <code>DECRBY</code>.</li>
+<li>A waiting room in front lets about 500 a second through and gives everyone else a position, so nobody gets an error.</li>
+<li><code>CHECK (sold &lt;= quantity)</code> stays in PostgreSQL, because Redis can lose its last writes and must never be the only guard.</li>
+<li>Buying takes a ten-minute hold first, then payment. A sweeper releases expired holds and puts the count back.</li>
+<li>A payment timeout means &ldquo;unknown&rdquo;. Ask the provider by idempotency key instead of guessing.</li>
+<li>Door scanners work offline from a signed list pulled before doors open, and sync later.</li>
+<li>The cost of that is a cloned code admitting two people, found at sync. A door that stops is worse.</li>
+<li>At 10&times; the queue page breaks first and moves to a CDN; at 100&times; Redis is sharded by event id.</li>
+</ul>
