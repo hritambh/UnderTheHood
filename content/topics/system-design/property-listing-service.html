@@ -1,0 +1,346 @@
+<!--
+title: Property Listing Service
+summary: Owners post flats with photos; buyers drag a map and filter by price and bedrooms. The listing text is 20 GB and easy. The photos are 80 TB and almost all the traffic.
+category: Marketplace
+order: 50
+related: inverted-indexes, indexing-strategies, pagination, caching-and-invalidation, database-sharding
+-->
+
+<!-- section: problem -->
+<p>You are moving to a new city. You drag the map to the area near your office, set rent between &#8377;30,000 and &#8377;60,000 and two bedrooms, and get a list of flats with a photo and a price. You tap one, swipe through twenty photos, and send the owner your number.</p>
+<p>Zillow, Rightmove and 99acres are the well-known versions. On the surface it is a search box over a map. The weight is somewhere else: the text of ten million listings fits in 20 GB, while the pictures are 80 TB and almost all the traffic.</p>
+<p class="note">One-line version: two problems wearing one coat. Finding flats is a map problem; showing them is a bytes problem, and the bytes must never travel through your API.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Post a listing: price, bedrooms, area, a point on the map, up to 20 photos.</li>
+<li>Search by map area plus filters &mdash; deal, price, bedrooms &mdash; sorted by newest or cheapest.</li>
+<li>Open one listing and see everything, photos included.</li>
+<li>Send the owner an enquiry with your number.</li>
+<li>Mark a listing sold or rented, and expire it if nobody touches it.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Search:</strong> under 300 ms at the 95th percentile, so the map feels live.</li>
+<li><strong>Photos:</strong> the first photo on screen in under a second, anywhere.</li>
+<li><strong>Fresh:</strong> an approved listing is searchable within a minute.</li>
+<li><strong>Uptime:</strong> 99.9% for browsing. Posting can be down for a few minutes.</li>
+<li><strong>Durable:</strong> once a photo is accepted, it is never lost.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Payments and deposits.</strong> Money has its own rules and its own system.</li>
+<li><strong>In-app chat.</strong> We hand over a phone number; messaging is its own design.</li>
+<li><strong>Price estimates.</strong> That is a model, not a service.</li>
+<li><strong>Fraud and duplicate scoring.</strong> We give moderators a queue; the scoring is its own project.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong>, made up: 10 million live listings, 600,000 new ones a month, 40 million searches a day (dragging the map counts as a search), 8 million listing views a day, 20 photos per listing at 400 KB after resizing, 2 KB per listing row, peak 4&times; average.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Working</th><th>Result</th></tr>
+<tr><td>Searches</td><td>40,000,000 &divide; 86,400</td><td><strong>463/s</strong></td></tr>
+<tr><td>Peak searches</td><td>463 &times; 4</td><td><strong>1,850/s</strong></td></tr>
+<tr><td>New listings</td><td>600,000 &divide; 30 days</td><td><strong>20,000 a day</strong>, 0.23/s</td></tr>
+<tr><td>Read to write</td><td>48m reads &divide; 20,000 posts</td><td><strong>2,400 : 1</strong></td></tr>
+<tr><td>Listing rows</td><td>10m &times; 2 KB</td><td><strong>20 GB</strong></td></tr>
+<tr><td>Photos stored</td><td>10m &times; 20 &times; 400 KB</td><td><strong>80 TB</strong></td></tr>
+<tr><td>Photo bytes out</td><td>8m views &times; 6 photos &times; 400 KB</td><td><strong>19.2 TB/day</strong>, 890 MB/s at peak</td></tr>
+</table></div>
+
+<p>Two numbers decide everything. The listing text is <strong>20 GB</strong>, so one database holds the truth and never strains at a quarter of a write a second. The photos are <strong>80 TB</strong> &mdash; four thousand times as much &mdash; carrying <strong>890 MB/s</strong> at peak. The design is mostly about keeping those bytes away from our servers.</p>
+
+<!-- section: api -->
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>POST /v1/listings</code></td><td>Price, beds, area, lat and lng</td><td><code>201</code> with an id, status <code>draft</code></td></tr>
+<tr><td><code>POST /v1/listings/{id}/photos</code></td><td>File name, content type</td><td>A photo id and a short-lived upload URL</td></tr>
+<tr><td><code>GET /v1/listings</code></td><td>Map box, filters, sort, cursor</td><td>A page of listing cards</td></tr>
+<tr><td><code>GET /v1/listings/{id}</code></td><td>&mdash;</td><td>The full listing and its photo URLs</td></tr>
+<tr><td><code>POST /v1/listings/{id}/enquiries</code></td><td>Name, phone, message</td><td><code>202</code>, the owner is told</td></tr>
+<tr><td><code>PATCH /v1/listings/{id}</code></td><td><code>status: sold</code> or <code>rented</code></td><td>The updated listing</td></tr>
+</table></div>
+
+<pre><code>GET /v1/listings?bbox=19.05,72.82,19.14,72.90&amp;deal=rent
+      &amp;minPrice=30000&amp;maxPrice=60000&amp;beds=2&amp;sort=newest&amp;limit=20
+
+200 OK -&gt; {
+  "items": [
+    { "id": "l_8f3a", "price": 45000, "beds": 2, "areaSqft": 850,
+      "lat": 19.1072, "lng": 72.8691,
+      "cover": "https://cdn.example.com/p/9c21a4/640.webp" }
+  ],
+  "nextCursor": "eyJwb3N0ZWRBdCI6MTc2..."
+}</code></pre>
+
+<ul>
+<li><strong><code>bbox</code> is the map rectangle</strong>: the bottom-left and top-right corners on screen. The client already knows them, so search never guesses a radius.</li>
+<li><strong>A cursor, not a page number</strong>, because new listings arrive while you scroll. See <em>Pagination</em>.</li>
+</ul>
+
+<!-- section: data -->
+<p><strong>PostgreSQL</strong> holds the truth. At 0.23 writes a second and 20 GB of rows there is no scale argument for anything else, and a listing has a lifecycle &mdash; draft, pending, live, sold, expired &mdash; which is what constraints and transactions are for. Photos live in <strong>object storage</strong>; search runs on a separate <strong>search index</strong> with a geo field.</p>
+
+<pre><code>CREATE TABLE listings (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  owner_id   BIGINT NOT NULL,
+  status     TEXT NOT NULL,          -- draft|pending|live|sold|expired
+  deal       TEXT NOT NULL,          -- rent | sale
+  price      INTEGER NOT NULL,
+  beds       SMALLINT NOT NULL,
+  area_sqft  INTEGER NOT NULL,
+  lat        DOUBLE PRECISION NOT NULL,
+  lng        DOUBLE PRECISION NOT NULL,
+  city_id    INTEGER NOT NULL,
+  posted_at  TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE photos (
+  id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  listing_id  BIGINT NOT NULL REFERENCES listings(id),
+  storage_key TEXT NOT NULL,         -- where the file is, not the file
+  position    SMALLINT NOT NULL,
+  state       TEXT NOT NULL          -- awaiting | ready | rejected
+);
+
+CREATE TABLE enquiries (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  listing_id BIGINT NOT NULL REFERENCES listings(id),
+  buyer_id   BIGINT NOT NULL,
+  sent_at    TIMESTAMPTZ NOT NULL,
+  UNIQUE (listing_id, buyer_id)      -- one enquiry per buyer per flat
+);
+
+-- the fallback list when search is unavailable, and the expiry sweep
+CREATE INDEX listings_live_idx ON listings (city_id, posted_at DESC)
+  WHERE status = 'live';
+CREATE INDEX listings_expiry_idx ON listings (expires_at)
+  WHERE status = 'live';
+CREATE INDEX photos_listing_idx ON photos (listing_id, position);</code></pre>
+
+<p>Note what is <em>not</em> here: any index on <code>lat</code> or <code>lng</code>. The deep dive says why.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 320" role="img" aria-label="Clients fetch photos from a CDN, which fetches from object storage on a miss. Clients send API calls to a load balancer, which routes searches to a search service backed by a search index, and posts and enquiries to a listing service backed by PostgreSQL. A change feed copies listing changes from PostgreSQL into the search index.">
+<defs><marker id="ah-pls-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="14" y="16" width="150" height="46" rx="8" class="box"/>
+<text x="89" y="37" text-anchor="middle" class="lbl">Object storage</text>
+<text x="89" y="54" text-anchor="middle" class="sub">80 TB of photos</text>
+
+<rect x="14" y="96" width="150" height="46" rx="8" class="box hi"/>
+<text x="89" y="117" text-anchor="middle" class="lbl">CDN</text>
+<text x="89" y="134" text-anchor="middle" class="sub">890 MB/s at peak</text>
+
+<rect x="14" y="180" width="150" height="48" rx="8" class="box"/>
+<text x="89" y="202" text-anchor="middle" class="lbl">Clients</text>
+<text x="89" y="219" text-anchor="middle" class="sub">app, web, the map</text>
+
+<rect x="200" y="180" width="110" height="48" rx="8" class="box"/>
+<text x="255" y="199" text-anchor="middle" class="lbl">Load</text>
+<text x="255" y="216" text-anchor="middle" class="sub">balancer</text>
+
+<rect x="348" y="118" width="130" height="48" rx="8" class="box hi"/>
+<text x="413" y="140" text-anchor="middle" class="lbl">Search service</text>
+<text x="413" y="157" text-anchor="middle" class="sub">1,850/s at peak</text>
+
+<rect x="348" y="238" width="130" height="48" rx="8" class="box"/>
+<text x="413" y="260" text-anchor="middle" class="lbl">Listing service</text>
+<text x="413" y="277" text-anchor="middle" class="sub">20,000 posts a day</text>
+
+<rect x="500" y="118" width="130" height="48" rx="8" class="box"/>
+<text x="565" y="140" text-anchor="middle" class="lbl">Search index</text>
+<text x="565" y="157" text-anchor="middle" class="sub">geo plus filters</text>
+
+<rect x="500" y="238" width="130" height="52" rx="8" class="box"/>
+<text x="565" y="258" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="565" y="274" text-anchor="middle" class="sub">listings, photo rows</text>
+<text x="565" y="287" text-anchor="middle" class="sub">the truth</text>
+
+<line x1="89" y1="178" x2="89" y2="146" class="arr dim" marker-end="url(#ah-pls-arch)"/>
+<line x1="89" y1="94" x2="89" y2="66" class="arr dim" marker-end="url(#ah-pls-arch)"/>
+<text x="172" y="86" class="sub">only on a miss</text>
+
+<line x1="164" y1="204" x2="196" y2="204" class="arr" marker-end="url(#ah-pls-arch)"/>
+<line x1="310" y1="194" x2="344" y2="162" class="arr" marker-end="url(#ah-pls-arch)"/>
+<line x1="310" y1="214" x2="344" y2="248" class="arr" marker-end="url(#ah-pls-arch)"/>
+<line x1="478" y1="142" x2="496" y2="142" class="arr" marker-end="url(#ah-pls-arch)"/>
+<line x1="478" y1="262" x2="496" y2="262" class="arr" marker-end="url(#ah-pls-arch)"/>
+
+<path d="M565,236 L565,170" class="arr warnline" marker-end="url(#ah-pls-arch)"/>
+<text x="556" y="198" text-anchor="end" class="sub">change feed:</text>
+<text x="556" y="212" text-anchor="end" class="sub">live, sold or gone</text>
+</svg>
+</div>
+
+<p><strong>A map search</strong>: the load balancer picks a search service box, which rounds the rectangle to a fixed grid and checks its cache. On a miss it asks the search index, which filters by box, deal, price and beds in one query and returns 20 cards. The client pulls each cover photo from the CDN, which only reaches back to object storage on a miss.</p>
+<p><strong>Posting a listing</strong>: the listing service writes a <code>draft</code> row, hands back upload URLs, and moves the row to <code>pending</code> once the photos are ready. A moderator approves it, the row becomes <code>live</code>, and the change feed carries it into the search index within seconds. Enquiries and a <code>sold</code> flip take the same path: listing service, one row, done.</p>
+
+<!-- section: deepDives -->
+<h4>How do you search a map rectangle?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 240" role="img" aria-label="Two ways to find listings in a map rectangle. An index on latitude alone returns a wide horizontal stripe of the map, which then has to be filtered row by row. A geo index returns only the rectangle the user is looking at.">
+<text x="20" y="22" class="lbl">Index on latitude only</text>
+<rect x="20" y="34" width="270" height="150" rx="6" class="box faintbox"/>
+<rect x="20" y="88" width="270" height="48" class="box warn"/>
+<rect x="140" y="96" width="74" height="32" rx="4" class="box hi"/>
+<circle cx="45" cy="112" r="3" class="box"/>
+<circle cx="80" cy="104" r="3" class="box"/>
+<circle cx="110" cy="124" r="3" class="box"/>
+<circle cx="160" cy="112" r="3" class="box"/>
+<circle cx="192" cy="118" r="3" class="box"/>
+<circle cx="240" cy="106" r="3" class="box"/>
+<circle cx="268" cy="126" r="3" class="box"/>
+<text x="155" y="204" text-anchor="middle" class="sub">the index hands back the whole stripe</text>
+<text x="155" y="220" text-anchor="middle" class="sub">then every row is checked for longitude</text>
+
+<text x="350" y="22" class="lbl">Geo index: both at once</text>
+<rect x="350" y="34" width="270" height="150" rx="6" class="box faintbox"/>
+<rect x="470" y="96" width="74" height="32" rx="4" class="box hi"/>
+<circle cx="490" cy="112" r="3" class="box"/>
+<circle cx="522" cy="118" r="3" class="box"/>
+<text x="485" y="204" text-anchor="middle" class="sub">only the rectangle is read</text>
+<text x="485" y="220" text-anchor="middle" class="sub">price and bedrooms filter in the same pass</text>
+</svg>
+</div>
+<p>A B-tree index sorts on one thing, so an index on <code>lat</code> narrows one dimension only. At city zoom that stripe is still a hundred thousand rows, 1,850 times a second.</p>
+<ul>
+<li><strong>Geohash prefix.</strong> Turn each point into a short string where near places share a prefix, then match on prefix with an ordinary index. Cheap, but one screen covers several cells, and two flats either side of a cell border share no prefix.</li>
+<li><strong>A real geo index</strong> &mdash; PostGIS GiST, or a <code>geo_point</code> field in a search engine. It splits both dimensions together, so a rectangle is one lookup.</li>
+</ul>
+<p>We take the geo index, in the search index rather than the database. Every real query is a box <em>and</em> a price range <em>and</em> a bedroom count <em>and</em> a sort. Split those across two systems and you pull a million ids out of one to filter against the other.</p>
+
+<h4>How do 80 TB of photos stay out of our API?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="Photo upload flow. The client asks the listing service for an upload URL, puts the file straight into object storage, which raises an event to a photo worker, which resizes the image and flips the photo row in PostgreSQL to ready.">
+<defs><marker id="ah-pls-photo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="14" y="88" width="104" height="54" rx="8" class="box"/>
+<text x="66" y="112" text-anchor="middle" class="lbl">Client</text>
+<text x="66" y="129" text-anchor="middle" class="sub">8 MB of photos</text>
+
+<rect x="180" y="20" width="150" height="48" rx="8" class="box"/>
+<text x="255" y="42" text-anchor="middle" class="lbl">Listing service</text>
+<text x="255" y="59" text-anchor="middle" class="sub">signs a 5-minute URL</text>
+
+<rect x="180" y="160" width="150" height="48" rx="8" class="box hi"/>
+<text x="255" y="182" text-anchor="middle" class="lbl">Object storage</text>
+<text x="255" y="199" text-anchor="middle" class="sub">the bytes land here</text>
+
+<rect x="390" y="160" width="150" height="48" rx="8" class="box"/>
+<text x="465" y="182" text-anchor="middle" class="lbl">Photo worker</text>
+<text x="465" y="199" text-anchor="middle" class="sub">3 sizes, WebP</text>
+
+<rect x="390" y="20" width="150" height="48" rx="8" class="box"/>
+<text x="465" y="42" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="465" y="59" text-anchor="middle" class="sub">photos table</text>
+
+<line x1="118" y1="100" x2="176" y2="66" class="arr" marker-end="url(#ah-pls-photo)"/>
+<text x="14" y="72" class="sub">1. ask for a URL</text>
+
+<line x1="118" y1="130" x2="176" y2="164" class="arr" marker-end="url(#ah-pls-photo)"/>
+<text x="14" y="172" class="sub">2. PUT the file</text>
+
+<line x1="330" y1="184" x2="386" y2="184" class="arr" marker-end="url(#ah-pls-photo)"/>
+<text x="358" y="174" text-anchor="middle" class="sub">3. event</text>
+
+<line x1="465" y1="158" x2="465" y2="72" class="arr" marker-end="url(#ah-pls-photo)"/>
+<text x="474" y="118" class="sub">4. state = ready</text>
+</svg>
+</div>
+<p>Twenty photos is 8 MB of upload per listing, and 890 MB/s of download at peak. Neither belongs on an API server.</p>
+<ol>
+<li><strong>Going in:</strong> a <strong>pre-signed URL</strong> lets the client write exactly one object, for five minutes. Our servers never see the bytes.</li>
+<li><strong>Coming out:</strong> the key is a hash of the file, so a URL never changes meaning and the CDN caches it for a year.</li>
+</ol>
+<p>Putting the files in the database would mean 80 TB in a system sized for 20 GB, dragged along by every backup and replica.</p>
+
+<h4>What keeps a flat that went last month off the map?</h4>
+<p>The standard complaint about every property portal: owners never come back to mark a flat gone, so listings rot.</p>
+<ul>
+<li><strong>Expiry</strong>: <code>expires_at</code> is 60 days out. A nightly sweep over <code>listings_expiry_idx</code> flips stragglers to <code>expired</code>, and the change feed drops them.</li>
+<li><strong>Renewal</strong>: the owner gets one question first &mdash; still available? One tap adds 60 days.</li>
+<li><strong>Buyer reports</strong>: a few &ldquo;already gone&rdquo; reports in a week push it up the moderation queue.</li>
+</ul>
+<p>The cost is real: expiry also kills live flats whose owner ignored the prompt. That is why renewal has to be one tap and not a form.</p>
+
+<!-- section: scaling -->
+<div class="table-wrap"><table>
+<tr><th>Growth</th><th>What breaks first</th><th>How you notice</th><th>Fix</th></tr>
+<tr><td>10&times; &mdash; 18,500 searches/s</td><td>Search nodes run out of CPU</td><td>Search p95 past 300 ms; cache hit rate falls</td><td>More index replicas; snap the map box to a fixed grid so two pans share a cache key</td></tr>
+<tr><td>10&times; &mdash; 8.9 GB/s of photos</td><td>The CDN bill, and the miss rate at the origin</td><td>Egress cost per view; origin fetches/s</td><td>Longer cache life, smaller default size, AVIF. The origin only sees misses</td></tr>
+<tr><td>10&times; &mdash; 800 TB stored</td><td>Storage is the largest line on the bill</td><td>Bytes growing faster than listings</td><td>Delete photos 90 days after a listing closes; cold-tier the rest</td></tr>
+<tr><td>100&times; &mdash; 1 billion listings</td><td>The search index outgrows one cluster</td><td>Shards past a few hundred GB; slow merges</td><td>Shard by city. A map box rarely spans more than two or three, so route by the box</td></tr>
+<tr><td>100&times; &mdash; 23 posts/s</td><td>Not the database &mdash; the change feed</td><td>Feed lag; new listings take minutes to appear</td><td>Batch and partition the feed by city</td></tr>
+</table></div>
+
+<p>Notice what never appears there: the write path. A quarter of a write a second becomes 23, and PostgreSQL does not care. Everything that breaks is a read or a byte.</p>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>What the system does</th></tr>
+<tr><td>Search index down</td><td>No map search; a plain list of the newest flats in the city</td><td>Fall back to <code>listings_live_idx</code> in PostgreSQL, map filter off, with a banner saying so</td></tr>
+<tr><td>PostgreSQL primary down</td><td>Browsing and photos fine; posting and enquiries return a clear error</td><td>Promote a replica. Search keeps serving from its own copy</td></tr>
+<tr><td>CDN down</td><td>Photos load slowly or not at all; text still works</td><td>Cards render a placeholder; the client retries the origin for the cover only</td></tr>
+<tr><td>Object storage down</td><td>Old photos still load from the CDN; new uploads fail</td><td>The pre-signed PUT fails at the client, which retries. The listing stays <code>draft</code></td></tr>
+<tr><td>Photo worker backlog</td><td>A new listing shows &ldquo;photos processing&rdquo;</td><td>The queue holds the events; it cannot go <code>live</code> until the cover is <code>ready</code></td></tr>
+<tr><td>Listing service crashes mid-post</td><td>No confirmation; the draft is there on reopening</td><td>Nothing is lost &mdash; the draft row committed before the photos</td></tr>
+<tr><td>Traffic spike after a TV ad</td><td>Slower search; photos unaffected</td><td>Rate limit per IP, serve cached grid tiles, let the CDN absorb the images</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Search index vs querying PostgreSQL.</strong> We get a map query that also filters and sorts in one pass, and pay with a second copy and a feed that can fall behind.</li>
+<li><strong>Geo index vs geohash prefix.</strong> The geo index handles a rectangle properly instead of approximating it with cells, but needs a system that has one.</li>
+<li><strong>Pre-signed upload vs through the API.</strong> Our servers never carry image bytes. The price is a two-step upload and a row that is briefly <code>awaiting</code> with no file behind it.</li>
+<li><strong>Expiry vs trusting owners.</strong> Expiry keeps dead flats off the map and sometimes kills a live one. Trusting owners rots the whole index.</li>
+<li><strong>Grid-snapped cache vs exact boxes.</strong> Snapping makes pans share cache keys and hit far more often, and returns a few flats just outside your screen.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope, 3 min.</strong> The five things it does, then what you are leaving out.</li>
+<li><strong>Numbers, 5 min.</strong> 20 GB of rows against 80 TB of photos. That gap is the design.</li>
+<li><strong>API and schema, 6 min.</strong> Show <code>bbox</code> in the search call and <code>state</code> on photos.</li>
+<li><strong>Diagram, 5 min.</strong> Draw it, then walk a search and a post through it.</li>
+<li><strong>Deep dive, 10 min.</strong> Map search first, photos second. Those are the two they want.</li>
+<li><strong>Scaling and failure, 5 min.</strong> 10&times; and 100&times;, then what dies when each box does.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>Rent, sale or both? They need different filters and different lifetimes.</li>
+<li>Is ranking part of this, or just filter and sort?</li>
+<li>Do owners post directly, or agents in bulk through a feed?</li>
+<li>One country or many, with the languages and currencies that implies?</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>Saved searches with alerts?</strong> Store the filters and match every new live listing against them by city.</li>
+<li><strong>Ranking instead of sorting?</strong> Score freshness, photo count and completeness in the index, then sort on the score.</li>
+<li><strong>How do you stop scraping?</strong> Rate limit by IP and account, and never put a phone number in a list response.</li>
+<li><strong>Clustering pins when zoomed out?</strong> Ask the index for counts per grid cell, so a country view is a few hundred numbers.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A property portal is two systems: a map search problem and a photo delivery problem.</li>
+<li>Made-up numbers: 1,850 searches a second at peak against 0.23 new listings, a 2,400 to 1 ratio.</li>
+<li>The text is 20 GB; the photos are 80 TB, four thousand times as much, carrying 890 MB/s at peak.</li>
+<li>Writes are tiny, so PostgreSQL holds the truth and the lifecycle: draft, pending, live, sold, expired.</li>
+<li>An index on latitude alone returns a stripe across the map, filtered row by row after. A geo index splits both dimensions at once, so a rectangle plus price plus bedrooms is one query.</li>
+<li>Photos never touch the API: a pre-signed URL lets the client write one object straight into storage.</li>
+<li>Storage raises an event, a worker makes three sizes, and the row flips to <code>ready</code>.</li>
+<li>Keys are content hashes, so the CDN caches them for a year and our API only returns links.</li>
+<li>Listings expire after 60 days with one-tap renewal, since owners never mark a flat gone.</li>
+<li>At 10&times; the search nodes and the CDN bill break first; at 100&times; the index is sharded by city.</li>
+<li>When search is down, browsing falls back to the newest listings per city from PostgreSQL.</li>
+</ul>
