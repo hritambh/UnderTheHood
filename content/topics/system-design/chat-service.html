@@ -1,0 +1,324 @@
+<!--
+title: Chat Service
+summary: You type, they see it in half a second, with ticks for sent, delivered and read. The hard part is not sending the message. It is knowing which of fifty million open sockets to send it to, and what to do when none of them is there.
+category: Messaging
+order: 100
+related: realtime-communication, notification-service, sql-vs-nosql, pagination, database-sharding
+-->
+
+<!-- section: problem -->
+<p>You type &ldquo;on my way&rdquo;, hit send, and a grey tick turns into two blue ones. The other person is on a train with one bar of signal, or their phone has been off for two days. Either way they get it, once, in the right order, and the app remembers everything.</p>
+<p>WhatsApp, Slack and Telegram are the versions everyone knows. On screen it is a text box and a list. Underneath, the interesting problems are not about messages at all: they are about holding fifty million open connections, finding exactly one of them in a few milliseconds, and agreeing on an order when every phone&rsquo;s clock is slightly wrong.</p>
+<p class="note">One-line version: a message is cheap to store and cheap to send. Everything expensive is in the connection layer in front of it.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Send a message between two people and show it in under a second when both are online.</li>
+<li>Do the same for a group of up to 200 people.</li>
+<li>Hold messages for someone who is offline and give them the backlog, in order, when they return.</li>
+<li>Show delivery and read receipts.</li>
+<li>Show who is online, and when the rest were last seen.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Fast:</strong> under 500 ms from send to screen at the 95th percentile, for an online recipient.</li>
+<li><strong>In one order:</strong> everyone in a conversation sees the same messages in the same order.</li>
+<li><strong>Never lost:</strong> once the sender sees a tick, the message survives a crash, a restart and a bad deploy.</li>
+<li><strong>One bubble per message:</strong> a phone that retries on a flaky network must not produce two.</li>
+<li><strong>Up:</strong> 99.95%. People notice a chat app being down within seconds.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Voice and video calls.</strong> Moving live media is a different system with different hardware.</li>
+<li><strong>End-to-end encryption.</strong> It barely changes the transport, but it takes away server-side search, server-side moderation and any ability to help a user who lost their phone. That is a product decision, not a design detail.</li>
+<li><strong>Photos and files.</strong> The phone uploads to storage directly and sends a link, the same pattern as any upload-heavy product.</li>
+<li><strong>Search across history.</strong> A separate index over the same messages.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong>, made up: 100 million daily users, 50 million connected at peak, 40 messages sent per user per day, 300 bytes per stored message, peak 3&times; average. One in ten messages goes to a group, and groups average 50 people, so one send becomes about six deliveries.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Working</th><th>Result</th></tr>
+<tr><td>Messages sent</td><td>100m &times; 40 &divide; 86,400</td><td><strong>46,000/s</strong>, 140,000/s at peak</td></tr>
+<tr><td>Deliveries</td><td>46,000 &times; 6</td><td><strong>276,000/s</strong>, 830,000/s at peak</td></tr>
+<tr><td>Open connections</td><td>50m at peak</td><td><strong>50 million sockets</strong></td></tr>
+<tr><td>Connection servers</td><td>50m &divide; 100,000 per box</td><td><strong>500 boxes</strong>, doing nothing but holding sockets</td></tr>
+<tr><td>Storage</td><td>4bn a day &times; 300 bytes</td><td><strong>1.2 TB a day</strong>, 438 TB a year</td></tr>
+</table></div>
+
+<p>Two things fall out of this. First, the fan-out is six to one, so the delivery path is the one that has to be cheap, not the write path. Second, 500 machines exist purely to hold open connections before a single message is processed. That is the real cost of this product, and it is why the connection layer gets its own tier.</p>
+
+<!-- section: api -->
+<p>Most of the traffic is not REST. The phone holds one WebSocket and sends frames down it &mdash; see <em>WebSockets vs Polling vs SSE</em> for why that beats polling here. REST handles the things that happen once, not continuously.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Call</th><th>Takes</th><th>Returns</th></tr>
+<tr><td>WS frame <code>send</code></td><td>Client id, conversation, body</td><td>An <code>ack</code> with the server id and sequence number</td></tr>
+<tr><td>WS frame <code>msg</code> (to the client)</td><td>&mdash;</td><td>One message, pushed</td></tr>
+<tr><td>WS frame <code>receipt</code></td><td>Message id, delivered or read</td><td>Nothing; it is a notification</td></tr>
+<tr><td>WS frame <code>presence</code></td><td>&mdash;</td><td>Who is online now, and when the rest were last seen</td></tr>
+<tr><td><code>GET /v1/conversations</code></td><td>&mdash;</td><td>The inbox, with unread counts</td></tr>
+<tr><td><code>GET /v1/conversations/{id}/messages</code></td><td><code>before</code> sequence, <code>limit</code></td><td>A page of history, newest first</td></tr>
+<tr><td><code>POST /v1/conversations</code></td><td>Member ids, kind</td><td>The new conversation</td></tr>
+</table></div>
+
+<pre><code># client -> server. clientId is made by the phone, before sending.
+{ "t": "send", "clientId": "c_8f2", "convId": "g_19", "body": "on my way" }
+
+# server -> sender, the moment the message is durable
+{ "t": "ack", "clientId": "c_8f2", "msgId": "m_55120", "seq": 8831 }
+
+# server -> everyone else in the conversation
+{ "t": "msg", "convId": "g_19", "msgId": "m_55120", "seq": 8831,
+  "from": "u_77", "body": "on my way" }</code></pre>
+
+<ul>
+<li><strong>The ack carries the sequence number.</strong> That is what the phone stores, and what it sends back on reconnect to say how far it got.</li>
+<li><strong>The client id is how retries stay one bubble.</strong> The phone makes it before the first attempt and reuses it on every retry. The server keeps recent client ids in Redis for a few minutes and returns the original <code>msgId</code> instead of writing a second message.</li>
+<li><strong>History is a cursor, not a page number.</strong> Messages arrive while you scroll, so offsets shift under you &mdash; see <em>Pagination in Backend Systems</em>.</li>
+</ul>
+
+<!-- section: data -->
+<p>Three stores, because three very different jobs. <strong>Cassandra</strong> holds messages: 46,000 writes a second that never stop, 438 TB a year, and every read is &ldquo;the last 50 of this conversation&rdquo;. That is a single partition read in sorted order, which is the one thing a wide-column store is unbeatable at. <strong>PostgreSQL</strong> holds conversations and membership: small, relational, and the place a real foreign key is worth having. <strong>Redis</strong> holds presence and the connection registry, which is throwaway data with a heartbeat. <em>SQL vs NoSQL</em> covers the general choice.</p>
+
+<pre><code>-- messages, in Cassandra. One conversation is one partition, and the
+-- rows inside it are already stored in the order we read them.
+CREATE TABLE messages (
+  conv_id   uuid,
+  seq       bigint,         -- per conversation, assigned by the server
+  msg_id    uuid,
+  sender_id uuid,
+  body      text,
+  sent_at   timestamp,
+  PRIMARY KEY ((conv_id), seq)
+) WITH CLUSTERING ORDER BY (seq DESC);</code></pre>
+
+<pre><code>-- conversations and membership, in PostgreSQL
+CREATE TABLE members (
+  conv_id       UUID NOT NULL,
+  user_id       UUID NOT NULL,
+  last_read_seq BIGINT NOT NULL DEFAULT 0,   -- one number, not one row
+  joined_at     TIMESTAMPTZ NOT NULL,        -- per message per person
+  PRIMARY KEY (conv_id, user_id)
+);
+CREATE INDEX members_user_idx ON members (user_id);</code></pre>
+
+<p><code>last_read_seq</code> is worth stopping on. Read receipts look like they need a row per message per person &mdash; in a group of 200 that is 200 writes for every message anyone sends. One number per member says the same thing: everything up to 8829 has been read. Unread counts are subtraction, not a query.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 350" role="img" aria-label="Phones connect through a load balancer to five hundred gateway servers that hold the WebSockets. Gateways pass messages to the chat service, which writes to Cassandra, looks up each recipient's gateway in Redis, reads membership from PostgreSQL, and hands offline recipients to the push service. Delivery goes back out through the gateways.">
+<defs><marker id="ah-chat-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="6" y="150" width="92" height="66" rx="8" class="box"/>
+<text x="52" y="176" text-anchor="middle" class="lbl">Phones</text>
+<text x="52" y="194" text-anchor="middle" class="sub">50m sockets</text>
+
+<rect x="118" y="150" width="74" height="66" rx="8" class="box"/>
+<text x="155" y="176" text-anchor="middle" class="lbl">Load</text>
+<text x="155" y="194" text-anchor="middle" class="sub">balancer</text>
+
+<rect x="212" y="144" width="138" height="78" rx="8" class="box hi"/>
+<text x="281" y="170" text-anchor="middle" class="lbl">Gateways</text>
+<text x="281" y="188" text-anchor="middle" class="sub">500 boxes, 100k</text>
+<text x="281" y="204" text-anchor="middle" class="sub">sockets each</text>
+
+<rect x="370" y="144" width="134" height="78" rx="8" class="box hi"/>
+<text x="437" y="170" text-anchor="middle" class="lbl">Chat service</text>
+<text x="437" y="188" text-anchor="middle" class="sub">stamps seq,</text>
+<text x="437" y="204" text-anchor="middle" class="sub">then fans out</text>
+
+<rect x="524" y="10" width="110" height="56" rx="8" class="box"/>
+<text x="579" y="33" text-anchor="middle" class="lbl">Cassandra</text>
+<text x="579" y="51" text-anchor="middle" class="sub">messages</text>
+
+<rect x="524" y="86" width="110" height="56" rx="8" class="box"/>
+<text x="579" y="109" text-anchor="middle" class="lbl">Redis</text>
+<text x="579" y="127" text-anchor="middle" class="sub">who is where</text>
+
+<rect x="524" y="204" width="110" height="56" rx="8" class="box"/>
+<text x="579" y="227" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="579" y="245" text-anchor="middle" class="sub">members</text>
+
+<rect x="524" y="280" width="110" height="58" rx="8" class="box"/>
+<text x="579" y="304" text-anchor="middle" class="lbl">Push service</text>
+<text x="579" y="322" text-anchor="middle" class="sub">offline people</text>
+
+<line x1="98" y1="183" x2="114" y2="183" class="arr" marker-end="url(#ah-chat-arch)"/>
+<line x1="192" y1="183" x2="208" y2="183" class="arr" marker-end="url(#ah-chat-arch)"/>
+<line x1="350" y1="166" x2="366" y2="166" class="arr" marker-end="url(#ah-chat-arch)"/>
+<line x1="366" y1="202" x2="350" y2="202" class="arr dim" marker-end="url(#ah-chat-arch)"/>
+<text x="358" y="228" text-anchor="middle" class="sub">deliver</text>
+<line x1="504" y1="158" x2="520" y2="48" class="arr" marker-end="url(#ah-chat-arch)"/>
+<line x1="504" y1="168" x2="520" y2="118" class="arr" marker-end="url(#ah-chat-arch)"/>
+<line x1="504" y1="198" x2="520" y2="230" class="arr dim" marker-end="url(#ah-chat-arch)"/>
+<line x1="504" y1="208" x2="520" y2="304" class="arr dim" marker-end="url(#ah-chat-arch)"/>
+</svg>
+</div>
+
+<p><strong>Sending a message.</strong> The phone writes one frame down the socket it already has. Its gateway hands it to the chat service, which takes the next sequence number for that conversation, writes the row to Cassandra, and acks the sender. Only then does it fan out: it reads the member list from PostgreSQL, asks Redis where each member is connected, and pushes the message to those gateways, which write it down the right sockets.</p>
+<p><strong>Anyone not connected</strong> is handed to the push service &mdash; the one in <em>Notification Service</em> &mdash; and nothing else happens for them. There is no queue waiting with their name on it. <strong>Receipts</strong> travel the same way in reverse: a <code>receipt</code> frame moves <code>last_read_seq</code> forward and is pushed to the sender. <strong>Presence</strong> rides on the same heartbeat that keeps the registry alive &mdash; a live Redis key means online, its absence plus a timestamp means last seen &mdash; and changes are pushed as <code>presence</code> frames to whoever is looking at that chat.</p>
+
+<!-- section: deepDives -->
+<h4>How do you find one socket out of fifty million?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 215" role="img" aria-label="The chat service asks Redis which gateway holds user u_77, gets back gateway 214, and pushes the message to that one gateway, which writes it down the socket to the phone. The other four hundred and ninety-nine gateways are never contacted.">
+<defs><marker id="ah-chat-reg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="10" y="78" width="124" height="60" rx="8" class="box hi"/>
+<text x="72" y="102" text-anchor="middle" class="lbl">Chat service</text>
+<text x="72" y="120" text-anchor="middle" class="sub">has a message for u_77</text>
+
+<rect x="186" y="14" width="162" height="58" rx="8" class="box hi"/>
+<text x="267" y="37" text-anchor="middle" class="lbl">Redis registry</text>
+<text x="267" y="55" text-anchor="middle" class="sub">u_77 &rarr; gw-214, TTL 60 s</text>
+
+<rect x="186" y="140" width="162" height="58" rx="8" class="box"/>
+<text x="267" y="163" text-anchor="middle" class="lbl">Gateway gw-214</text>
+<text x="267" y="181" text-anchor="middle" class="sub">holds the socket</text>
+
+<rect x="404" y="140" width="120" height="58" rx="8" class="box"/>
+<text x="464" y="173" text-anchor="middle" class="lbl">Phone</text>
+
+<rect x="404" y="14" width="162" height="58" rx="8" class="box faintbox"/>
+<text x="485" y="37" text-anchor="middle" class="sub">the other 499 gateways</text>
+<text x="485" y="55" text-anchor="middle" class="sub">never hear about it</text>
+
+<line x1="134" y1="94" x2="182" y2="52" class="arr" marker-end="url(#ah-chat-reg)"/>
+<text x="152" y="62" class="sub">1</text>
+<line x1="182" y1="66" x2="134" y2="106" class="arr dim" marker-end="url(#ah-chat-reg)"/>
+<text x="152" y="130" class="sub">2</text>
+<line x1="134" y1="126" x2="182" y2="162" class="arr" marker-end="url(#ah-chat-reg)"/>
+<text x="162" y="170" class="sub">3</text>
+<line x1="348" y1="169" x2="400" y2="169" class="arr" marker-end="url(#ah-chat-reg)"/>
+<text x="374" y="160" text-anchor="middle" class="sub">4</text>
+</svg>
+</div>
+<ul>
+<li><strong>Ask every gateway.</strong> 500 internal calls per delivery, 830,000 deliveries a second at peak. That is 415 million calls a second to find one socket.</li>
+<li><strong>Hash the user id to a gateway.</strong> No lookup at all, and a box that dies rehashes its users onto neighbours while they are still reconnecting.</li>
+<li><strong>Keep a registry</strong> in Redis: user id to gateway, written on connect, refreshed by a heartbeat, with a 60-second TTL so a dead box&rsquo;s entries clean themselves up.</li>
+</ul>
+<p>We take the registry. It can be stale, and being stale is cheap: the push goes to a gateway that answers &ldquo;not mine&rdquo;, and the message falls through to the offline path, which is where it belonged anyway.</p>
+
+<h4>How does everyone see the same order?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 225" role="img" aria-label="Three phones send at the same moment with clocks that disagree. The chat service increments one counter per conversation and stamps the messages 8831, 8832 and 8833 in the order they arrived, so every member renders the same order regardless of phone clocks.">
+<defs><marker id="ah-chat-seq" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="10" y="26" width="158" height="44" rx="6" class="box"/>
+<text x="20" y="46" class="lbl">A: &ldquo;on my way&rdquo;</text>
+<text x="20" y="62" class="sub">phone clock 10:04:01</text>
+
+<rect x="10" y="86" width="158" height="44" rx="6" class="box"/>
+<text x="20" y="106" class="lbl">B: &ldquo;where?&rdquo;</text>
+<text x="20" y="122" class="sub">phone clock 10:03:58</text>
+
+<rect x="10" y="146" width="158" height="44" rx="6" class="box"/>
+<text x="20" y="166" class="lbl">C: &ldquo;5 min&rdquo;</text>
+<text x="20" y="182" class="sub">phone clock 10:04:03</text>
+
+<rect x="226" y="80" width="156" height="56" rx="8" class="box hi"/>
+<text x="304" y="104" text-anchor="middle" class="lbl">INCR seq:g_19</text>
+<text x="304" y="122" text-anchor="middle" class="sub">one counter per chat</text>
+
+<rect x="430" y="26" width="196" height="164" rx="8" class="box"/>
+<text x="528" y="52" text-anchor="middle" class="lbl">what everyone sees</text>
+<text x="452" y="88" class="sub">8831   A   &ldquo;on my way&rdquo;</text>
+<text x="452" y="116" class="sub">8832   C   &ldquo;5 min&rdquo;</text>
+<text x="452" y="144" class="sub">8833   B   &ldquo;where?&rdquo;</text>
+<text x="528" y="176" text-anchor="middle" class="sub">arrival order, not clock order</text>
+
+<line x1="168" y1="48" x2="222" y2="98" class="arr" marker-end="url(#ah-chat-seq)"/>
+<line x1="168" y1="108" x2="222" y2="108" class="arr" marker-end="url(#ah-chat-seq)"/>
+<line x1="168" y1="168" x2="222" y2="120" class="arr" marker-end="url(#ah-chat-seq)"/>
+<line x1="382" y1="108" x2="426" y2="108" class="arr" marker-end="url(#ah-chat-seq)"/>
+</svg>
+</div>
+<p>Phone clocks disagree by seconds, and the network reorders things anyway. So no clock decides anything. The chat service takes the next number from one counter per conversation &mdash; a single Redis <code>INCR</code> on <code>seq:g_19</code> &mdash; and that number <em>is</em> the order.</p>
+<p>A global counter would be a bottleneck for every conversation at once. Per conversation, the contention is only between people typing in the same chat, which is a handful of writes a second even in a busy group. The numbers do a second job for free: a client holding 8829 that receives 8831 knows it missed one, and asks for the gap instead of silently showing a hole.</p>
+
+<h4>What about someone who was offline for two days?</h4>
+<p>The tempting answer is a queue per user. With 100 million users that is 100 million queues, nearly all empty, all needing to be created, drained and cleaned up.</p>
+<p>We already have something better. The messages are in Cassandra, in order, grouped by conversation, and every member row carries <code>last_read_seq</code>. So the backlog is not stored anywhere &mdash; it is computed. The phone reconnects and says &ldquo;conversation g_19, I have up to 8829&rdquo;, and the server reads forward from there. Two days offline and two minutes offline are the same code path, and a user on three devices is just three different numbers.</p>
+
+<!-- section: scaling -->
+<div class="table-wrap"><table>
+<tr><th>Growth</th><th>What breaks first</th><th>How you notice</th><th>Fix</th></tr>
+<tr><td>10&times; &mdash; 500m connections</td><td>5,000 gateway boxes, and the registry behind them</td><td>Redis memory climbing; connect latency rising at peak</td><td>Shard the registry by user id. Every lookup is one key, so nothing crosses a shard</td></tr>
+<tr><td>10&times; &mdash; 2.8m deliveries/s</td><td>The fan-out loop in the chat service</td><td>Delivery lag growing while writes stay flat</td><td>Group the pushes by gateway: one internal call carrying 200 messages, not 200 calls</td></tr>
+<tr><td>10&times; &mdash; 4.4 PB a year</td><td>Keeping all of it on fast disks</td><td>Storage cost, long before any query is slow</td><td>Almost every read is the last 50 messages. Tier anything older than a year to cheap storage</td></tr>
+<tr><td>100&times; &mdash; a 100,000-member channel</td><td>Fan-out on write. One message becomes 100,000 pushes</td><td>One send stalls a whole chat service worker</td><td>Stop pushing above a few thousand members. Clients pull on open instead, which is the same trade the news feed makes for celebrities</td></tr>
+<tr><td>100&times; &mdash; users on two continents</td><td>Every delivery crossing an ocean</td><td>Latency bimodal: fast locally, 200 ms across</td><td>Give each conversation a home region and keep its counter there. Members elsewhere read across, and only the counter is remote</td></tr>
+</table></div>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>What the system does</th></tr>
+<tr><td>A gateway box dies</td><td>100,000 phones show &ldquo;connecting&rdquo; for a second</td><td>Clients reconnect with backoff <em>and jitter</em>, then resume from their last sequence number. Without jitter they all come back at once and kill the next box</td></tr>
+<tr><td>Redis registry down</td><td>Messages arrive as push notifications, not instantly</td><td>Nobody can be found, so everything takes the offline path. Degraded, not broken</td></tr>
+<tr><td>A Cassandra node dies</td><td>Nothing</td><td>Writes and reads still reach a quorum of the three replicas</td></tr>
+<tr><td>PostgreSQL down</td><td>No new conversations; existing ones keep working</td><td>Member lists are cached in the chat service. Fan-out does not need the database on the hot path</td></tr>
+<tr><td>Push provider down</td><td>Online people are fine; offline people see messages when they open the app</td><td>Retry with backoff. The message was never in the push service, only a copy of it</td></tr>
+<tr><td>A phone retries on a flaky network</td><td>One bubble</td><td>The same client id comes back, so the server returns the original message id instead of writing a second row</td></tr>
+<tr><td>A deploy restarts every gateway</td><td>A blip, or an outage, depending on one setting</td><td>Restart in small batches with a drain period. Restarting all 500 at once is 50 million reconnects in one second</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Per-conversation order vs global order.</strong> One counter per chat scales and is all a reader can perceive. We give up any true global ordering across conversations, which nothing in the product needs.</li>
+<li><strong>Registry lookup vs hashing users to gateways.</strong> One Redis read per delivery buys free reconnection anywhere. Hashing would skip the read and make a dead box everyone else&rsquo;s problem.</li>
+<li><strong>Computed backlog vs a queue per user.</strong> No per-user storage, and one code path for two minutes or two days offline. The cost is a Cassandra read on every reconnect instead of a drain.</li>
+<li><strong>Cassandra vs PostgreSQL for messages.</strong> Sustained writes and single-partition reads, at the price of no joins and no transactions over message rows.</li>
+<li><strong>Push on write vs pull on open.</strong> Pushing is why chat feels instant. It stops paying above a few thousand members, which is where broadcast channels start.</li>
+<li><strong>Readable messages vs end-to-end encryption.</strong> We can search, moderate and restore history. We can also read everything, and so can anyone who takes the database.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope, 3 min.</strong> One-to-one, groups to 200, offline backlog, receipts. Calls, media and encryption are out.</li>
+<li><strong>Numbers, 4 min.</strong> 46,000 sends, six deliveries each, and 500 boxes holding nothing but sockets. The last one reframes the problem.</li>
+<li><strong>Diagram, 4 min.</strong> Gateways separate from the chat service. Follow one send all the way to a second phone.</li>
+<li><strong>Finding the socket, 6 min.</strong> Broadcast, hashing, registry. Pick the registry and say why stale is cheap.</li>
+<li><strong>Ordering, 5 min.</strong> Why clocks lose, and why the counter is per conversation.</li>
+<li><strong>Offline, 4 min.</strong> No queues. <code>last_read_seq</code> plus a read forward.</li>
+<li><strong>Failure, 4 min.</strong> A gateway dies, and why jitter on reconnect is not a detail.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>How big can a group get? 200 and 100,000 are different designs, and the number decides where push stops.</li>
+<li>Is history kept for ever, or does it expire? It is the difference between 438 TB a year and almost nothing.</li>
+<li>One device per user, or several? Several makes <code>last_read_seq</code> per device, not per user.</li>
+<li>Is end-to-end encryption required? If yes, say early what it takes away.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>How does &ldquo;typing&hellip;&rdquo; work?</strong> A frame with a short TTL that is never stored. If it is lost, nothing is wrong.</li>
+<li><strong>Online status for 50 million people?</strong> A Redis key with a TTL refreshed by the heartbeat. Absence of the key is &ldquo;offline&rdquo;, and last seen is one more field.</li>
+<li><strong>Why not Kafka between the gateways and the chat service?</strong> It would add durability we already have from Cassandra, and tens of milliseconds to a path we promised in 500.</li>
+<li><strong>Deleting a message for everyone?</strong> A tombstone row with a higher sequence number. Clients that already have it hide it; clients reading history never see it.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>The expensive part of chat is not messages, it is holding 50 million open sockets: 500 machines before any work happens.</li>
+<li>One send becomes about six deliveries, so the delivery path is the one that must be cheap.</li>
+<li>Gateways hold the sockets and nothing else; the chat service does the thinking. They scale separately.</li>
+<li>A Redis registry maps user to gateway, with a heartbeat and a 60-second TTL, so delivery is one lookup and one hop.</li>
+<li>Asking all 500 gateways would be 415 million internal calls a second at peak.</li>
+<li>A stale registry entry is harmless: the push misses and the message takes the offline path it belonged on.</li>
+<li>Order comes from one counter per conversation, not from any phone&rsquo;s clock.</li>
+<li>Sequence numbers also expose gaps, so a client that skips one can ask for it.</li>
+<li>There are no per-user queues. The backlog is computed from <code>last_read_seq</code> and a read forward in Cassandra.</li>
+<li>Read receipts are one number per member, not one row per message per person.</li>
+<li>Messages live in Cassandra because one conversation is one partition read in sorted order.</li>
+<li>Reconnects need backoff <em>and</em> jitter, or a dead gateway takes the next one with it.</li>
+<li>Push on write stops working above a few thousand members; past that, clients pull on open.</li>
+</ul>

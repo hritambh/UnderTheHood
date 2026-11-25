@@ -1,0 +1,309 @@
+<!--
+title: News Feed
+summary: Open the app and see recent posts from the 300 people you follow, in under a second. Nobody has that list lying ready. Either you build it when someone posts, or you build it when someone looks, and the whole design is choosing which.
+category: Feeds
+order: 110
+related: pagination, caching-and-invalidation, database-sharding, chat-service, notification-service
+-->
+
+<!-- section: problem -->
+<p>You open the app. Within a second you are looking at recent posts from the few hundred accounts you follow, newest first, and you can scroll back for as long as you have patience.</p>
+<p>The timeline on X, the Instagram feed and the LinkedIn feed all work this way. The thing to notice is that your feed is not a thing anyone stored. It is a mix of other people&rsquo;s posts, and your mix is different from everyone else&rsquo;s. Someone has to assemble it, and the only real question in this design is <em>when</em>.</p>
+<p class="note">One-line version: build the feed when someone posts, or build it when someone looks. Both break somewhere, so real systems do both and switch between them.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Post text, with links to media that lives elsewhere.</li>
+<li>Follow and unfollow an account.</li>
+<li>Show a home feed: recent posts from everyone you follow, newest first.</li>
+<li>Scroll back through the feed, page after page, without it getting slower.</li>
+<li>Show like and comment counts on every post.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Fast to open:</strong> first page on screen in under 200 ms at the 95th percentile.</li>
+<li><strong>Fresh enough:</strong> a new post reaches its followers&rsquo; feeds within about 10 seconds. Not instantly &mdash; nobody can tell, and promising instant costs a great deal.</li>
+<li><strong>Available over correct:</strong> a feed that is five seconds behind beats an error page.</li>
+<li><strong>Flat to scroll:</strong> page 50 costs the same as page 1.</li>
+<li><strong>Up:</strong> 99.9%.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Ranking.</strong> We serve newest first and leave a hook where a ranker would sit. Deciding what you <em>want</em> to see is a machine learning system, not a feed system.</li>
+<li><strong>Ads.</strong> Injecting paid posts is a separate service that edits the page on the way out.</li>
+<li><strong>Storing media.</strong> Photos and video go to object storage; a post holds a link.</li>
+<li><strong>Notifications.</strong> &ldquo;Someone replied to you&rdquo; belongs in <em>Notification Service</em>.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong>, made up: 500 million daily users, 50 million posts a day, 300 follows per person on average, 10 feed opens per person per day, 500 bytes per post, peak 3&times; average.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Working</th><th>Result</th></tr>
+<tr><td>Posts</td><td>50m &divide; 86,400</td><td><strong>580/s</strong>, 1,700/s at peak</td></tr>
+<tr><td>Feed opens</td><td>500m &times; 10 &divide; 86,400</td><td><strong>58,000/s</strong>, 174,000/s at peak</td></tr>
+<tr><td>Read to write</td><td>58,000 &divide; 580</td><td><strong>100 : 1</strong></td></tr>
+<tr><td>Fan-out inserts</td><td>580 &times; 300 followers</td><td><strong>174,000/s</strong>, 522,000/s at peak</td></tr>
+<tr><td>Post storage</td><td>50m &times; 500 bytes &times; 365</td><td>25 GB a day, <strong>9 TB a year</strong></td></tr>
+<tr><td>Feed lists in memory</td><td>500m users &times; 500 ids &times; 16 bytes</td><td><strong>4 TB</strong> &mdash; too much, and the reason we only do it for active users</td></tr>
+<tr><td>One account with 100m followers</td><td>100m &divide; 174,000 inserts/s</td><td><strong>575 seconds</strong> to deliver one post</td></tr>
+</table></div>
+
+<p>The last two rows are the whole topic. Pushing posts into followers&rsquo; feeds costs 174,000 inserts a second to serve 58,000 feed opens &mdash; three writes for every read &mdash; and it still wins, because a write is a cheap append and a read is a person waiting. But for one very big account the same approach needs ten minutes to deliver a single post, so that account cannot use it.</p>
+
+<!-- section: api -->
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>POST /v1/posts</code></td><td>Body, media links</td><td><code>201</code> with the post and its id</td></tr>
+<tr><td><code>GET /v1/feed</code></td><td><code>cursor</code>, <code>limit</code></td><td>A page of posts and the next cursor</td></tr>
+<tr><td><code>POST /v1/follows</code></td><td>Account to follow</td><td><code>204</code></td></tr>
+<tr><td><code>DELETE /v1/follows/{id}</code></td><td>&mdash;</td><td><code>204</code></td></tr>
+<tr><td><code>GET /v1/users/{id}/posts</code></td><td><code>cursor</code></td><td>That account&rsquo;s own posts</td></tr>
+<tr><td><code>POST /v1/posts/{id}/likes</code></td><td>&mdash;</td><td><code>204</code>; the count is updated out of band</td></tr>
+</table></div>
+
+<pre><code>GET /v1/feed?limit=20
+
+200 OK
+{ "posts": [
+    { "id": "1764051000123", "author": "u_31", "body": "shipped it",
+      "likes": 412, "comments": 19, "createdAt": "2026-11-25T09:30:00Z" }
+  ],
+  "nextCursor": "1764050811004" }</code></pre>
+
+<ul>
+<li><strong>The cursor is a post id, not a page number.</strong> Posts arrive while you scroll, so an offset would show you the same post twice and hide another. <em>Pagination in Backend Systems</em> has the full story.</li>
+<li><strong>Post ids are time-ordered.</strong> The id carries a timestamp in its high bits, so sorting by id sorts by time. One number is the sort key, the cursor and the Redis score, and no clock has to be trusted at read time.</li>
+<li><strong>Posting returns before the post has reached anyone.</strong> Fan-out happens behind a queue. The author sees their own post immediately because their own posts are read directly.</li>
+</ul>
+
+<!-- section: data -->
+<p><strong>PostgreSQL</strong>, sharded by author, holds posts and follows. 580 writes a second is small, 9 TB a year is routine, and the follow graph genuinely is relational. <strong>Redis</strong> holds one capped sorted set per active user: their feed, as post ids only. The ids are time-ordered, so the sorted set score and the id are the same number, and reading a page is one <code>ZREVRANGEBYSCORE</code>.</p>
+
+<pre><code>CREATE TABLE posts (
+  id         BIGINT PRIMARY KEY,       -- time-ordered: sorts by id = by time
+  author_id  BIGINT NOT NULL,
+  body       TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX posts_author_idx ON posts (author_id, id DESC);
+
+CREATE TABLE follows (
+  follower_id BIGINT NOT NULL,
+  followee_id BIGINT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (follower_id, followee_id)   -- "who do I follow?"
+);
+-- the other direction, which is the one fan-out actually needs
+CREATE INDEX follows_followee_idx ON follows (followee_id, follower_id);
+
+CREATE TABLE authors (
+  user_id   BIGINT PRIMARY KEY,
+  followers BIGINT NOT NULL,      -- roughly right, not exactly
+  push      BOOLEAN NOT NULL      -- false once they get too big to push
+);</code></pre>
+
+<pre><code># one capped list per active user, ids only, newest 500 kept
+ZADD feed:u_77 1764051000123 1764051000123
+ZREMRANGEBYRANK feed:u_77 0 -501</code></pre>
+
+<p>Both indexes on <code>follows</code> matter, and they do opposite jobs. The primary key answers &ldquo;who do I follow&rdquo; for the read path. <code>follows_followee_idx</code> answers &ldquo;who follows me&rdquo;, which is the list fan-out walks every time anyone posts.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 340" role="img" aria-label="Clients reach a load balancer, which routes posts to a post service and feed opens to a feed service. The post service writes to PostgreSQL and drops a job on a fan-out queue, whose workers push post ids into per-user Redis feed lists. The feed service reads ids from Redis and turns them into posts using a post cache, falling back to PostgreSQL on a miss.">
+<defs><marker id="ah-nf-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="6" y="140" width="92" height="64" rx="8" class="box"/>
+<text x="52" y="165" text-anchor="middle" class="lbl">Clients</text>
+<text x="52" y="183" text-anchor="middle" class="sub">58,000 opens/s</text>
+
+<rect x="118" y="140" width="74" height="64" rx="8" class="box"/>
+<text x="155" y="165" text-anchor="middle" class="lbl">Load</text>
+<text x="155" y="183" text-anchor="middle" class="sub">balancer</text>
+
+<rect x="212" y="24" width="132" height="62" rx="8" class="box"/>
+<text x="278" y="48" text-anchor="middle" class="lbl">Post service</text>
+<text x="278" y="66" text-anchor="middle" class="sub">580 posts/s</text>
+
+<rect x="212" y="248" width="132" height="62" rx="8" class="box hi"/>
+<text x="278" y="272" text-anchor="middle" class="lbl">Feed service</text>
+<text x="278" y="290" text-anchor="middle" class="sub">ids, then posts</text>
+
+<rect x="378" y="24" width="124" height="62" rx="8" class="box"/>
+<text x="440" y="48" text-anchor="middle" class="lbl">Fan-out queue</text>
+<text x="440" y="66" text-anchor="middle" class="sub">+ workers</text>
+
+<rect x="378" y="134" width="124" height="76" rx="8" class="box"/>
+<text x="440" y="162" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="440" y="180" text-anchor="middle" class="sub">posts, follows,</text>
+<text x="440" y="196" text-anchor="middle" class="sub">sharded by author</text>
+
+<rect x="530" y="24" width="104" height="62" rx="8" class="box hi"/>
+<text x="582" y="48" text-anchor="middle" class="lbl">Redis</text>
+<text x="582" y="66" text-anchor="middle" class="sub">feed lists</text>
+
+<rect x="530" y="248" width="104" height="62" rx="8" class="box"/>
+<text x="582" y="272" text-anchor="middle" class="lbl">Post cache</text>
+<text x="582" y="290" text-anchor="middle" class="sub">id &rarr; post</text>
+
+<line x1="98" y1="172" x2="114" y2="172" class="arr" marker-end="url(#ah-nf-arch)"/>
+<line x1="192" y1="160" x2="208" y2="62" class="arr" marker-end="url(#ah-nf-arch)"/>
+<line x1="192" y1="186" x2="208" y2="272" class="arr" marker-end="url(#ah-nf-arch)"/>
+<line x1="344" y1="42" x2="374" y2="42" class="arr" marker-end="url(#ah-nf-arch)"/>
+<line x1="344" y1="72" x2="374" y2="148" class="arr dim" marker-end="url(#ah-nf-arch)"/>
+<line x1="502" y1="54" x2="526" y2="54" class="arr" marker-end="url(#ah-nf-arch)"/>
+<path d="M344,262 C420,250 470,180 526,66" class="arr" marker-end="url(#ah-nf-arch)"/>
+<text x="430" y="238" text-anchor="middle" class="sub">read the ids</text>
+<line x1="344" y1="286" x2="526" y2="286" class="arr" marker-end="url(#ah-nf-arch)"/>
+<text x="434" y="306" text-anchor="middle" class="sub">then the posts</text>
+<path d="M582,248 L582,214" class="arr dim" marker-end="url(#ah-nf-arch)"/>
+<line x1="526" y1="196" x2="506" y2="190" class="arr dim" marker-end="url(#ah-nf-arch)"/>
+</svg>
+</div>
+
+<p><strong>Posting.</strong> The post service writes one row to PostgreSQL, returns <code>201</code>, and drops a job on the fan-out queue. Workers read &ldquo;who follows me&rdquo; and push the post id into each follower&rsquo;s Redis list, trimming it back to 500. The author waits for none of this.</p>
+<p><strong>Opening the feed.</strong> The feed service reads 20 ids from the reader&rsquo;s Redis list, then turns those ids into posts with one batched read from the post cache, falling through to PostgreSQL for anything missing. Like and comment counts ride along in the cached post, so they cost no extra call. Two round trips, no joins, and nothing that gets slower as the site grows.</p>
+<p><strong>Following someone</strong> is one row in <code>follows</code> and nothing else. It changes who fan-out walks from the next post onwards, and leaves every feed list exactly as it was.</p>
+
+<!-- section: deepDives -->
+<h4>Push the post, or pull it?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 240" role="img" aria-label="Fan-out on write costs 300 inserts when you post and one Redis read when a feed opens. Fan-out on read costs one insert when you post and 300 queries plus a merge when a feed opens. Reads outnumber writes 100 to 1, so the cost is paid on the write.">
+<text x="160" y="22" text-anchor="middle" class="lbl">when you post</text>
+<text x="446" y="22" text-anchor="middle" class="lbl">when a feed opens</text>
+
+<text x="14" y="62" class="sub">on write</text>
+<rect x="76" y="38" width="180" height="46" rx="6" class="box warn"/>
+<text x="166" y="67" text-anchor="middle" class="lbl">300 inserts</text>
+<rect x="356" y="38" width="180" height="46" rx="6" class="box hi"/>
+<text x="446" y="67" text-anchor="middle" class="lbl">1 Redis read</text>
+
+<text x="14" y="142" class="sub">on read</text>
+<rect x="76" y="118" width="180" height="46" rx="6" class="box hi"/>
+<text x="166" y="147" text-anchor="middle" class="lbl">1 insert</text>
+<rect x="356" y="118" width="180" height="46" rx="6" class="box warn"/>
+<text x="446" y="147" text-anchor="middle" class="lbl">300 queries, then a merge</text>
+
+<text x="320" y="200" text-anchor="middle" class="sub">feed opens outnumber posts 100 to 1, so the bill goes on the post</text>
+<text x="320" y="222" text-anchor="middle" class="sub">174,000 inserts a second to serve 58,000 feed opens a second</text>
+</svg>
+</div>
+<p>Fan-out on read keeps posting cheap and makes every feed open do the work: 300 queries, a merge and a sort, 58,000 times a second, while the reader waits. Fan-out on write turns posting into 300 appends and makes opening a feed one read of a list that is already in the right order.</p>
+<p>We push. It costs three writes for every read, which sounds wrong until you remember that the writes happen on a queue with nobody watching, and the read happens with a person staring at a blank screen.</p>
+
+<h4>What about the account with 100 million followers?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 200" role="img" aria-label="A reader's feed list in Redis holds pushed posts from the normal accounts they follow. The few very large accounts they follow are queried live instead, and the feed service merges both by post id into one page.">
+<defs><marker id="ah-nf-merge" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="12" y="24" width="222" height="58" rx="8" class="box hi"/>
+<text x="123" y="48" text-anchor="middle" class="lbl">feed:u_77 in Redis</text>
+<text x="123" y="66" text-anchor="middle" class="sub">295 ordinary accounts, pushed</text>
+
+<rect x="12" y="110" width="222" height="58" rx="8" class="box"/>
+<text x="123" y="134" text-anchor="middle" class="lbl">5 huge accounts</text>
+<text x="123" y="152" text-anchor="middle" class="sub">queried live, never pushed</text>
+
+<rect x="290" y="68" width="126" height="56" rx="8" class="box hi"/>
+<text x="353" y="92" text-anchor="middle" class="lbl">merge</text>
+<text x="353" y="110" text-anchor="middle" class="sub">by post id</text>
+
+<rect x="472" y="68" width="156" height="56" rx="8" class="box"/>
+<text x="550" y="92" text-anchor="middle" class="lbl">one page</text>
+<text x="550" y="110" text-anchor="middle" class="sub">20 posts, newest first</text>
+
+<line x1="234" y1="56" x2="286" y2="84" class="arr" marker-end="url(#ah-nf-merge)"/>
+<line x1="234" y1="138" x2="286" y2="108" class="arr" marker-end="url(#ah-nf-merge)"/>
+<line x1="416" y1="96" x2="468" y2="96" class="arr" marker-end="url(#ah-nf-merge)"/>
+<text x="320" y="186" text-anchor="middle" class="sub">a post reaches 100 million feeds without a single insert</text>
+</svg>
+</div>
+<p>At 174,000 inserts a second, one post from an account with 100 million followers takes 575 seconds to deliver. Everyone else&rsquo;s posts queue behind it. Raising the fan-out capacity ten times still leaves a minute, for one post.</p>
+<p>So past a threshold &mdash; say 100,000 followers &mdash; we set <code>push = false</code> and that account is never fanned out. The feed service reads your Redis list as usual, then asks the few big accounts you follow for their recent posts directly, and merges the two by post id. You follow 300 accounts and perhaps five of them are huge, so this is five extra reads, not 300. It is fan-out on read, used exactly where fan-out on write falls over.</p>
+
+<h4>Why store ids and not the posts?</h4>
+<p>Keeping whole posts in every feed list would be 500 entries &times; 500 bytes &times; 500 million users: <strong>125 TB</strong> of memory, against 4 TB for ids. It is also 300 million copies to fix when someone edits a post, and 300 million to find when someone deletes one.</p>
+<p>With ids, a deleted post is one row gone and the stale ids simply resolve to nothing and get dropped from the page. The cost is a second round trip on every feed open, which is one batched read of 20 keys from a cache built for exactly that.</p>
+
+<h4>What about page 50?</h4>
+<p>The Redis list is capped at 500 ids, which is 25 pages. Past that we fall back to fan-out on read for the older pages: query the accounts you follow for posts older than the cursor and merge. It is slow, and almost nobody goes there, so slow is the right answer.</p>
+
+<!-- section: scaling -->
+<div class="table-wrap"><table>
+<tr><th>Growth</th><th>What breaks first</th><th>How you notice</th><th>Fix</th></tr>
+<tr><td>10&times; &mdash; 1.74m fan-out inserts/s</td><td>The fan-out workers</td><td>Queue depth growing through the day; feeds minutes behind</td><td>One pipelined call per Redis shard instead of one per follower, and lower the push threshold so more accounts move to the read path</td></tr>
+<tr><td>10&times; &mdash; 40 TB of feed lists</td><td>Redis memory, by a long way</td><td>Eviction rate climbing on shards full of dormant users</td><td>Only keep lists for users seen in the last week. Rebuild a dormant user&rsquo;s list on login from the read path</td></tr>
+<tr><td>10&times; &mdash; 580,000 feed opens/s</td><td>Nothing structural</td><td>&mdash;</td><td>Shard Redis by reader. Every open is one key, so no read crosses a shard</td></tr>
+<tr><td>100&times; &mdash; 900 TB of posts a year</td><td>One PostgreSQL shard per author range</td><td>Write latency on the busiest shards</td><td>More shards by author, and partition each by month. Old posts are read through the cache anyway</td></tr>
+<tr><td>100&times; &mdash; 15 trillion follow edges</td><td>Asking &ldquo;who follows me&rdquo; for a large account</td><td>A single fan-out job running for minutes</td><td>Big accounts never fan out, so the query is never run for them. For everyone else, page it in blocks of 10,000</td></tr>
+</table></div>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>What the system does</th></tr>
+<tr><td>A Redis feed shard dies</td><td>A slower feed, with everything in it</td><td>Those readers fall back to fan-out on read. The fallback is not extra work: it is the other strategy, already built for big accounts</td></tr>
+<tr><td>Fan-out workers back up</td><td>New posts take minutes to appear</td><td>Shed load by skipping dormant users first. Their lists are rebuilt on login anyway</td></tr>
+<tr><td>A PostgreSQL post shard dies</td><td>Posts from some authors go missing from feeds</td><td>Ids that cannot be turned into posts are dropped from the page. A short feed beats an error</td></tr>
+<tr><td>Post cache down</td><td>Feeds load in a second instead of 200 ms</td><td>Hydrate straight from PostgreSQL read replicas</td></tr>
+<tr><td>A huge account posts</td><td>Nothing unusual</td><td>Exactly nothing happens on the write path. That is the point of the threshold</td></tr>
+<tr><td>Someone follows 50,000 accounts</td><td>Their own feed opens slowly</td><td>Cap follows. Without a cap, one user can make the read-path merge arbitrarily expensive</td></tr>
+<tr><td>Everyone opens the app at 9am</td><td>Nothing</td><td>Feed opens are single-key Redis reads, which is the easiest spike there is. The fan-out queue does not even notice</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Fan-out on write vs on read.</strong> We pay three writes for every read, off the hot path, and get a feed open that is one list read. We give up instant delivery and accept about 10 seconds.</li>
+<li><strong>A hybrid vs one strategy.</strong> Both paths exist and both are tested every day, so a dead Redis shard has somewhere to fall. The cost is two code paths that must agree on ordering.</li>
+<li><strong>Ids vs whole posts in the list.</strong> 4 TB instead of 125 TB, and edits and deletes touch one row. The cost is a second round trip on every open.</li>
+<li><strong>A capped list vs full history.</strong> 500 ids covers what anyone actually scrolls. Deeper pages drop to the slow path.</li>
+<li><strong>Newest first vs ranked.</strong> Newest first is explainable and cheap. A ranker needs features, a model and a scoring pass, and changes this design from the feed service outwards.</li>
+<li><strong>Fresh in 10 seconds vs instant.</strong> A queue absorbs every spike and keeps posting fast. The feed is briefly behind, which no reader can detect.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope, 2 min.</strong> Post, follow, read the feed, scroll. Ranking and ads are out, and say so early.</li>
+<li><strong>Numbers, 4 min.</strong> 580 posts against 58,000 opens, and 300 followers each. Both answers come straight out of these.</li>
+<li><strong>The two strategies, 6 min.</strong> Draw push against pull before drawing any boxes. This is the question being asked.</li>
+<li><strong>Diagram, 4 min.</strong> Post service, queue, Redis lists, feed service. Follow a post and an open.</li>
+<li><strong>Celebrities, 6 min.</strong> 575 seconds for one post, then the threshold and the merge.</li>
+<li><strong>Scaling and failure, 5 min.</strong> Memory for feed lists, and what happens when a Redis shard dies.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>Newest first, or ranked? Ranking changes the read path completely.</li>
+<li>How fresh does a feed have to be? Ten seconds and one second are different systems.</li>
+<li>What is the biggest follower count we must support? That number sets the threshold.</li>
+<li>How far back can people scroll? It decides how long the cached list has to be.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>What happens when I follow someone?</strong> Nothing to the past. Their new posts start arriving; their old ones show up on the read path or on a backfill job.</li>
+<li><strong>And when I unfollow?</strong> Their ids stay in your list until it trims. Filter them at read time rather than hunting through a list.</li>
+<li><strong>Where would ranking go?</strong> Read a few hundred ids instead of 20, score them, return the top 20. The storage design does not change.</li>
+<li><strong>Like counts on a viral post?</strong> Don&rsquo;t update a row per like. Count in Redis and write the total back every few seconds.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A feed is never stored. It is assembled, and the only real question is whether that happens on post or on open.</li>
+<li>Feed opens outnumber posts 100 to 1, so the work belongs on the write side.</li>
+<li>Fan-out on write means 174,000 inserts a second to serve 58,000 feed opens: three writes per read, and worth it.</li>
+<li>Writes happen on a queue with nobody waiting; reads happen with a person staring at a blank screen.</li>
+<li>One post from an account with 100 million followers would take 575 seconds to fan out.</li>
+<li>So past a follower threshold an account is never pushed, and its posts are read live and merged in.</li>
+<li>You follow 300 accounts and maybe five are huge, so the merge costs five reads, not 300.</li>
+<li>Feed lists hold post ids only: 4 TB instead of 125 TB, and one row to fix on an edit or a delete.</li>
+<li>Post ids are time-ordered, so the id is the sort key, the cursor and the Redis score all at once.</li>
+<li>The <code>follows</code> table needs both directions indexed: who I follow for reads, who follows me for fan-out.</li>
+<li>Lists are capped at 500 ids; deeper scrolling falls back to the read path, which almost nobody reaches.</li>
+<li>A dead Redis shard falls back to fan-out on read, which is already built and used every day.</li>
+<li>Only active users get a materialised list. Dormant ones are rebuilt on login.</li>
+</ul>

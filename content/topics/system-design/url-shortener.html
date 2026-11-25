@@ -1,0 +1,311 @@
+<!--
+title: URL Shortener
+summary: Turn a 180-character link into seven characters, and send everyone who clicks it to the right place. Writing a link is one database row. Reading one is 4,000 cache hits a second that can never be wrong.
+category: Links
+order: 80
+related: caching-and-invalidation, cache-service, database-sharding, indexing-strategies, load-balancer
+-->
+
+<!-- section: problem -->
+<p>You paste a 180-character tracking URL into a message and get back <code>sho.rt/aK3dPq2</code>. Anyone who clicks that lands on the original page. That is the whole product.</p>
+<p>Bitly and TinyURL are the well-known versions. It looks like a one-table CRUD app, and the create side nearly is. The redirect side is the interesting half: it sits inside somebody else&rsquo;s page load, it is read a hundred times for every write, and once a link is printed on a poster you can never take it back.</p>
+<p class="note">One-line version: creating a link is one row. Following one is a cache hit that must be fast, correct, and still working in five years.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Take a long URL and give back a short code.</li>
+<li>Send a browser that asks for that code to the original URL.</li>
+<li>Let the creator pick their own alias, like <code>/launch</code>.</li>
+<li>Let a link carry an expiry date, after which it stops working.</li>
+<li>Count clicks per link, by day and country.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Fast:</strong> redirect in under 50 ms at the 99th percentile. It is dead time in someone else&rsquo;s page load.</li>
+<li><strong>Correct forever:</strong> a code points at one URL and never drifts to another.</li>
+<li><strong>Up:</strong> 99.99% on redirects. Every link ever shared breaks when we are down.</li>
+<li><strong>Not walkable:</strong> you can&rsquo;t guess the next code and read everyone&rsquo;s links.</li>
+<li><strong>Cheap per click:</strong> a redirect should not cost a database write.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Checking the destination is safe.</strong> We call a safe-browsing API and store its verdict. We don&rsquo;t build the scanner.</li>
+<li><strong>Editing where a link points.</strong> A short link is a promise. Changing it is how phishing works.</li>
+<li><strong>Link previews.</strong> Fetching and rendering the target page is a separate crawler.</li>
+<li><strong>A full analytics product.</strong> We count clicks. Funnels and attribution are someone else&rsquo;s job.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong>, made up: 100 million new links a month, 100 clicks per link over its life, 500 bytes per row, peak 3&times; average.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Working</th><th>Result</th></tr>
+<tr><td>Link writes</td><td>100m &divide; 30 &divide; 86,400</td><td><strong>39/s</strong>, 120/s at peak</td></tr>
+<tr><td>Redirect reads</td><td>39 &times; 100</td><td><strong>3,900/s</strong>, 12,000/s at peak</td></tr>
+<tr><td>Read to write</td><td>3,900 &divide; 39</td><td><strong>100 : 1</strong></td></tr>
+<tr><td>Rows a year</td><td>100m &times; 12 &times; 500 bytes</td><td>1.2 billion rows, <strong>600 GB</strong></td></tr>
+<tr><td>Code space, 7 base62 chars</td><td>62<sup>7</sup></td><td><strong>3.5 trillion</strong>, about 2,900 years of links</td></tr>
+<tr><td>Hot set in cache</td><td>10m popular links &times; 300 bytes</td><td><strong>3 GB</strong>, fits in memory</td></tr>
+</table></div>
+
+<p>Two numbers decide the design. 39 writes a second is nothing, so the write path can be a plain relational database. The hot set is 3 GB, so almost every redirect can be answered from memory without touching that database at all.</p>
+
+<!-- section: api -->
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>POST /v1/links</code></td><td>Long URL, optional alias, optional expiry</td><td><code>201</code> with the code and short URL</td></tr>
+<tr><td><code>GET /{code}</code></td><td>&mdash;</td><td><code>302</code> with a <code>Location</code> header</td></tr>
+<tr><td><code>GET /v1/links/{code}</code></td><td>&mdash;</td><td>The long URL, owner, expiry</td></tr>
+<tr><td><code>DELETE /v1/links/{code}</code></td><td>&mdash;</td><td><code>204</code>; the code is burnt, never reused</td></tr>
+<tr><td><code>GET /v1/links/{code}/stats</code></td><td><code>from</code>, <code>to</code></td><td>Clicks by day and country</td></tr>
+</table></div>
+
+<pre><code># creating a link: one write, 39 of these a second
+POST /v1/links
+{ "url": "https://example.com/spring-sale?utm_source=mail", "expiresAt": null }
+
+201 Created
+{ "code": "aK3dPq2", "shortUrl": "https://sho.rt/aK3dPq2" }
+
+# following one: 3,900 of these a second, and no body at all
+GET /aK3dPq2
+
+302 Found
+Location: https://example.com/spring-sale?utm_source=mail
+Cache-Control: private, max-age=0</code></pre>
+
+<ul>
+<li><strong>The redirect returns no body.</strong> It is a header. That is why it can be answered from memory in a millisecond.</li>
+<li><strong>A deleted code is never handed out again.</strong> Old posters still point at it, and they must get <code>410 Gone</code>, not somebody else&rsquo;s page.</li>
+</ul>
+
+<!-- section: data -->
+<p><strong>PostgreSQL</strong> holds the links. 39 writes a second is a rounding error for it, we need a real unique constraint on the code so two custom aliases can&rsquo;t collide, and 600 GB a year is comfortable. <strong>Redis</strong> holds the hot codes as plain strings, code to URL, with LRU eviction &mdash; see <em>In-Memory Cache Service</em>. The redirect path reads Redis and nothing else when it hits.</p>
+
+<pre><code>CREATE TABLE links (
+  code       TEXT PRIMARY KEY,        -- 7 base62 chars, or a custom alias
+  long_url   TEXT NOT NULL,
+  owner_id   BIGINT,
+  created_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ,             -- null means forever
+  deleted_at TIMESTAMPTZ              -- set, never dropped: the code stays burnt
+);
+
+CREATE INDEX links_owner_idx ON links (owner_id, created_at DESC);
+CREATE INDEX links_expiry_idx ON links (expires_at)
+  WHERE expires_at IS NOT NULL AND deleted_at IS NULL;
+
+-- the counter that hands out id ranges, one row in the whole database
+CREATE TABLE code_counter (next_id BIGINT NOT NULL);
+
+-- clicks are rolled up by a worker, and never read by a redirect
+CREATE TABLE click_daily (
+  code    TEXT NOT NULL,
+  day     DATE NOT NULL,
+  country TEXT NOT NULL,
+  clicks  BIGINT NOT NULL,
+  PRIMARY KEY (code, day, country)
+);</code></pre>
+
+<p>There is no index on <code>long_url</code>. We never ask &ldquo;which code points here&rdquo; on a hot path, and indexing a text column 1.2 billion rows deep to answer it would cost more than the table.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 360" role="img" aria-label="Clients reach a load balancer, which sends redirects to a redirect service and creates to a create service. The redirect service reads Redis first and PostgreSQL only on a miss, and drops a click event on a queue. The create service writes to PostgreSQL. A counter worker rolls click events up into PostgreSQL.">
+<defs><marker id="ah-us-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="10" y="150" width="110" height="56" rx="8" class="box"/>
+<text x="65" y="172" text-anchor="middle" class="lbl">Clients</text>
+<text x="65" y="189" text-anchor="middle" class="sub">3,900 clicks/s</text>
+
+<rect x="146" y="150" width="96" height="56" rx="8" class="box"/>
+<text x="194" y="172" text-anchor="middle" class="lbl">Load</text>
+<text x="194" y="189" text-anchor="middle" class="sub">balancer</text>
+
+<rect x="270" y="30" width="152" height="56" rx="8" class="box hi"/>
+<text x="346" y="52" text-anchor="middle" class="lbl">Redirect service</text>
+<text x="346" y="69" text-anchor="middle" class="sub">reads only, no body</text>
+
+<rect x="270" y="150" width="152" height="56" rx="8" class="box"/>
+<text x="346" y="172" text-anchor="middle" class="lbl">Create service</text>
+<text x="346" y="189" text-anchor="middle" class="sub">39 writes/s</text>
+
+<rect x="270" y="274" width="152" height="52" rx="8" class="box"/>
+<text x="346" y="296" text-anchor="middle" class="lbl">Click queue</text>
+<text x="346" y="313" text-anchor="middle" class="sub">fire and forget</text>
+
+<rect x="456" y="30" width="172" height="56" rx="8" class="box hi"/>
+<text x="542" y="52" text-anchor="middle" class="lbl">Redis</text>
+<text x="542" y="69" text-anchor="middle" class="sub">code &rarr; URL, 3 GB hot</text>
+
+<rect x="456" y="150" width="172" height="56" rx="8" class="box"/>
+<text x="542" y="172" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="542" y="189" text-anchor="middle" class="sub">links, counter, counts</text>
+
+<rect x="456" y="274" width="172" height="52" rx="8" class="box"/>
+<text x="542" y="296" text-anchor="middle" class="lbl">Rollup worker</text>
+<text x="542" y="313" text-anchor="middle" class="sub">clicks per day</text>
+
+<line x1="120" y1="178" x2="142" y2="178" class="arr" marker-end="url(#ah-us-arch)"/>
+<line x1="242" y1="164" x2="266" y2="62" class="arr" marker-end="url(#ah-us-arch)"/>
+<line x1="242" y1="180" x2="266" y2="180" class="arr" marker-end="url(#ah-us-arch)"/>
+<line x1="422" y1="52" x2="452" y2="52" class="arr" marker-end="url(#ah-us-arch)"/>
+<line x1="422" y1="74" x2="452" y2="158" class="arr dim" marker-end="url(#ah-us-arch)"/>
+<text x="446" y="124" text-anchor="middle" class="sub">miss</text>
+<line x1="346" y1="86" x2="346" y2="270" class="arr dim" marker-end="url(#ah-us-arch)"/>
+<line x1="422" y1="180" x2="452" y2="180" class="arr" marker-end="url(#ah-us-arch)"/>
+<line x1="422" y1="300" x2="452" y2="300" class="arr" marker-end="url(#ah-us-arch)"/>
+<path d="M542,274 L542,210" class="arr dim" marker-end="url(#ah-us-arch)"/>
+</svg>
+</div>
+
+<p><strong>Creating a link</strong>: the create service takes the next id from the block it already holds, encodes it to seven base62 characters (or takes the alias the caller asked for, which is why the code column is unique), inserts the row, and writes the code into Redis straight away so the first click is a hit.</p>
+<p><strong>Following a link</strong>: the redirect service asks Redis for the code. On a hit it checks the expiry and answers <code>302</code> in about a millisecond. On a miss it reads PostgreSQL, fills the cache, and answers. Either way it drops a click event on the queue and forgets about it; the rollup worker adds those up into <code>click_daily</code> once a minute.</p>
+
+<!-- section: deepDives -->
+<h4>Where does the code come from?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 210" role="img" aria-label="One counter row in PostgreSQL hands each application server a block of ten thousand ids. Each server encodes its own ids to base62 locally, so creating a link needs no coordination and no collision check.">
+<defs><marker id="ah-us-code" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="215" y="14" width="210" height="54" rx="8" class="box hi"/>
+<text x="320" y="36" text-anchor="middle" class="lbl">One counter row</text>
+<text x="320" y="53" text-anchor="middle" class="sub">UPDATE &hellip; RETURNING, once per 10,000</text>
+
+<rect x="18" y="124" width="176" height="60" rx="8" class="box"/>
+<text x="106" y="146" text-anchor="middle" class="lbl">Server A</text>
+<text x="106" y="164" text-anchor="middle" class="sub">ids 1 &ndash; 10,000</text>
+
+<rect x="232" y="124" width="176" height="60" rx="8" class="box"/>
+<text x="320" y="146" text-anchor="middle" class="lbl">Server B</text>
+<text x="320" y="164" text-anchor="middle" class="sub">ids 10,001 &ndash; 20,000</text>
+
+<rect x="446" y="124" width="176" height="60" rx="8" class="box"/>
+<text x="534" y="146" text-anchor="middle" class="lbl">Server C</text>
+<text x="534" y="164" text-anchor="middle" class="sub">ids 20,001 &ndash; 30,000</text>
+
+<line x1="260" y1="68" x2="130" y2="120" class="arr" marker-end="url(#ah-us-code)"/>
+<line x1="320" y1="68" x2="320" y2="120" class="arr" marker-end="url(#ah-us-code)"/>
+<line x1="380" y1="68" x2="510" y2="120" class="arr" marker-end="url(#ah-us-code)"/>
+</svg>
+</div>
+<ul>
+<li><strong>Hash the URL</strong> and take the first seven characters. Collisions are real, and the same URL always gives the same code &mdash; so two people sharing one page share one set of click counts and one expiry.</li>
+<li><strong>Random seven characters, then check</strong> the database. A read before every write, forever, to guard against a collision that almost never happens.</li>
+<li><strong>Count up from a shared number.</strong> No collisions by construction, but the codes come out in order, so anyone can walk them and read every link.</li>
+</ul>
+<p>We count up, but in blocks. A server takes 10,000 ids in one <code>UPDATE &hellip; RETURNING</code> and then creates 10,000 links with no coordination at all. To stop the walking, the id is run through a fixed reversible scramble before encoding &mdash; multiply by a large odd number and wrap at 62<sup>7</sup>. Same count, no collisions, scattered output.</p>
+
+<h4>Why 302 and not 301?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 210" role="img" aria-label="With a 301 the browser caches the redirect, so the second click goes straight to the target and never reaches us. With a 302 every click reaches us first.">
+<defs><marker id="ah-us-redir" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<text x="16" y="16" class="lbl">301 Moved Permanently</text>
+<rect x="16" y="28" width="76" height="40" rx="6" class="box"/><text x="54" y="53" text-anchor="middle" class="sub">Browser</text>
+<rect x="124" y="28" width="68" height="40" rx="6" class="box"/><text x="158" y="53" text-anchor="middle" class="sub">Us</text>
+<rect x="224" y="28" width="76" height="40" rx="6" class="box"/><text x="262" y="53" text-anchor="middle" class="sub">Target</text>
+<line x1="92" y1="48" x2="120" y2="48" class="arr" marker-end="url(#ah-us-redir)"/>
+<line x1="192" y1="48" x2="220" y2="48" class="arr" marker-end="url(#ah-us-redir)"/>
+<text x="16" y="96" class="sub">second click</text>
+<rect x="16" y="104" width="76" height="40" rx="6" class="box"/><text x="54" y="129" text-anchor="middle" class="sub">Browser</text>
+<rect x="124" y="104" width="68" height="40" rx="6" class="box faintbox"/><text x="158" y="129" text-anchor="middle" class="sub">Us</text>
+<rect x="224" y="104" width="76" height="40" rx="6" class="box"/><text x="262" y="129" text-anchor="middle" class="sub">Target</text>
+<path d="M92,132 C140,168 196,168 220,136" class="arr warnline" marker-end="url(#ah-us-redir)"/>
+<text x="158" y="192" text-anchor="middle" class="sub">no count, no expiry, no kill switch</text>
+
+<text x="340" y="16" class="lbl">302 Found</text>
+<rect x="340" y="28" width="76" height="40" rx="6" class="box"/><text x="378" y="53" text-anchor="middle" class="sub">Browser</text>
+<rect x="448" y="28" width="68" height="40" rx="6" class="box hi"/><text x="482" y="53" text-anchor="middle" class="sub">Us</text>
+<rect x="548" y="28" width="76" height="40" rx="6" class="box"/><text x="586" y="53" text-anchor="middle" class="sub">Target</text>
+<line x1="416" y1="48" x2="444" y2="48" class="arr" marker-end="url(#ah-us-redir)"/>
+<line x1="516" y1="48" x2="544" y2="48" class="arr" marker-end="url(#ah-us-redir)"/>
+<text x="340" y="96" class="sub">second click</text>
+<rect x="340" y="104" width="76" height="40" rx="6" class="box"/><text x="378" y="129" text-anchor="middle" class="sub">Browser</text>
+<rect x="448" y="104" width="68" height="40" rx="6" class="box hi"/><text x="482" y="129" text-anchor="middle" class="sub">Us</text>
+<rect x="548" y="104" width="76" height="40" rx="6" class="box"/><text x="586" y="129" text-anchor="middle" class="sub">Target</text>
+<line x1="416" y1="124" x2="444" y2="124" class="arr" marker-end="url(#ah-us-redir)"/>
+<line x1="516" y1="124" x2="544" y2="124" class="arr" marker-end="url(#ah-us-redir)"/>
+<text x="482" y="192" text-anchor="middle" class="sub">every click is ours to count and stop</text>
+</svg>
+</div>
+<p>A <code>301</code> is cheaper for us and faster for the user: the browser remembers it and skips us next time. It also takes away expiry, click counts and the ability to kill a link that turned out to be malware. Browsers cache a 301 for a long time and there is no way to call it back. We take the traffic and send <code>302</code>.</p>
+
+<h4>How do you count clicks without writing to the database?</h4>
+<p>At 3,900 clicks a second, one <code>UPDATE links SET clicks = clicks + 1</code> per click is 3,900 row locks a second on the rows everyone else is reading. So the redirect never writes. It pushes <code>(code, day, country)</code> onto a queue and answers. Each service also counts in its own memory and flushes once a second, which turns a thousand clicks on one viral link into one message. The worker adds them into <code>click_daily</code>. Counts run about a minute behind, and nobody has ever needed them sooner.</p>
+
+<!-- section: scaling -->
+<div class="table-wrap"><table>
+<tr><th>Growth</th><th>What breaks first</th><th>How you notice</th><th>Fix</th></tr>
+<tr><td>10&times; &mdash; 39,000 redirects/s</td><td>The redirect tier, not the data</td><td>CPU per pod climbing; Redis still bored</td><td>Add redirect pods. They hold no state, so this is just arithmetic</td></tr>
+<tr><td>10&times; &mdash; 30 GB hot set</td><td>One Redis node&rsquo;s memory</td><td>Eviction rate rising, hit rate falling below 95%</td><td>Shard Redis by code. Every lookup is a single key, so sharding is free &mdash; see <em>Database Sharding</em></td></tr>
+<tr><td>10&times; &mdash; 6 TB of links</td><td>Nothing yet. Lookups are by primary key</td><td>&mdash;</td><td>Watch index size, not table size</td></tr>
+<tr><td>100&times; &mdash; 390,000 redirects/s</td><td>Bandwidth and TLS at the edge</td><td>Cost per redirect dominated by connection setup</td><td>Answer the redirect at a CDN edge with a 60-second TTL. Expiry gets up to a minute late, which is a price worth paying</td></tr>
+<tr><td>100&times; &mdash; 60 TB, 3,900 writes/s</td><td>One PostgreSQL primary for writes</td><td>Write latency and replication lag both climbing</td><td>Shard <code>links</code> by the first character of the code. The id blocks already keep servers from fighting</td></tr>
+</table></div>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>What the system does</th></tr>
+<tr><td>Redis down</td><td>Redirects get slower, still work</td><td>Every miss falls through to PostgreSQL read replicas. The in-process cache absorbs the hottest links</td></tr>
+<tr><td>PostgreSQL primary down</td><td>New links fail; every existing link still works</td><td>Creates return <code>503</code>. Redirects are reads and never needed the primary</td></tr>
+<tr><td>Counter row unreachable</td><td>Nothing, for a while</td><td>Each server still owns up to 10,000 unused ids. Creates keep working until a block runs out</td></tr>
+<tr><td>Click queue backed up</td><td>Stats lag behind</td><td>Redirects are unaffected. The queue drains and the counts catch up</td></tr>
+<tr><td>A scanner walks random codes</td><td>Nothing</td><td>Cache the misses too, so a million guesses are a million cache hits, not a million database reads</td></tr>
+<tr><td>One link goes viral</td><td>Nothing</td><td>One hot key is the easiest case there is: it is in every in-process cache within a second</td></tr>
+<tr><td>A link turns out to be malware</td><td><code>410 Gone</code></td><td>Set <code>deleted_at</code>, delete the Redis key. The code is burnt and never reissued</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>302 vs 301.</strong> We take every click, so we keep counts, expiry and a kill switch. We pay for the traffic and add a hop to every visit.</li>
+<li><strong>Id blocks vs random codes.</strong> No collision check on any write, and a server that restarts throws away the ids left in its block. Gaps in a code space of 3.5 trillion don&rsquo;t matter.</li>
+<li><strong>Cache first vs database first.</strong> Almost every redirect avoids the database. The cost is that a deleted link lives on until its cache key is dropped, so deletes have to delete both.</li>
+<li><strong>Approximate counts vs exact.</strong> Counting off the hot path keeps redirects at a millisecond, and a crashed pod loses up to a second of clicks.</li>
+<li><strong>One code space vs per-user namespaces.</strong> Short codes stay short. Custom aliases are first come, first served, and good ones run out.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope, 2 min.</strong> Create, redirect, custom alias, expiry, counts. Safety scanning is out.</li>
+<li><strong>Numbers, 4 min.</strong> 39 writes against 3,900 reads, and a 3 GB hot set. Both answers fall out of these.</li>
+<li><strong>Codes, 5 min.</strong> Hash, random, or counter, and why blocks of ids win. Interviewers want this part.</li>
+<li><strong>Diagram, 4 min.</strong> Draw it, then follow a create and a click through it.</li>
+<li><strong>Deep dive, 8 min.</strong> 301 against 302, then counting clicks off the hot path.</li>
+<li><strong>Scaling and failure, 5 min.</strong> 10&times; and 100&times;, then what a click does when Redis is gone.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>How long must a link live? Forever changes the storage answer and kills reuse of codes.</li>
+<li>Do we need custom aliases? They force a real unique constraint, not just a generator.</li>
+<li>Are counts exact or roughly right?</li>
+<li>Is this one region or global? Global makes the redirect an edge problem.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>Why not a UUID?</strong> 36 characters in a product whose whole job is being short.</li>
+<li><strong>Two people shorten the same URL?</strong> Two codes. Each gets its own expiry and its own counts.</li>
+<li><strong>How do you delete expired links?</strong> A sweeper on <code>links_expiry_idx</code>. The row stays, so the code is never reissued.</li>
+<li><strong>Could you drop PostgreSQL and keep only a key-value store?</strong> Yes, and you would hand-build the unique constraint that custom aliases need.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A shortener is 39 writes a second against 3,900 reads: a 100 to 1 split, and the design follows it.</li>
+<li>Seven base62 characters give 3.5 trillion codes, about 2,900 years at 1.2 billion links a year.</li>
+<li>Hashing the URL collides and makes two people share one link&rsquo;s counts and expiry.</li>
+<li>Random codes need a database read before every write to check for a collision.</li>
+<li>A counter gives unique codes for free, so servers take blocks of 10,000 ids and work alone.</li>
+<li>A fixed reversible scramble before encoding stops anyone walking the codes in order.</li>
+<li>The hot set is about 3 GB, so Redis answers nearly every redirect without touching PostgreSQL.</li>
+<li>Send <code>302</code>, not <code>301</code>: a cached permanent redirect takes away counts, expiry and the kill switch.</li>
+<li>Clicks go on a queue and are rolled up by a worker, so a redirect never writes to the database.</li>
+<li>A deleted code is burnt, not freed, because old links still point at it and must get <code>410</code>.</li>
+<li>At 100&times; the redirect moves to a CDN edge with a 60-second TTL, and expiry gets a minute late.</li>
+</ul>

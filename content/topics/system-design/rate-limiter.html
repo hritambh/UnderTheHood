@@ -1,0 +1,295 @@
+<!--
+title: Rate Limiter
+summary: The thing in front of every API that answers one question in two milliseconds: has this caller had enough? A counter with a deadline, shared by fifty servers, that must never become the outage it was built to prevent.
+category: Traffic
+order: 90
+related: cache-service, caching-and-invalidation, redis-persistence, load-balancer, authentication-authorisation
+-->
+
+<!-- section: problem -->
+<p>Every public API has a line in its docs like &ldquo;100 requests a minute per key&rdquo;. Go over it and you get <code>429 Too Many Requests</code> and a <code>Retry-After</code> header telling you when to come back.</p>
+<p>The reason is not fairness, it is survival. One client with a bad loop can use the capacity of ten thousand good ones. Stripe, GitHub and Cloudflare all publish limits like this. We are building the component that enforces them, shared by every service in the company.</p>
+<p class="note">One-line version: a rate limiter is a counter with a deadline. The entire design is about where that counter lives and who is allowed to touch it.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>Answer allow or deny for one request, keyed by API key, user id or IP.</li>
+<li>Hold different limits per rule: 100 a minute on search, 5 an hour on password reset.</li>
+<li>Tell the caller what is left and when to retry, in response headers.</li>
+<li>Let an operator change a limit without a deploy.</li>
+<li>Count across the whole fleet, so a client hitting 50 servers still gets one budget.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Fast:</strong> under 2 ms added at the 99th percentile. It runs before every single request.</li>
+<li><strong>Harmless when broken:</strong> if the limiter is down, normal traffic flows. It must never be the outage.</li>
+<li><strong>Cheap:</strong> one network round trip per request, not three.</li>
+<li><strong>Accurate enough:</strong> letting 105 through on a limit of 100 is fine. Letting 1,000 through is not.</li>
+<li><strong>Burst-friendly:</strong> a quiet client may spend saved-up budget in one go. Real clients come in bursts.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Billing quotas.</strong> &ldquo;10,000 calls this month, then we invoice you&rdquo; must be exact and durable. That is a ledger, not a counter you are happy to lose.</li>
+<li><strong>Bot detection.</strong> Deciding <em>who</em> a caller really is belongs in a WAF.</li>
+<li><strong>Queueing.</strong> We reject over-limit requests. Holding them and releasing them slowly is traffic shaping, and it hides the problem.</li>
+<li><strong>Network floods.</strong> A volumetric attack never reaches us. That is the edge provider&rsquo;s job.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong>, made up: 20,000 requests a second across the fleet, peak 3&times;, 2 million distinct callers active in any minute, 100 bytes per counter, 80 bytes to log one decision.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Working</th><th>Result</th></tr>
+<tr><td>Checks a second</td><td>20,000 average, 3&times; peak</td><td><strong>60,000/s</strong> at peak</td></tr>
+<tr><td>Reads per write</td><td>Every check reads and writes</td><td><strong>1 : 1</strong></td></tr>
+<tr><td>Counter memory</td><td>2m active &times; 100 bytes</td><td><strong>200 MB</strong></td></tr>
+<tr><td>Stored for ever</td><td>Counters expire; rules are 20 rows</td><td><strong>Nothing</strong></td></tr>
+<tr><td>If we logged every decision</td><td>20,000 &times; 86,400 &times; 80 bytes</td><td><strong>138 GB a day</strong>, 50 TB a year</td></tr>
+</table></div>
+
+<p>The 1 to 1 ratio is what makes this different from everything else in this track. There is no read-heavy path to cache, because every read changes the thing it just read. And the last row is why decisions are sampled, not logged: 50 TB a year to record, over and over, that nothing happened.</p>
+
+<!-- section: api -->
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>POST /v1/check</code></td><td>Rule id, caller key, cost</td><td>Allowed, how many left, seconds to retry</td></tr>
+<tr><td><code>GET /v1/rules</code></td><td>&mdash;</td><td>Every rule, with a version</td></tr>
+<tr><td><code>PUT /v1/rules/{id}</code></td><td>Limit, window, burst, scope</td><td>The rule, with a new version</td></tr>
+<tr><td><code>DELETE /v1/rules/{id}</code></td><td>&mdash;</td><td><code>204</code>; the rule stops being enforced</td></tr>
+<tr><td><code>GET /v1/callers/{key}</code></td><td>&mdash;</td><td>Current counters, for support to look at</td></tr>
+</table></div>
+
+<pre><code># what the caller who went over actually sees
+HTTP/1.1 429 Too Many Requests
+RateLimit-Limit: 100
+RateLimit-Remaining: 0
+RateLimit-Reset: 24
+Retry-After: 24</code></pre>
+
+<ul>
+<li><strong>Send the headers on success too</strong>, not only on a <code>429</code>. A client that can see it has 7 left can slow down on its own. One that only learns at zero cannot.</li>
+<li><strong><code>Retry-After</code> is not optional.</strong> Without it every blocked client retries immediately, and a limiter that triggers a retry storm has made things worse.</li>
+<li><strong>Cost lets one endpoint count as ten.</strong> A report that runs for 30 seconds should not cost the same as a key lookup.</li>
+</ul>
+
+<!-- section: data -->
+<p><strong>Redis</strong> holds the counters. It has per-key expiry built in, it does atomic maths in one round trip, and losing every counter on a restart costs one window of over-permissiveness &mdash; not data. <strong>PostgreSQL</strong> holds the rules: 20 rows, edited by humans, read into each pod&rsquo;s memory and refreshed every 10 seconds. Nothing about the counters is durable, and that is on purpose.</p>
+
+<pre><code>-- rules live in PostgreSQL: tiny, human-edited, versioned
+CREATE TABLE rules (
+  id       TEXT PRIMARY KEY,       -- 'search', 'login', 'password-reset'
+  scope    TEXT NOT NULL,          -- api_key | user | ip
+  limit_n  INTEGER NOT NULL,       -- tokens added per window
+  window_s INTEGER NOT NULL,
+  burst    INTEGER NOT NULL,       -- the most a caller may save up
+  enabled  BOOLEAN NOT NULL DEFAULT true,
+  version  BIGINT NOT NULL
+);</code></pre>
+
+<pre><code># counters live in Redis: one small hash per rule and caller
+rl:search:ak_19f  ->  { tokens: 37.5, ts: 1764051000.412 }
+
+# the TTL is twice the refill time, so idle callers clean themselves up
+EXPIRE rl:search:ak_19f 120</code></pre>
+
+<p>Two fields per caller, not a list of timestamps. That choice is the next section, and it is the difference between 200 MB and 20 GB.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 300" role="img" aria-label="Clients reach an API gateway that runs the limiter inside itself. The gateway makes one Redis call per request for the counter, pulls rules from a rules service backed by PostgreSQL every ten seconds, and forwards allowed requests to the backend services while answering denied ones with 429.">
+<defs>
+<marker id="ah-rl-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker>
+<marker id="ah-rl-arch-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead-warn"/></marker>
+</defs>
+
+<rect x="8" y="116" width="106" height="64" rx="8" class="box"/>
+<text x="61" y="142" text-anchor="middle" class="lbl">Clients</text>
+<text x="61" y="160" text-anchor="middle" class="sub">60,000/s at peak</text>
+
+<rect x="146" y="110" width="156" height="76" rx="8" class="box hi"/>
+<text x="224" y="138" text-anchor="middle" class="lbl">API gateway</text>
+<text x="224" y="156" text-anchor="middle" class="sub">the limiter runs here,</text>
+<text x="224" y="172" text-anchor="middle" class="sub">not one hop away</text>
+
+<rect x="338" y="14" width="152" height="62" rx="8" class="box hi"/>
+<text x="414" y="40" text-anchor="middle" class="lbl">Redis</text>
+<text x="414" y="58" text-anchor="middle" class="sub">one key per caller</text>
+
+<rect x="338" y="218" width="152" height="62" rx="8" class="box"/>
+<text x="414" y="244" text-anchor="middle" class="lbl">Rules + PostgreSQL</text>
+<text x="414" y="262" text-anchor="middle" class="sub">20 rows, pulled every 10 s</text>
+
+<rect x="506" y="110" width="126" height="76" rx="8" class="box"/>
+<text x="569" y="142" text-anchor="middle" class="lbl">Backend</text>
+<text x="569" y="160" text-anchor="middle" class="sub">services</text>
+
+<line x1="114" y1="134" x2="142" y2="134" class="arr" marker-end="url(#ah-rl-arch)"/>
+<line x1="142" y1="168" x2="114" y2="168" class="arr warnline" marker-end="url(#ah-rl-arch-w)"/>
+<text x="128" y="196" text-anchor="middle" class="sub">429</text>
+<line x1="302" y1="126" x2="334" y2="62" class="arr" marker-end="url(#ah-rl-arch)"/>
+<text x="330" y="100" text-anchor="middle" class="sub">1 call</text>
+<line x1="302" y1="172" x2="334" y2="222" class="arr dim" marker-end="url(#ah-rl-arch)"/>
+<line x1="302" y1="148" x2="502" y2="148" class="arr" marker-end="url(#ah-rl-arch)"/>
+<text x="402" y="140" text-anchor="middle" class="sub">allowed</text>
+</svg>
+</div>
+
+<p><strong>An allowed request</strong>: the gateway already has the rules in memory, so it builds the key <code>rl:search:ak_19f</code>, runs one script against Redis, gets back &ldquo;yes, 37 left&rdquo;, adds the headers and forwards to the backend. One round trip, about half a millisecond.</p>
+<p><strong>A denied request</strong>: same call, different answer. The gateway returns <code>429</code> with <code>Retry-After</code> and never touches a backend service. <strong>A rule change</strong> is written to PostgreSQL, and every gateway picks it up within 10 seconds &mdash; no deploy, and no call to the rules service on the hot path.</p>
+
+<!-- section: deepDives -->
+<h4>Which window do you count in?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 200" role="img" aria-label="A fixed window of one minute lets a caller send one hundred requests just before the boundary and one hundred just after, so two hundred arrive within two seconds while both windows obeyed the limit.">
+<rect x="110" y="42" width="220" height="48" rx="6" class="box faintbox"/>
+<text x="220" y="62" text-anchor="middle" class="lbl">11:58 window</text>
+<text x="220" y="80" text-anchor="middle" class="sub">100 used, all at the end</text>
+
+<rect x="330" y="42" width="220" height="48" rx="6" class="box faintbox"/>
+<text x="440" y="62" text-anchor="middle" class="lbl">11:59 window</text>
+<text x="440" y="80" text-anchor="middle" class="sub">100 used, all at the start</text>
+
+<line x1="30" y1="110" x2="610" y2="110" class="arr dim"/>
+<line x1="110" y1="102" x2="110" y2="118" class="arr"/>
+<line x1="330" y1="102" x2="330" y2="118" class="arr"/>
+<line x1="550" y1="102" x2="550" y2="118" class="arr"/>
+<text x="110" y="134" text-anchor="middle" class="sub">11:58:00</text>
+<text x="330" y="134" text-anchor="middle" class="sub">11:59:00</text>
+<text x="550" y="134" text-anchor="middle" class="sub">12:00:00</text>
+
+<rect x="296" y="150" width="68" height="26" rx="4" class="box warn"/>
+<text x="330" y="167" text-anchor="middle" class="sub">200 in 2 s</text>
+<text x="330" y="192" text-anchor="middle" class="sub">the limit was 100 a minute, and both windows obeyed it</text>
+</svg>
+</div>
+
+<div class="table-wrap"><table>
+<tr><th>Way to count</th><th>Memory per caller</th><th>Problem</th></tr>
+<tr><td>Fixed window</td><td>One number</td><td>Twice the limit around every boundary, as above</td></tr>
+<tr><td>Sliding log of timestamps</td><td>One entry per request</td><td>Exact, and 100 entries per caller: 20 GB instead of 200 MB</td></tr>
+<tr><td>Sliding window counter</td><td>Two numbers</td><td>Good, but it smooths bursts away even when you wanted them</td></tr>
+<tr><td>Token bucket</td><td>Two numbers</td><td>Bursts are a setting, not an accident</td></tr>
+</table></div>
+
+<div class="diagram">
+<svg viewBox="0 0 640 190" role="img" aria-label="A token bucket refills at a steady rate up to a burst size. Each request takes one token, and a request that finds the bucket empty is rejected with 429.">
+<defs><marker id="ah-rl-bucket" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<text x="20" y="60" class="sub">refill</text>
+<text x="20" y="78" class="sub">100 tokens</text>
+<text x="20" y="96" class="sub">per 60 s</text>
+<line x1="112" y1="76" x2="248" y2="76" class="arr" marker-end="url(#ah-rl-bucket)"/>
+<rect x="252" y="36" width="150" height="112" rx="8" class="box"/>
+<rect x="258" y="98" width="138" height="44" rx="4" class="box hi"/>
+<text x="327" y="126" text-anchor="middle" class="sub">37 tokens left</text>
+<text x="327" y="28" text-anchor="middle" class="sub">burst 100: the most you may save up</text>
+<line x1="402" y1="76" x2="520" y2="76" class="arr" marker-end="url(#ah-rl-bucket)"/>
+<text x="462" y="62" text-anchor="middle" class="sub">1 per request</text>
+<text x="536" y="72" class="lbl">allowed</text>
+<text x="536" y="112" class="lbl">429</text>
+<text x="462" y="112" text-anchor="middle" class="sub">empty bucket</text>
+</svg>
+</div>
+
+<p>We take the token bucket. Two numbers per caller, no boundary trick, and a client that was quiet for ten minutes can spend its saved budget in one go &mdash; on purpose, as a setting, instead of by accident at a window edge.</p>
+
+<h4>How is it atomic across fifty gateways?</h4>
+<p>Read the counter, decide, write it back: fifty pods all read 99 at the same moment, all say yes, and 50 requests pass a limit of 100. <code>INCR</code> plus <code>EXPIRE</code> is two commands, and a pod that dies between them leaves a key that never expires. So the check is one script, which Redis runs with nothing in between.</p>
+
+<pre><code>-- token_bucket.lua, run by Redis itself. KEYS[1] is the caller's bucket.
+local rate, burst, cost = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
+local t   = redis.call('TIME')              -- Redis's clock, not the caller's
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+local b   = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(b[1]) or burst
+local ts     = tonumber(b[2]) or now
+
+tokens = math.min(burst, tokens + (now - ts) * rate)
+local ok = tokens &gt;= cost
+if ok then tokens = tokens - cost end
+
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('EXPIRE', KEYS[1], math.ceil(burst / rate) * 2)
+return { ok and 1 or 0, math.floor(tokens) }</code></pre>
+
+<p>It is Lua because that is what Redis runs. Two details earn their place. The clock comes from Redis, so a gateway with a fast clock cannot mint itself free tokens. And the <code>EXPIRE</code> sits inside the same script, so an idle caller&rsquo;s key always goes away &mdash; there is no path where a key is written and its expiry is not.</p>
+
+<h4>What happens when Redis dies?</h4>
+<p>A limiter that fails closed turns a cache problem into a full outage, which is exactly the thing it exists to prevent. So the default is fail open: allow, and raise an alarm. Each pod also keeps a local bucket sized at the rule&rsquo;s limit divided by the number of pods, so a fleet without Redis is loose but not naked.</p>
+<p>The exception is written into the rule itself. <code>login</code> and <code>password-reset</code> fail <em>closed</em>, because letting a credential-stuffing run through unmetered is the damage, not a side effect of it. Which way a rule fails is a column on that rule, not one global setting for the whole service.</p>
+
+<!-- section: scaling -->
+<div class="table-wrap"><table>
+<tr><th>Growth</th><th>What breaks first</th><th>How you notice</th><th>Fix</th></tr>
+<tr><td>10&times; &mdash; 600,000 checks/s</td><td>One Redis node&rsquo;s throughput</td><td>Redis CPU pinned; check latency past 2 ms</td><td>Shard by the rate-limit key. Every check touches exactly one key, so no operation crosses a shard</td></tr>
+<tr><td>10&times; &mdash; 2 GB of counters</td><td>Nothing. Still small</td><td>&mdash;</td><td>Watch the eviction rate, not memory</td></tr>
+<tr><td>100&times; &mdash; 6m checks/s</td><td>The round trip itself. Half a millisecond on every request</td><td>Gateway latency dominated by waiting on Redis</td><td>Lease tokens in blocks: a pod asks for 50 at a time and spends them locally. Fifty times fewer calls, slightly looser counting</td></tr>
+<tr><td>100&times; &mdash; one huge customer</td><td>That caller&rsquo;s single key, on one shard</td><td>One shard hot while the rest idle</td><td>Split the key into 10 sub-buckets, each with a tenth of the limit</td></tr>
+<tr><td>100&times; &mdash; 10,000 gateway pods</td><td>Every pod polling for 20 rules every 10 s</td><td>Steady pointless load on PostgreSQL</td><td>Push rule changes over Redis pub/sub and keep the poll as a slow backstop</td></tr>
+</table></div>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>What the system does</th></tr>
+<tr><td>A Redis shard down</td><td>Nothing, for normal rules</td><td>Fail open on the shard&rsquo;s keys, fall back to the local per-pod bucket, alarm</td></tr>
+<tr><td>A Redis shard down</td><td>Logins rejected</td><td>Auth rules fail closed. Rejecting real users beats leaving the door open</td></tr>
+<tr><td>Rules database down</td><td>Nothing</td><td>Every pod keeps the last rules it saw, indefinitely. Changes stop being possible, enforcement does not</td></tr>
+<tr><td>A gateway pod&rsquo;s clock drifts</td><td>Nothing</td><td>The script reads Redis&rsquo;s clock, so the pod&rsquo;s own time never enters the maths</td></tr>
+<tr><td>A pod crashes mid-check</td><td>One request fails</td><td>The token was already spent. One token of budget is lost and nobody can tell</td></tr>
+<tr><td>A client ignores <code>429</code></td><td>Still <code>429</code></td><td>After a few hundred denials in a row, drop that key at the edge for 60 seconds so the denials stop costing us anything</td></tr>
+<tr><td>Traffic triples in a minute</td><td>Over-limit callers blocked, everyone else fine</td><td>This is the system working. What needs watching is Redis, which now gets three times the calls</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>Token bucket vs sliding log.</strong> Two numbers per caller instead of a hundred timestamps, so 200 MB instead of 20 GB. We give up knowing exactly which requests happened when.</li>
+<li><strong>In the gateway vs its own service.</strong> No extra network hop on any request. The cost is that upgrading the limiter means redeploying every gateway.</li>
+<li><strong>Fail open vs fail closed.</strong> Open by default, so the limiter can never cause the outage. Closed for auth rules, where being open <em>is</em> the outage.</li>
+<li><strong>Shared counter vs per-pod counters.</strong> One Redis call gives one true budget across the fleet. Leasing tokens locally is far cheaper and lets a caller overshoot by one lease.</li>
+<li><strong>Reject vs queue.</strong> A <code>429</code> is honest and instant. Queueing would hide the problem behind slow responses and tie up memory holding them.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope, 2 min.</strong> Enforce limits per caller per rule. Billing quotas and bot detection are out.</li>
+<li><strong>Numbers, 3 min.</strong> 60,000 checks a second, 1 to 1 reads and writes, 200 MB of counters. Say the 1 to 1 out loud; it surprises people.</li>
+<li><strong>Algorithms, 6 min.</strong> Draw the fixed-window boundary problem, then the four options, then pick the token bucket.</li>
+<li><strong>Diagram, 3 min.</strong> Gateway, Redis, rules. Follow an allowed and a denied request.</li>
+<li><strong>Atomicity, 6 min.</strong> Why read-modify-write races, and why it ends up as one script.</li>
+<li><strong>Failure, 5 min.</strong> Fail open or closed, and why the answer is per rule.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>What are we limiting by: API key, user, IP, or all three at once?</li>
+<li>Is a small overshoot acceptable? If not, this is a quota problem, not a limiter.</li>
+<li>Should bursts be allowed, or should traffic be perfectly smooth?</li>
+<li>One region or several? Global counters across regions cost a cross-region hop on every request.</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>Limiting by IP?</strong> Fine for abuse, bad for fairness. A whole office shares one address.</li>
+<li><strong>Several limits on one request?</strong> Check them in one script and deny on the first failure, so it is still one round trip.</li>
+<li><strong>Counters across regions?</strong> Keep them regional and divide the limit. A global counter pays a cross-region hop on every single request, to be exact about a number that tolerates being wrong.</li>
+<li><strong>Why not a sliding window counter?</strong> It is a good answer. It just smooths bursts away, and for an API bursts are normal traffic.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>A rate limiter is a counter with a deadline, shared by every server in the fleet.</li>
+<li>It is the rare system with a 1 to 1 read to write ratio: every check changes what it just read.</li>
+<li>Counters live in Redis and are never made durable. Losing them costs one window, not data.</li>
+<li>Rules live in PostgreSQL, 20 rows, pulled into each pod&rsquo;s memory every 10 seconds.</li>
+<li>A fixed window lets 200 requests through in two seconds on a limit of 100 a minute.</li>
+<li>A sliding log is exact and costs one timestamp per request: 20 GB instead of 200 MB.</li>
+<li>Token bucket wins: two numbers per caller, and bursts become a setting instead of a bug.</li>
+<li>Read-modify-write races across pods, so the whole check is one Lua script in one round trip.</li>
+<li>The script reads Redis&rsquo;s own clock, so a gateway with a fast clock cannot mint free tokens.</li>
+<li>Fail open by default, and fail closed for auth rules, where letting everything through is the damage.</li>
+<li>Always send <code>Retry-After</code>, or every blocked client retries at once and makes it worse.</li>
+<li>At 100&times; the round trip itself is the cost, so pods lease tokens in blocks and spend them locally.</li>
+</ul>
