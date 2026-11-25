@@ -23,6 +23,19 @@
     try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
   }
   function $(id) { return document.getElementById(id); }
+  /* clipboard, with the old-browser fallback in one place */
+  function copyText(text, done) {
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else fallback();
+  }
   function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
 
   /* the search index keeps the original text; lower-case copies are made once, for matching */
@@ -395,6 +408,441 @@
     if (e.key === LS_PROGRESS) { progress = load(LS_PROGRESS, {}) || {}; paint(); }
   });
 
+  /* ---------- listen: read a page out loud ----------
+       The browser's own speech engine does the talking, so there are no audio
+       files, no keys and nothing to pay for. The work here is turning a page
+       into something worth listening to:
+         - diagrams are read from their aria-label, because on this site a
+           diagram replaces prose rather than decorating it, so skipping one
+           would drop real content;
+         - tables are read row by row as "heading: value", which is how these
+           topics carry their numbers;
+         - code blocks are announced and skipped. SQL read aloud is noise.
+       Each sentence is its own utterance. That keeps pause and skip responsive,
+       and keeps Chrome from cutting off long ones. */
+  function setupListen(opt) {
+    var synth = window.speechSynthesis;
+    var listenBtn = $('listenBtn');
+    if (!listenBtn || !synth || !('SpeechSynthesisUtterance' in window)) return;
+    (function () {
+      var article = opt.article, secs = opt.secs, id = opt.id;
+      var WORD = opt.word || 'Section';
+      var root = document.documentElement;
+      var toggleBtn = $('playToggle'), prevBtn = $('playPrev'), nextBtn = $('playNext');
+      var stopBtn = $('playStop'), whereEl = $('playWhere');
+      var rateEl = $('playRate'), rateVal = $('playRateVal'), voiceSel = $('playVoice');
+      var LS_LISTEN = 'sd-hub-listen', LS_LISTEN_AT = 'sd-hub-listen-at';
+      var MINR = 0.7, MAXR = 1.8, LONG = 190;
+      var chunks = [], idx = -1, gen = 0;
+      var playing = false, held = false;
+      var rate = 1, voiceId = '', voices = [];
+      var markEl = null, markSec = -1, followUntil = 0, utterAt = 0;
+
+      var CFGV = 2;
+      var cfg = load(LS_LISTEN, {});
+      if (typeof cfg.rate === 'number' && cfg.rate >= MINR && cfg.rate <= MAXR) rate = cfg.rate;
+      /* Version 1 defaulted to the first local voice, which on a Mac can be a
+         novelty one. Drop a v1 choice so the ranking above gets a say; anything
+         chosen since is kept. */
+      if (cfg.v === CFGV && typeof cfg.voice === 'string') voiceId = cfg.voice;
+      function saveCfg() { save(LS_LISTEN, { v: CFGV, rate: rate, voice: voiceId }); }
+
+      /* ---- turning markup into something speakable ---- */
+
+      var UNITS = { KB: 'kilobytes', MB: 'megabytes', GB: 'gigabytes', TB: 'terabytes', PB: 'petabytes' };
+
+      function say(t) {
+        return String(t)
+          .replace(/×/g, ' times ')
+          .replace(/÷/g, ' divided by ')
+          .replace(/→/g, ' to ')
+          .replace(/−/g, ' minus ')
+          .replace(/≈/g, ' about ')
+          .replace(/[—–]/g, ', ')
+          .replace(/…/g, '. ')
+          .replace(/₹/g, ' rupees ')
+          .replace(/[“”‘’]/g, "'")
+          .replace(/[✓✔]/g, ' yes ')
+          .replace(/(\d)\s*\/\s*s\b/g, '$1 per second')
+          .replace(/(\d)\s*(KB|MB|GB|TB|PB)\b/g, function (m, n, u) { return n + ' ' + UNITS[u]; })
+          .replace(/(\d)\s*ms\b/g, '$1 milliseconds')
+          .replace(/(\d)\s+s\b/g, '$1 seconds')
+          .replace(/(\d)m\b/g, '$1 million')
+          .replace(/(\d)bn\b/g, '$1 billion')
+          .replace(/\b(\d[\d,]*)\s*:\s*(\d[\d,]*)\b/g, '$1 to $2')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+      /* An identifier read letter by letter is painful, so loosen it up first. */
+      function codeSay(t) {
+        return ' ' + String(t).replace(/[{}`]/g, '').replace(/_/g, ' ')
+          .replace(/\//g, ' slash ').replace(/-/g, ' ') + ' ';
+      }
+      function textOf(el) {
+        var out = '';
+        Array.prototype.slice.call(el.childNodes).forEach(function (n) {
+          if (n.nodeType === 3) { out += n.nodeValue; return; }
+          if (n.nodeType !== 1) return;
+          var tag = n.tagName.toLowerCase();
+          if (tag === 'svg' || tag === 'button') return;
+          if (tag === 'sup') { out += ' to the power ' + n.textContent + ' '; return; }
+          if (tag === 'code') { out += codeSay(n.textContent); return; }
+          out += textOf(n);
+        });
+        return out;
+      }
+      /* One sentence per utterance, and a very long one broken at a comma. */
+      function cut(t) {
+        var out = [], parts = [];
+        if (!t) return out;
+        t.replace(/([.!?])\s+/g, '$1\u0001').split('\u0001').forEach(function (p) {
+          p = p.trim();
+          while (p.length > LONG) {
+            var at = p.lastIndexOf(', ', LONG);
+            if (at < 60) at = p.lastIndexOf(' ', LONG);
+            if (at < 40) break;
+            parts.push(p.slice(0, at + 1).trim());
+            p = p.slice(at + 1).trim();
+          }
+          if (p) parts.push(p);
+        });
+        /* Pack short sentences back together up to the same cap. One utterance
+           per full stop makes the engine stop dead at every one of them; giving
+           it a paragraph's worth lets it carry the phrasing across, which is
+           most of what makes it sound stilted. The highlight is per block, so
+           nothing is lost by grouping. */
+        var buf = '';
+        parts.forEach(function (p) {
+          if (!buf) { buf = p; return; }
+          if (buf.length + 1 + p.length <= LONG) { buf += ' ' + p; return; }
+          out.push(buf);
+          buf = p;
+        });
+        if (buf) out.push(buf);
+        return out;
+      }
+
+      function push(el, sec, text) { if (text) chunks.push({ el: el, sec: sec, text: text }); }
+
+      /* the blocks of one section, in reading order, without their nested parts */
+      function blocksOf(box) {
+        if (!box) return [];
+        var list = all('p, h4, ul, ol, pre, table, .diagram, div.note', box);
+        return list.filter(function (el) {
+          for (var i = 0; i < list.length; i++) {
+            if (list[i] !== el && list[i].contains(el)) return false;
+          }
+          return true;
+        });
+      }
+      function addTable(tbl, sec) {
+        var rows = all('tr', tbl);
+        if (!rows.length) return;
+        var head = all('th', rows[0]).map(function (th) { return say(textOf(th)); });
+        push(rows[0], sec, 'Table.');
+        rows.forEach(function (tr) {
+          var cells = all('td', tr);
+          if (!cells.length) return;
+          var line = cells.map(function (td, n) {
+            var v = say(textOf(td));
+            return head[n] ? head[n] + ': ' + v : v;
+          }).join('. ');
+          cut(line).forEach(function (s) { push(tr, sec, s); });
+        });
+      }
+      function addBlock(el, sec) {
+        var tag = el.tagName.toLowerCase();
+        if (el.classList.contains('diagram')) {
+          var svg = el.querySelector('svg');
+          var label = svg ? (svg.getAttribute('aria-label') || '') : '';
+          if (!label) return;
+          cut(say('Diagram: ' + label)).forEach(function (s) { push(el, sec, s); });
+          return;
+        }
+        if (tag === 'pre') { push(el.parentNode || el, sec, 'Code block, on the screen.'); return; }
+        if (tag === 'table') { addTable(el, sec); return; }
+        if (tag === 'ul' || tag === 'ol') {
+          all('li', el).forEach(function (li) {
+            if (li.parentNode !== el) return;
+            cut(say(textOf(li))).forEach(function (s) { push(li, sec, s); });
+          });
+          return;
+        }
+        cut(say(textOf(el))).forEach(function (s) { push(el, sec, s); });
+      }
+      function build() {
+        chunks = [];
+        var h1 = article.querySelector('h1');
+        var intro = article.querySelector('.topic-intro');
+        if (h1) push(h1, null, say(h1.textContent));
+        if (intro) cut(say(textOf(intro))).forEach(function (s) { push(intro, null, s); });
+        secs.forEach(function (d, n) {
+          var sum = d.querySelector('summary');
+          var title = d.querySelector('.sec-title');
+          push(sum, d, WORD + ' ' + (n + 1) + '. ' + say(title ? title.textContent : ''));
+          blocksOf(d.querySelector('.sec-body')).forEach(function (el) { addBlock(el, d); });
+        });
+      }
+
+      /* ---- following along on screen ---- */
+
+      function openSec(d) { if (d && !d.open) opt.open(d); }
+      function mark(el) {
+        if (markEl === el) return;
+        if (markEl) markEl.classList.remove('speaking');
+        markEl = el;
+        if (markEl) markEl.classList.add('speaking');
+      }
+      function follow(el) {
+        if (!el || Date.now() < followUntil) return;   // the reader just scrolled; leave them alone
+        var r = el.getBoundingClientRect();
+        if (r.top > 120 && r.bottom < window.innerHeight - 150) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      function paintWhere() {
+        var c = chunks[idx];
+        var n = c && c.sec ? secs.indexOf(c.sec) + 1 : 0;
+        whereEl.textContent = n ? WORD + ' ' + n + ' of ' + secs.length : 'Intro';
+      }
+      function paintRate() {
+        rateEl.value = rate;
+        rateVal.textContent = rate.toFixed(1) + '×';
+      }
+
+      /* ---- where we got to, per topic ---- */
+
+      function remember() {
+        var c = chunks[idx], n = c && c.sec ? secs.indexOf(c.sec) : -1;
+        if (n === markSec) return;              // only write when the section changes
+        markSec = n;
+        var at = load(LS_LISTEN_AT, {});
+        at[id] = idx;
+        save(LS_LISTEN_AT, at);
+      }
+      function forget() {
+        var at = load(LS_LISTEN_AT, {});
+        delete at[id];
+        save(LS_LISTEN_AT, at);
+        markSec = -1;
+      }
+      function savedIdx() {
+        var at = load(LS_LISTEN_AT, {})[id];
+        return (typeof at === 'number' && at > 0 && at < chunks.length) ? at : 0;
+      }
+
+      /* ---- voices ---- */
+
+      function voiceById(vid) {
+        for (var i = 0; i < voices.length; i++) {
+          if ((voices[i].voiceURI || voices[i].name) === vid) return voices[i];
+        }
+        return null;
+      }
+      /* macOS ships a pile of novelty voices (Bubbles, Zarvox, Bad News). They
+         stay in the list, at the bottom, but are never picked for you. */
+      var JOKE = /^(albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|good news|hysterical|jester|junior|organ|pipe organ|princess|superstar|trinoids|whisper|wobble|zarvox|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley|kathy|ralph|fred|bruce|agnes|victoria)\b/i;
+      var PLAIN = /^(samantha|daniel|karen|moira|tessa|rishi|alex|ava|allison|susan|tom|serena|fiona|nicky|aaron|zoe|evan|joelle|nathan|noelle)\b/i;
+      var TIER = ['novelty', '', '', 'online', 'enhanced', 'natural'];
+
+      /* How human a voice is likely to sound. It goes on the name the engine
+         reports, so it is a guess, but a reliable one. */
+      function grade(v) {
+        var n = v.name || '';
+        if (/natural|neural/i.test(n)) return 5;      // Edge's free neural voices
+        if (/premium|enhanced/i.test(n)) return 4;    // the macOS extra downloads
+        if (/^google/i.test(n)) return 3;             // Chrome's online voices
+        if (PLAIN.test(n)) return 2;                  // the decent built-in ones
+        if (JOKE.test(n)) return 0;
+        return 1;
+      }
+      function fillVoices() {
+        var allV = synth.getVoices() || [];
+        if (!allV.length) return;
+        var en = allV.filter(function (v) { return /^en/i.test(v.lang); });
+        voices = (en.length ? en : allV).slice().sort(function (a, b) {
+          return grade(b) - grade(a) || a.name.localeCompare(b.name);
+        });
+        voiceSel.textContent = '';
+        voices.forEach(function (v) {
+          var o = document.createElement('option');
+          var tier = TIER[grade(v)];
+          o.value = v.voiceURI || v.name;
+          o.textContent = v.name.replace(/\s*\(.*\)$/, '').replace(/^(Microsoft|Google)\s+/, '') +
+            (tier ? ' · ' + tier : '');
+          voiceSel.appendChild(o);
+        });
+        if (!voiceById(voiceId)) {
+          // the best there is, and never a novelty voice unless nothing else exists
+          var best = voices.filter(function (v) { return grade(v) >= 2; })[0] || voices[0];
+          voiceId = best ? (best.voiceURI || best.name) : '';
+        }
+        voiceSel.value = voiceId;
+      }
+      fillVoices();
+      // Chrome fills the list asynchronously, so it is usually empty on the first ask
+      if (typeof synth.addEventListener === 'function') synth.addEventListener('voiceschanged', fillVoices);
+      else synth.onvoiceschanged = fillVoices;
+
+      /* ---- playing ---- */
+
+      function speakAt(i) {
+        if (i < 0) i = 0;
+        if (i >= chunks.length) return finishAll();
+        var mine = ++gen;
+        idx = i;
+        remember();
+        var c = chunks[i];
+        openSec(c.sec);
+        mark(c.el);
+        follow(c.el);
+        paintWhere();
+        var u = new SpeechSynthesisUtterance(c.text);
+        u.rate = rate;
+        var v = voiceById(voiceId);
+        if (v) { u.voice = v; u.lang = v.lang; }
+        u.onend = function () {
+          if (mine !== gen || !playing || held) return;
+          speakAt(idx + 1);
+        };
+        u.onerror = function (e) {
+          if (mine !== gen || !playing || held) return;
+          if (e && (e.error === 'interrupted' || e.error === 'canceled')) return;
+          speakAt(idx + 1);              // one bad sentence should not end the session
+        };
+        utterAt = Date.now();
+        synth.speak(u);
+      }
+      function start(from) {
+        if (!chunks.length) build();
+        if (!chunks.length) return;
+        // listening and auto scroll would both be moving the page
+        var ss = $('scrollStop');
+        if (ss && root.hasAttribute('data-autoscroll')) ss.click();
+        playing = true;
+        held = false;
+        root.setAttribute('data-listen', 'on');
+        listenBtn.setAttribute('aria-pressed', 'true');
+        toggleBtn.setAttribute('aria-label', 'Pause');
+        gen++;
+        synth.cancel();
+        speakAt(typeof from === 'number' ? from : savedIdx());
+      }
+      /* pause() is unreliable on Android and iOS, so holding drops the current
+         sentence and playing starts it again. One sentence repeated is a far
+         smaller annoyance than a pause that never resumes. */
+      function hold() {
+        held = true;
+        gen++;
+        synth.cancel();
+        root.setAttribute('data-listen', 'hold');
+        toggleBtn.setAttribute('aria-label', 'Play');
+      }
+      function unhold() {
+        held = false;
+        root.setAttribute('data-listen', 'on');
+        toggleBtn.setAttribute('aria-label', 'Pause');
+        speakAt(idx < 0 ? 0 : idx);
+      }
+      function stop() {
+        playing = false;
+        held = false;
+        gen++;
+        synth.cancel();
+        root.removeAttribute('data-listen');
+        listenBtn.setAttribute('aria-pressed', 'false');
+        mark(null);
+      }
+      function finishAll() { stop(); forget(); }
+
+      function secStart(sec) {
+        for (var i = 0; i < chunks.length; i++) if (chunks[i].sec === sec) return i;
+        return 0;
+      }
+      /* Back goes to the top of the section you are in, unless you are already
+         there, in which case it goes to the one before. Same as any music player. */
+      function jump(dir) {
+        var c = chunks[idx] || chunks[0];
+        if (!c) return;
+        var cur = c.sec ? secs.indexOf(c.sec) : -1, target;
+        if (dir < 0) {
+          var top = c.sec ? secStart(c.sec) : 0;
+          target = idx > top + 1 ? top : (cur <= 0 ? 0 : secStart(secs[cur - 1]));
+        } else {
+          if (cur + 1 >= secs.length) return finishAll();
+          target = secStart(secs[cur + 1]);
+        }
+        gen++;
+        synth.cancel();
+        held = false;
+        root.setAttribute('data-listen', 'on');
+        toggleBtn.setAttribute('aria-label', 'Pause');
+        speakAt(target);
+      }
+
+      /* ---- wiring ---- */
+
+      paintRate();
+      listenBtn.addEventListener('click', function () { if (playing) stop(); else start(); });
+      toggleBtn.addEventListener('click', function () {
+        if (!playing) return start();
+        if (held) unhold(); else hold();
+      });
+      stopBtn.addEventListener('click', function () { stop(); });
+      prevBtn.addEventListener('click', function () { jump(-1); });
+      nextBtn.addEventListener('click', function () { jump(1); });
+
+      /* A new speed only reaches the engine on the next sentence, so the current
+         one is restarted at the new speed. */
+      rateEl.addEventListener('input', function () {
+        rate = Number(rateEl.value);
+        paintRate();
+        saveCfg();
+      });
+      rateEl.addEventListener('change', function () {
+        if (playing && !held) { gen++; synth.cancel(); speakAt(idx); }
+      });
+      voiceSel.addEventListener('change', function () {
+        voiceId = voiceSel.value;
+        saveCfg();
+        if (playing && !held) { gen++; synth.cancel(); speakAt(idx); }
+      });
+
+      // turning auto scroll on while listening stops the listening instead
+      var sBtn = $('scrollBtn');
+      if (sBtn) sBtn.addEventListener('click', function () {
+        if (playing && root.hasAttribute('data-autoscroll')) stop();
+      });
+
+      // scrolling by hand means "I want to look at something": stop following for a bit
+      ['wheel', 'touchmove'].forEach(function (type) {
+        window.addEventListener(type, function () {
+          if (playing) followUntil = Date.now() + 6000;
+        }, { passive: true });
+      });
+
+      document.addEventListener('keydown', function (e) {
+        var t = e.target;
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+        if (e.key === 'l' || e.key === 'L') { if (playing) stop(); else start(); }
+        else if (e.key === 'Escape' && playing) stop();
+      });
+
+      /* Chrome stops a single utterance after about 15 seconds. Sentences are
+         short enough that it almost never bites; this catches the long ones. */
+      setInterval(function () {
+        if (!playing || held || !synth.speaking) return;
+        if (Date.now() - utterAt < 10000) return;
+        synth.pause();
+        synth.resume();
+      }, 4000);
+
+      // the engine lives outside the page, so it keeps talking unless we stop it
+      window.addEventListener('pagehide', function () { synth.cancel(); });
+      window.addEventListener('beforeunload', function () { synth.cancel(); });
+    })();
+  }
+
   var page = document.body.getAttribute('data-page');
 
   /* =================== HOME =================== */
@@ -743,459 +1191,153 @@
       btn.className = 'copy-btn';
       btn.textContent = 'Copy';
       btn.addEventListener('click', function () {
-        var text = pre.textContent;
-        var done = function () {
+        copyText(pre.textContent, function () {
           btn.textContent = 'Copied';
           setTimeout(function () { btn.textContent = 'Copy'; }, 1400);
-        };
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(done, fallback);
-        } else fallback();
-        function fallback() {
-          var ta = document.createElement('textarea');
-          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-          document.body.appendChild(ta); ta.select();
-          try { document.execCommand('copy'); done(); } catch (e) {}
-          document.body.removeChild(ta);
-        }
+        });
       });
       wrap.appendChild(btn);
     });
 
-    /* ---------- listen: read the topic out loud ----------
-       The browser's own speech engine does the talking, so there are no audio
-       files, no keys and nothing to pay for. The work here is turning a page
-       into something worth listening to:
-         - diagrams are read from their aria-label, because on this site a
-           diagram replaces prose rather than decorating it, so skipping one
-           would drop real content;
-         - tables are read row by row as "heading: value", which is how these
-           topics carry their numbers;
-         - code blocks are announced and skipped. SQL read aloud is noise.
-       Each sentence is its own utterance. That keeps pause and skip responsive,
-       and keeps Chrome from cutting off long ones. */
-    var synth = window.speechSynthesis;
-    var listenBtn = $('listenBtn');
-    if (listenBtn && synth && 'SpeechSynthesisUtterance' in window) (function () {
-      var root = document.documentElement;
-      var toggleBtn = $('playToggle'), prevBtn = $('playPrev'), nextBtn = $('playNext');
-      var stopBtn = $('playStop'), whereEl = $('playWhere');
-      var rateEl = $('playRate'), rateVal = $('playRateVal'), voiceSel = $('playVoice');
-      var LS_LISTEN = 'sd-hub-listen', LS_LISTEN_AT = 'sd-hub-listen-at';
-      var MINR = 0.7, MAXR = 1.8, LONG = 190;
-      var chunks = [], idx = -1, gen = 0;
-      var playing = false, held = false;
-      var rate = 1, voiceId = '', voices = [];
-      var markEl = null, markSec = -1, followUntil = 0, utterAt = 0;
-
-      var CFGV = 2;
-      var cfg = load(LS_LISTEN, {});
-      if (typeof cfg.rate === 'number' && cfg.rate >= MINR && cfg.rate <= MAXR) rate = cfg.rate;
-      /* Version 1 defaulted to the first local voice, which on a Mac can be a
-         novelty one. Drop a v1 choice so the ranking above gets a say; anything
-         chosen since is kept. */
-      if (cfg.v === CFGV && typeof cfg.voice === 'string') voiceId = cfg.voice;
-      function saveCfg() { save(LS_LISTEN, { v: CFGV, rate: rate, voice: voiceId }); }
-
-      /* ---- turning markup into something speakable ---- */
-
-      var UNITS = { KB: 'kilobytes', MB: 'megabytes', GB: 'gigabytes', TB: 'terabytes', PB: 'petabytes' };
-
-      function say(t) {
-        return String(t)
-          .replace(/×/g, ' times ')
-          .replace(/÷/g, ' divided by ')
-          .replace(/→/g, ' to ')
-          .replace(/−/g, ' minus ')
-          .replace(/≈/g, ' about ')
-          .replace(/[—–]/g, ', ')
-          .replace(/…/g, '. ')
-          .replace(/₹/g, ' rupees ')
-          .replace(/[“”‘’]/g, "'")
-          .replace(/[✓✔]/g, ' yes ')
-          .replace(/(\d)\s*\/\s*s\b/g, '$1 per second')
-          .replace(/(\d)\s*(KB|MB|GB|TB|PB)\b/g, function (m, n, u) { return n + ' ' + UNITS[u]; })
-          .replace(/(\d)\s*ms\b/g, '$1 milliseconds')
-          .replace(/(\d)\s+s\b/g, '$1 seconds')
-          .replace(/(\d)m\b/g, '$1 million')
-          .replace(/(\d)bn\b/g, '$1 billion')
-          .replace(/\b(\d[\d,]*)\s*:\s*(\d[\d,]*)\b/g, '$1 to $2')
-          .replace(/\s+/g, ' ')
-          .trim();
-      }
-      /* An identifier read letter by letter is painful, so loosen it up first. */
-      function codeSay(t) {
-        return ' ' + String(t).replace(/[{}`]/g, '').replace(/_/g, ' ')
-          .replace(/\//g, ' slash ').replace(/-/g, ' ') + ' ';
-      }
-      function textOf(el) {
-        var out = '';
-        Array.prototype.slice.call(el.childNodes).forEach(function (n) {
-          if (n.nodeType === 3) { out += n.nodeValue; return; }
-          if (n.nodeType !== 1) return;
-          var tag = n.tagName.toLowerCase();
-          if (tag === 'svg' || tag === 'button') return;
-          if (tag === 'sup') { out += ' to the power ' + n.textContent + ' '; return; }
-          if (tag === 'code') { out += codeSay(n.textContent); return; }
-          out += textOf(n);
-        });
-        return out;
-      }
-      /* One sentence per utterance, and a very long one broken at a comma. */
-      function cut(t) {
-        var out = [], parts = [];
-        if (!t) return out;
-        t.replace(/([.!?])\s+/g, '$1\u0001').split('\u0001').forEach(function (p) {
-          p = p.trim();
-          while (p.length > LONG) {
-            var at = p.lastIndexOf(', ', LONG);
-            if (at < 60) at = p.lastIndexOf(' ', LONG);
-            if (at < 40) break;
-            parts.push(p.slice(0, at + 1).trim());
-            p = p.slice(at + 1).trim();
-          }
-          if (p) parts.push(p);
-        });
-        /* Pack short sentences back together up to the same cap. One utterance
-           per full stop makes the engine stop dead at every one of them; giving
-           it a paragraph's worth lets it carry the phrasing across, which is
-           most of what makes it sound stilted. The highlight is per block, so
-           nothing is lost by grouping. */
-        var buf = '';
-        parts.forEach(function (p) {
-          if (!buf) { buf = p; return; }
-          if (buf.length + 1 + p.length <= LONG) { buf += ' ' + p; return; }
-          out.push(buf);
-          buf = p;
-        });
-        if (buf) out.push(buf);
-        return out;
-      }
-
-      function push(el, sec, text) { if (text) chunks.push({ el: el, sec: sec, text: text }); }
-
-      /* the blocks of one section, in reading order, without their nested parts */
-      function blocksOf(box) {
-        if (!box) return [];
-        var list = all('p, h4, ul, ol, pre, table, .diagram, div.note', box);
-        return list.filter(function (el) {
-          for (var i = 0; i < list.length; i++) {
-            if (list[i] !== el && list[i].contains(el)) return false;
-          }
-          return true;
-        });
-      }
-      function addTable(tbl, sec) {
-        var rows = all('tr', tbl);
-        if (!rows.length) return;
-        var head = all('th', rows[0]).map(function (th) { return say(textOf(th)); });
-        push(rows[0], sec, 'Table.');
-        rows.forEach(function (tr) {
-          var cells = all('td', tr);
-          if (!cells.length) return;
-          var line = cells.map(function (td, n) {
-            var v = say(textOf(td));
-            return head[n] ? head[n] + ': ' + v : v;
-          }).join('. ');
-          cut(line).forEach(function (s) { push(tr, sec, s); });
-        });
-      }
-      function addBlock(el, sec) {
-        var tag = el.tagName.toLowerCase();
-        if (el.classList.contains('diagram')) {
-          var svg = el.querySelector('svg');
-          var label = svg ? (svg.getAttribute('aria-label') || '') : '';
-          if (!label) return;
-          cut(say('Diagram: ' + label)).forEach(function (s) { push(el, sec, s); });
-          return;
-        }
-        if (tag === 'pre') { push(el.parentNode || el, sec, 'Code block, on the screen.'); return; }
-        if (tag === 'table') { addTable(el, sec); return; }
-        if (tag === 'ul' || tag === 'ol') {
-          all('li', el).forEach(function (li) {
-            if (li.parentNode !== el) return;
-            cut(say(textOf(li))).forEach(function (s) { push(li, sec, s); });
-          });
-          return;
-        }
-        cut(say(textOf(el))).forEach(function (s) { push(el, sec, s); });
-      }
-      function build() {
-        chunks = [];
-        var h1 = article.querySelector('h1');
-        var intro = article.querySelector('.topic-intro');
-        if (h1) push(h1, null, say(h1.textContent));
-        if (intro) cut(say(textOf(intro))).forEach(function (s) { push(intro, null, s); });
-        secs.forEach(function (d, n) {
-          var sum = d.querySelector('summary');
-          var title = d.querySelector('.sec-title');
-          push(sum, d, 'Section ' + (n + 1) + '. ' + say(title ? title.textContent : ''));
-          blocksOf(d.querySelector('.sec-body')).forEach(function (el) { addBlock(el, d); });
-        });
-      }
-
-      /* ---- following along on screen ---- */
-
-      function openSec(d) {
-        if (!d || d.open) return;
+    setupListen({
+      article: article, secs: secs, id: id, word: 'Section',
+      open: function (d) {
         delete closedByHand[d.id];
-        pauseAuto();                 // don't let the jump drag other sections open
+        pauseAuto();              // don't let the jump drag other sections open
         d.open = true;
       }
-      function mark(el) {
-        if (markEl === el) return;
-        if (markEl) markEl.classList.remove('speaking');
-        markEl = el;
-        if (markEl) markEl.classList.add('speaking');
-      }
-      function follow(el) {
-        if (!el || Date.now() < followUntil) return;   // the reader just scrolled; leave them alone
-        var r = el.getBoundingClientRect();
-        if (r.top > 120 && r.bottom < window.innerHeight - 150) return;
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-      function paintWhere() {
-        var c = chunks[idx];
-        var n = c && c.sec ? secs.indexOf(c.sec) + 1 : 0;
-        whereEl.textContent = n ? 'Section ' + n + ' of ' + secs.length : 'Intro';
-      }
-      function paintRate() {
-        rateEl.value = rate;
-        rateVal.textContent = rate.toFixed(1) + '×';
-      }
+    });
+  }
 
-      /* ---- where we got to, per topic ---- */
 
-      function remember() {
-        var c = chunks[idx], n = c && c.sec ? secs.indexOf(c.sec) : -1;
-        if (n === markSec) return;              // only write when the section changes
-        markSec = n;
-        var at = load(LS_LISTEN_AT, {});
-        at[id] = idx;
-        save(LS_LISTEN_AT, at);
-      }
-      function forget() {
-        var at = load(LS_LISTEN_AT, {});
-        delete at[id];
-        save(LS_LISTEN_AT, at);
-        markSec = -1;
-      }
-      function savedIdx() {
-        var at = load(LS_LISTEN_AT, {})[id];
-        return (typeof at === 'number' && at > 0 && at < chunks.length) ? at : 0;
-      }
+  /* =================== REVISE A WHOLE TRACK ===================
+     One page per track holding every topic's revision list. It is the page you
+     open on the morning of an interview: scroll it, filter it, copy it, print
+     it, or press L and listen to the lot on the way there. */
+  if (page === 'revise') {
+    var trackId = document.body.getAttribute('data-track') || '';
+    var trackTitle = document.body.getAttribute('data-track-title') || '';
+    var box = $('article');
+    var rsecs = all('details.sec', box);
+    var fInput = $('revFilter'), none = $('revNone');
 
-      /* ---- voices ---- */
+    // the same progress the rest of the site uses, as a dot per topic
+    painters.push(function () {
+      rsecs.forEach(function (d) {
+        d.setAttribute('data-status', statusOf(d.getAttribute('data-rev-topic')));
+      });
+    });
 
-      function voiceById(vid) {
-        for (var i = 0; i < voices.length; i++) {
-          if ((voices[i].voiceURI || voices[i].name) === vid) return voices[i];
+    all('[data-all]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var open = b.getAttribute('data-all') === 'open';
+        rsecs.forEach(function (d) { d.open = open; });
+      });
+    });
+
+    /* Filtering keeps the markup intact: matches are wrapped in <mark> by
+       walking text nodes, so the <code> and <strong> inside a point survive. */
+    function unmark(el) {
+      all('mark', el).forEach(function (m) {
+        m.parentNode.replaceChild(document.createTextNode(m.textContent), m);
+      });
+      el.normalize();
+    }
+    function markIn(el, q) {
+      var walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+      var hits = [], n;
+      while ((n = walk.nextNode())) {
+        if (n.nodeValue.toLowerCase().indexOf(q) >= 0) hits.push(n);
+      }
+      hits.forEach(function (node) {
+        var text = node.nodeValue, low = text.toLowerCase(), at = 0, i;
+        var frag = document.createDocumentFragment();
+        while ((i = low.indexOf(q, at)) >= 0) {
+          if (i > at) frag.appendChild(document.createTextNode(text.slice(at, i)));
+          var m = document.createElement('mark');
+          m.textContent = text.slice(i, i + q.length);
+          frag.appendChild(m);
+          at = i + q.length;
         }
-        return null;
-      }
-      /* macOS ships a pile of novelty voices (Bubbles, Zarvox, Bad News). They
-         stay in the list, at the bottom, but are never picked for you. */
-      var JOKE = /^(albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|good news|hysterical|jester|junior|organ|pipe organ|princess|superstar|trinoids|whisper|wobble|zarvox|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley|kathy|ralph|fred|bruce|agnes|victoria)\b/i;
-      var PLAIN = /^(samantha|daniel|karen|moira|tessa|rishi|alex|ava|allison|susan|tom|serena|fiona|nicky|aaron|zoe|evan|joelle|nathan|noelle)\b/i;
-      var TIER = ['novelty', '', '', 'online', 'enhanced', 'natural'];
-
-      /* How human a voice is likely to sound. It goes on the name the engine
-         reports, so it is a guess, but a reliable one. */
-      function grade(v) {
-        var n = v.name || '';
-        if (/natural|neural/i.test(n)) return 5;      // Edge's free neural voices
-        if (/premium|enhanced/i.test(n)) return 4;    // the macOS extra downloads
-        if (/^google/i.test(n)) return 3;             // Chrome's online voices
-        if (PLAIN.test(n)) return 2;                  // the decent built-in ones
-        if (JOKE.test(n)) return 0;
-        return 1;
-      }
-      function fillVoices() {
-        var allV = synth.getVoices() || [];
-        if (!allV.length) return;
-        var en = allV.filter(function (v) { return /^en/i.test(v.lang); });
-        voices = (en.length ? en : allV).slice().sort(function (a, b) {
-          return grade(b) - grade(a) || a.name.localeCompare(b.name);
+        if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+        node.parentNode.replaceChild(frag, node);
+      });
+    }
+    function runFilter() {
+      var raw = fInput.value.trim(), q = raw.toLowerCase();
+      var shown = 0, points = 0;
+      rsecs.forEach(function (d) {
+        unmark(d);
+        var items = all('li', d);
+        var inTitle = !!q && d.querySelector('.sec-title').textContent.toLowerCase().indexOf(q) >= 0;
+        var hit = 0;
+        items.forEach(function (li) {
+          var m = !q || inTitle || li.textContent.toLowerCase().indexOf(q) >= 0;
+          li.hidden = !m;
+          if (m) hit++;
         });
-        voiceSel.textContent = '';
-        voices.forEach(function (v) {
-          var o = document.createElement('option');
-          var tier = TIER[grade(v)];
-          o.value = v.voiceURI || v.name;
-          o.textContent = v.name.replace(/\s*\(.*\)$/, '').replace(/^(Microsoft|Google)\s+/, '') +
-            (tier ? ' · ' + tier : '');
-          voiceSel.appendChild(o);
+        var show = !q || inTitle || hit > 0;
+        d.hidden = !show;
+        if (show) { shown++; points += hit; if (q) { d.open = true; markIn(d, q); } }
+      });
+      if (!q) { none.hidden = true; return; }
+      none.hidden = shown > 0;
+      if (!shown) none.textContent = 'Nothing in this track mentions “' + raw + '”.';
+    }
+    if (fInput) {
+      fInput.addEventListener('input', runFilter);
+      fInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && fInput.value) { fInput.value = ''; runFilter(); }
+      });
+    }
+
+    /* Copy what is on screen, so a filtered view copies only what it shows. */
+    var copyBtn = $('revCopy');
+    if (copyBtn) copyBtn.addEventListener('click', function () {
+      var out = [trackTitle + ' — revision', ''];
+      rsecs.forEach(function (d, n) {
+        if (d.hidden) return;
+        out.push((n + 1) + '. ' + d.querySelector('.sec-title').textContent.trim());
+        var note = d.querySelector('.note');
+        if (note) out.push('   ' + note.textContent.replace(/\s+/g, ' ').trim());
+        all('li', d).forEach(function (li) {
+          if (li.hidden) return;
+          out.push('   - ' + li.textContent.replace(/\s+/g, ' ').trim());
         });
-        if (!voiceById(voiceId)) {
-          // the best there is, and never a novelty voice unless nothing else exists
-          var best = voices.filter(function (v) { return grade(v) >= 2; })[0] || voices[0];
-          voiceId = best ? (best.voiceURI || best.name) : '';
-        }
-        voiceSel.value = voiceId;
-      }
-      fillVoices();
-      // Chrome fills the list asynchronously, so it is usually empty on the first ask
-      if (typeof synth.addEventListener === 'function') synth.addEventListener('voiceschanged', fillVoices);
-      else synth.onvoiceschanged = fillVoices;
-
-      /* ---- playing ---- */
-
-      function speakAt(i) {
-        if (i < 0) i = 0;
-        if (i >= chunks.length) return finishAll();
-        var mine = ++gen;
-        idx = i;
-        remember();
-        var c = chunks[i];
-        openSec(c.sec);
-        mark(c.el);
-        follow(c.el);
-        paintWhere();
-        var u = new SpeechSynthesisUtterance(c.text);
-        u.rate = rate;
-        var v = voiceById(voiceId);
-        if (v) { u.voice = v; u.lang = v.lang; }
-        u.onend = function () {
-          if (mine !== gen || !playing || held) return;
-          speakAt(idx + 1);
-        };
-        u.onerror = function (e) {
-          if (mine !== gen || !playing || held) return;
-          if (e && (e.error === 'interrupted' || e.error === 'canceled')) return;
-          speakAt(idx + 1);              // one bad sentence should not end the session
-        };
-        utterAt = Date.now();
-        synth.speak(u);
-      }
-      function start(from) {
-        if (!chunks.length) build();
-        if (!chunks.length) return;
-        // listening and auto scroll would both be moving the page
-        var ss = $('scrollStop');
-        if (ss && root.hasAttribute('data-autoscroll')) ss.click();
-        playing = true;
-        held = false;
-        root.setAttribute('data-listen', 'on');
-        listenBtn.setAttribute('aria-pressed', 'true');
-        toggleBtn.setAttribute('aria-label', 'Pause');
-        gen++;
-        synth.cancel();
-        speakAt(typeof from === 'number' ? from : savedIdx());
-      }
-      /* pause() is unreliable on Android and iOS, so holding drops the current
-         sentence and playing starts it again. One sentence repeated is a far
-         smaller annoyance than a pause that never resumes. */
-      function hold() {
-        held = true;
-        gen++;
-        synth.cancel();
-        root.setAttribute('data-listen', 'hold');
-        toggleBtn.setAttribute('aria-label', 'Play');
-      }
-      function unhold() {
-        held = false;
-        root.setAttribute('data-listen', 'on');
-        toggleBtn.setAttribute('aria-label', 'Pause');
-        speakAt(idx < 0 ? 0 : idx);
-      }
-      function stop() {
-        playing = false;
-        held = false;
-        gen++;
-        synth.cancel();
-        root.removeAttribute('data-listen');
-        listenBtn.setAttribute('aria-pressed', 'false');
-        mark(null);
-      }
-      function finishAll() { stop(); forget(); }
-
-      function secStart(sec) {
-        for (var i = 0; i < chunks.length; i++) if (chunks[i].sec === sec) return i;
-        return 0;
-      }
-      /* Back goes to the top of the section you are in, unless you are already
-         there, in which case it goes to the one before. Same as any music player. */
-      function jump(dir) {
-        var c = chunks[idx] || chunks[0];
-        if (!c) return;
-        var cur = c.sec ? secs.indexOf(c.sec) : -1, target;
-        if (dir < 0) {
-          var top = c.sec ? secStart(c.sec) : 0;
-          target = idx > top + 1 ? top : (cur <= 0 ? 0 : secStart(secs[cur - 1]));
-        } else {
-          if (cur + 1 >= secs.length) return finishAll();
-          target = secStart(secs[cur + 1]);
-        }
-        gen++;
-        synth.cancel();
-        held = false;
-        root.setAttribute('data-listen', 'on');
-        toggleBtn.setAttribute('aria-label', 'Pause');
-        speakAt(target);
-      }
-
-      /* ---- wiring ---- */
-
-      paintRate();
-      listenBtn.addEventListener('click', function () { if (playing) stop(); else start(); });
-      toggleBtn.addEventListener('click', function () {
-        if (!playing) return start();
-        if (held) unhold(); else hold();
+        out.push('');
       });
-      stopBtn.addEventListener('click', function () { stop(); });
-      prevBtn.addEventListener('click', function () { jump(-1); });
-      nextBtn.addEventListener('click', function () { jump(1); });
-
-      /* A new speed only reaches the engine on the next sentence, so the current
-         one is restarted at the new speed. */
-      rateEl.addEventListener('input', function () {
-        rate = Number(rateEl.value);
-        paintRate();
-        saveCfg();
+      copyText(out.join('\n'), function () {
+        copyBtn.textContent = 'Copied';
+        setTimeout(function () { copyBtn.textContent = 'Copy as text'; }, 1400);
       });
-      rateEl.addEventListener('change', function () {
-        if (playing && !held) { gen++; synth.cancel(); speakAt(idx); }
-      });
-      voiceSel.addEventListener('change', function () {
-        voiceId = voiceSel.value;
-        saveCfg();
-        if (playing && !held) { gen++; synth.cancel(); speakAt(idx); }
-      });
+    });
 
-      // turning auto scroll on while listening stops the listening instead
-      var sBtn = $('scrollBtn');
-      if (sBtn) sBtn.addEventListener('click', function () {
-        if (playing && root.hasAttribute('data-autoscroll')) stop();
-      });
+    // printing a folded section would print nothing, so open everything first
+    function openAll() { rsecs.forEach(function (d) { d.open = true; }); }
+    var printBtn = $('revPrint');
+    if (printBtn) printBtn.addEventListener('click', function () { openAll(); window.print(); });
+    window.addEventListener('beforeprint', openAll);
 
-      // scrolling by hand means "I want to look at something": stop following for a bit
-      ['wheel', 'touchmove'].forEach(function (type) {
-        window.addEventListener(type, function () {
-          if (playing) followUntil = Date.now() + 6000;
-        }, { passive: true });
-      });
+    setupListen({
+      article: $('revise'), secs: rsecs, id: 'revise-' + trackId, word: 'Topic',
+      open: function (d) { d.open = true; }
+    });
 
-      document.addEventListener('keydown', function (e) {
-        var t = e.target;
-        if (e.metaKey || e.ctrlKey || e.altKey) return;
-        if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-        if (e.key === 'l' || e.key === 'L') { if (playing) stop(); else start(); }
-        else if (e.key === 'Escape' && playing) stop();
-      });
-
-      /* Chrome stops a single utterance after about 15 seconds. Sentences are
-         short enough that it almost never bites; this catches the long ones. */
-      setInterval(function () {
-        if (!playing || held || !synth.speaking) return;
-        if (Date.now() - utterAt < 10000) return;
-        synth.pause();
-        synth.resume();
-      }, 4000);
-
-      // the engine lives outside the page, so it keeps talking unless we stop it
-      window.addEventListener('pagehide', function () { synth.cancel(); });
-      window.addEventListener('beforeunload', function () { synth.cancel(); });
-    })();
+    var rbar = $('readbar');
+    if (rbar) {
+      var rTick = false;
+      function rPaint() {
+        rTick = false;
+        var max = document.documentElement.scrollHeight - window.innerHeight;
+        rbar.style.width = (max > 0 ? Math.min(100, window.scrollY / max * 100) : 0) + '%';
+      }
+      window.addEventListener('scroll', function () {
+        if (!rTick) { rTick = true; requestAnimationFrame(rPaint); }
+      }, { passive: true });
+      window.addEventListener('resize', rPaint);
+      rsecs.forEach(function (d) { d.addEventListener('toggle', rPaint); });
+      rPaint();
+    }
   }
 
   paint();

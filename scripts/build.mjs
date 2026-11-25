@@ -83,10 +83,11 @@ ${scripts.map(s => `<script src="${root}assets/${s}?v=${v}"></script>`).join('\n
 `;
 }
 
-function topbar(root, hubTitle, withSidebar) {
+function topbar(root, hubTitle, opt) {
+  var o = opt || {};
   return `<header class="topbar">
   <div class="topbar-in">
-    ${withSidebar ? `<button class="theme-btn side-btn" id="sideBtn" type="button" aria-label="Hide sidebar" title="Hide sidebar" aria-expanded="true" aria-controls="sidebar">${SIDE_ICON}</button>` : ''}
+    ${o.side ? `<button class="theme-btn side-btn" id="sideBtn" type="button" aria-label="Hide sidebar" title="Hide sidebar" aria-expanded="true" aria-controls="sidebar">${SIDE_ICON}</button>` : ''}
     <a class="brand" href="${root}index.html"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text">${esc(hubTitle)}</span></a>
     <div class="gsearch" role="search">
       <span class="gsearch-field"><svg class="gsearch-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="6.500" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.500 4.500" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -101,7 +102,7 @@ function topbar(root, hubTitle, withSidebar) {
         <label class="read-row col"><span>Intensity <output id="readVal" for="readRange">50%</output></span><input type="range" id="readRange" min="10" max="100" step="5" value="50"></label>
       </div>
     </div>
-    ${withSidebar ? `<button class="theme-btn" id="listenBtn" type="button" aria-label="Listen to this topic" title="Listen to this topic (L)" aria-pressed="false">${LISTEN_ICON}</button>` : ''}
+    ${o.listen ? `<button class="theme-btn" id="listenBtn" type="button" aria-label="Listen to this topic" title="Listen to this topic (L)" aria-pressed="false">${LISTEN_ICON}</button>` : ''}
     <button class="theme-btn" id="scrollBtn" type="button" aria-label="Auto scroll" title="Auto scroll" aria-pressed="false">${SCROLL_ICON}</button>
     <button class="theme-btn" id="themeBtn" type="button" aria-label="Switch between light and dark theme">${THEME_ICON}</button>
   </div>
@@ -112,7 +113,7 @@ function topbar(root, hubTitle, withSidebar) {
   <output class="autobar-val" id="scrollVal" for="scrollRange">40 px/s</output>
   <span class="autobar-hint"><span class="hint-click">double-click anywhere to stop</span><span class="hint-tap">double-tap anywhere to stop</span></span>
 </div>
-${withSidebar ? `<div class="playbar" id="playBar" role="group" aria-label="Listen to this topic">
+${o.listen ? `<div class="playbar" id="playBar" role="group" aria-label="Listen to this topic">
   <button class="playbar-btn" id="playPrev" type="button" aria-label="Previous section" title="Previous section">${PREVSEC_ICON}</button>
   <button class="playbar-main" id="playToggle" type="button" aria-label="Pause">${PLAY_ICON}${PAUSE_ICON}</button>
   <button class="playbar-btn" id="playNext" type="button" aria-label="Next section" title="Next section">${NEXTSEC_ICON}</button>
@@ -400,6 +401,7 @@ export function build() {
       <span class="track-num">${String(n + 1).padStart(2, '0')}</span>
       <div class="track-title"><h2 id="th-${esc(tr.id)}">${esc(tr.title)}</h2>${tr.description ? `<p>${esc(tr.description)}</p>` : ''}</div>
       <span class="track-count">${tr.topics.length ? count(tr.topics.length, 'topic') : 'No topics yet'}</span>
+      ${tr.topics.length ? `<a class="revise-link" href="revise/${esc(tr.id)}.html">Revise this track \u203a</a>` : ''}
     </header>${tr.topics.length ? `
     <div class="topic-list">${tr.topics.map(card).join('')}
     </div>` : ''}
@@ -424,6 +426,7 @@ export function build() {
         <li>The search box at the top works on every page. It suggests topics as you type, and it looks inside the topics too. Press <kbd>/</kbd> to jump to it, then use the arrow keys and Enter.</li>
         <li>Inside a track, the filter box narrows the list, and shows which sections mention your word.</li>
         <li>Every topic ends with a quick revision: a short summary of what you learnt.</li>
+        <li>Got an interview tomorrow? Open a track and click <strong>Revise this track</strong>. Every topic in it, cut down to its summary, on one page you can filter, copy, print or listen to.</li>
       </ul>
     </details>
   </header>
@@ -461,6 +464,107 @@ ${trackSections}
     bodyAttrs: 'data-page="home"', body: home, scripts: ['search-index.js', 'app.js'], v,
   }));
 
+  /* ---- revise pages: one per track, every topic boiled down to its
+         revision list, for the morning of an interview ---- */
+  fs.mkdirSync(path.join(SITE, 'revise'), { recursive: true });
+
+  /* the one-line version that closes every topic's first section */
+  function oneLiner(html) {
+    const notes = String(html).match(/<(p|div) class="note">([\s\S]*?)<\/\1>/g) || [];
+    if (!notes.length) return '';
+    const last = notes[notes.length - 1].replace(/^<(p|div) class="note">/, '').replace(/<\/(p|div)>$/, '');
+    const cut = last.replace(/^\s*One-line version:\s*/i, '');
+    // the original read "One-line version: an index trades...", so it needs a capital now
+    return cut.replace(/^([a-z])/, (m, ch) => ch.toUpperCase());
+  }
+
+  const withTopics = tracks.filter(tr => tr.topics.length);
+
+  for (const tr of withTopics) {
+    const cards = tr.topics.map((t, n) => {
+      const rev = (t.secs.find(x => x.key === 'revision') || {}).html || '';
+      const line = oneLiner((t.secs[0] || {}).html || '');
+      const bullets = (rev.match(/<li>/g) || []).length;
+      return `
+    <details class="sec rev-topic" id="s-${esc(t.id)}" data-rev-topic="${esc(t.id)}" open>
+      <summary>
+        <span class="sec-num">${n + 1}.</span>
+        <span class="sec-title">${esc(t.title)}</span>
+        <span class="rev-meta"><span class="rev-dot" aria-hidden="true"></span>${t.category ? esc(t.category) + ' \u00b7 ' : ''}${bullets} points \u00b7 ${t.minutes} min</span>
+        <span class="sec-toggle" aria-hidden="true">\u203a</span>
+      </summary>
+      <div class="sec-body">
+        ${line ? `<p class="note">${line}</p>` : ''}
+        ${rev}
+        <p class="rev-more"><a href="../topics/${esc(t.id)}.html">Read the full topic \u203a</a></p>
+      </div>
+    </details>`;
+    }).join('');
+
+    const allRev = tr.topics.map(t => (t.secs.find(x => x.key === 'revision') || {}).html || '').join(' ');
+    const revWords = plain(allRev).split(/\s+/).filter(Boolean).length;
+    const revMin = Math.max(1, Math.round(revWords / 200));
+    const points = (allRev.match(/<li>/g) || []).length;
+
+    const body = `<div class="readbar" aria-hidden="true"><span id="readbar"></span></div>
+${topbar('../', hubTitle, { listen: true })}
+<main class="wrap rev-wrap" id="revise">
+  <a class="back" href="../index.html#t-${esc(tr.id)}">\u2039 ${esc(tr.title)}</a>
+  <p class="eyebrow">Revision \u00b7 ${count(tr.topics.length, 'topic')} \u00b7 ${points} points \u00b7 about ${revMin} min</p>
+  <h1>Revise: ${esc(tr.title)}</h1>
+  <p class="topic-intro">Every topic in this track, cut down to the summary it ends with. Read it top to bottom, or filter for the thing you are shaky on.</p>
+
+  <div class="rev-bar">
+    <input class="search" id="revFilter" type="search" placeholder="Find a point, like \u201cindex\u201d" aria-label="Filter the revision points" autocomplete="off">
+    <div class="rev-acts">
+      <button class="chip" type="button" data-all="open">Expand all</button>
+      <button class="chip" type="button" data-all="close">Collapse all</button>
+      <button class="chip" type="button" id="revCopy">Copy as text</button>
+      <button class="chip" type="button" id="revPrint">Print</button>
+    </div>
+  </div>
+  <p class="rev-hint">Press <kbd>L</kbd>, or the headphones button, to listen to the whole track.</p>
+  <p class="no-match" id="revNone" hidden></p>
+
+  <div id="article">${cards}
+  </div>
+  ${footer}
+</main>`;
+
+    fs.writeFileSync(path.join(SITE, 'revise', tr.id + '.html'), page({
+      root: '../', title: `Revise ${tr.title} \u00b7 ${hubTitle}`,
+      description: `Every topic in ${tr.title}, cut down to its revision summary.`,
+      bodyAttrs: `data-page="revise" data-track="${esc(tr.id)}" data-track-title="${esc(tr.title)}"`,
+      body, scripts: ['app.js'], v,
+    }));
+  }
+
+  /* an index, so /revise/ is a place you can go */
+  {
+    const rows = withTopics.map(tr => {
+      const allRev = tr.topics.map(t => (t.secs.find(x => x.key === 'revision') || {}).html || '').join(' ');
+      const points = (allRev.match(/<li>/g) || []).length;
+      const mins = Math.max(1, Math.round(plain(allRev).split(/\s+/).filter(Boolean).length / 200));
+      return `
+      <li><a href="${esc(tr.id)}.html"><strong>${esc(tr.title)}</strong><small>${count(tr.topics.length, 'topic')} \u00b7 ${points} points \u00b7 about ${mins} min</small></a></li>`;
+    }).join('');
+    const body = `${topbar('../', hubTitle)}
+<main class="wrap rev-wrap">
+  <a class="back" href="../index.html">\u2039 All tracks</a>
+  <p class="eyebrow">Revision</p>
+  <h1>Revise a track</h1>
+  <p class="topic-intro">Every topic in a track, cut down to the summary it ends with. For the morning of an interview.</p>
+  <ul class="rev-index">${rows}
+  </ul>
+  ${footer}
+</main>`;
+    fs.writeFileSync(path.join(SITE, 'revise', 'index.html'), page({
+      root: '../', title: `Revise \u00b7 ${hubTitle}`,
+      description: 'Revision summaries for every track.',
+      bodyAttrs: 'data-page="revise-index"', body, scripts: ['app.js'], v,
+    }));
+  }
+
   /* ---- topic pages ---- */
   for (const t of topics) {
     const inTrack = t.track.topics;
@@ -481,7 +585,7 @@ ${trackSections}
     </details>`).join('');
 
     const body = `<div class="readbar" aria-hidden="true"><span id="readbar"></span></div>
-${topbar('../', hubTitle, true)}
+${topbar('../', hubTitle, { side: true, listen: true })}
 <div class="wrap topic-layout">
   <nav class="sidebar" id="sidebar" aria-label="Topics and sections">${sideTopics}
     <h4>On this page</h4>
@@ -503,6 +607,7 @@ ${sections}
     <div class="finish">
       <span>Finished reading?</span>
       <button type="button" class="finish-btn" id="finishBtn">Mark as completed</button>
+      <a class="revise-link" href="../revise/${esc(t.track.id)}.html">Revise the whole track \u203a</a>
     </div>
     <nav class="pager" aria-label="Previous and next topic in ${esc(t.track.title)}">
       ${prev ? `<a href="${esc(prev.id)}.html"><small>Previous</small>${esc(prev.title)}</a>` : '<span></span>'}

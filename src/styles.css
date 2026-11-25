@@ -373,3 +373,42 @@ summary.speaking{box-shadow:0 0 0 3px var(--accent-soft)}
 tr.speaking{background:none;box-shadow:none}
 tr.speaking td{background:var(--accent-soft)}
 @media (prefers-reduced-motion:no-preference){.speaking{transition:background .2s ease,box-shadow .2s ease}}
+
+/* ---- revise a track: every topic's revision list on one page ---- */
+.rev-wrap{max-width:860px}
+.revise-link{display:inline-block;margin-left:auto;font-size:.88rem;color:var(--accent);text-decoration:none;white-space:nowrap}
+.revise-link:hover{text-decoration:underline}
+.track-head .revise-link{flex:none}
+.finish .revise-link{margin-left:auto}
+.rev-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:18px 0 10px}
+.rev-bar .search{flex:1 1 240px}
+.rev-acts{display:flex;flex-wrap:wrap;gap:8px}
+.rev-acts .chip{cursor:pointer}
+.rev-acts .chip:hover{border-color:var(--muted)}
+.rev-hint{margin:0 0 14px;color:var(--muted);font-size:.88rem}
+.rev-topic .sec-body > ul{margin:10px 0 0}
+.rev-topic .sec-body > ul > li{margin:0 0 8px}
+.rev-meta{margin-left:auto;padding-left:12px;color:var(--muted);font-size:.84rem;white-space:nowrap;display:inline-flex;align-items:center;gap:7px}
+.rev-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--not)}
+.rev-topic[data-status="progress"] .rev-dot{background:var(--prog)}
+.rev-topic[data-status="done"] .rev-dot{background:var(--done)}
+.rev-more{margin:14px 0 0;font-size:.9rem}
+.rev-more a{text-decoration:none}
+.rev-more a:hover{text-decoration:underline}
+.rev-index{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:10px}
+.rev-index a{display:flex;flex-direction:column;gap:4px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--surface);text-decoration:none;color:var(--ink);transition:border-color .18s ease,transform .18s ease}
+.rev-index a:hover{border-color:var(--accent);transform:translateY(-2px)}
+.rev-index small{color:var(--muted)}
+.rev-wrap mark{background:var(--accent-soft);color:inherit;border-radius:3px;padding:0 2px}
+@media (max-width:620px){.rev-meta{display:none}}
+
+/* print: a track's revision as a handout */
+@media print{
+  .topbar,.playbar,.autobar,.readbar,.rev-bar,.rev-hint,.rev-more,.back,.foot,.sec-toggle{display:none !important}
+  .rev-wrap{max-width:none;padding:0}
+  .rev-topic{break-inside:avoid;border:0;border-top:1px solid #ccc;border-radius:0;padding:8px 0;background:none}
+  .rev-topic summary{list-style:none;font-weight:600}
+  .rev-topic .note{border:0;background:none;padding:4px 0;font-style:italic}
+  body{background:#fff;color:#000}
+  a{color:#000;text-decoration:none}
+}
