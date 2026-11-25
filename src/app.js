@@ -1318,7 +1318,8 @@
     if (printBtn) printBtn.addEventListener('click', function () { openAll(); window.print(); });
     window.addEventListener('beforeprint', openAll);
 
-    setupListen({
+    // an empty track has no topics to read, and no listen button in its top bar
+    if (rsecs.length) setupListen({
       article: $('revise'), secs: rsecs, id: 'revise-' + trackId, word: 'Topic',
       open: function (d) { d.open = true; }
     });

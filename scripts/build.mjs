@@ -401,7 +401,7 @@ export function build() {
       <span class="track-num">${String(n + 1).padStart(2, '0')}</span>
       <div class="track-title"><h2 id="th-${esc(tr.id)}">${esc(tr.title)}</h2>${tr.description ? `<p>${esc(tr.description)}</p>` : ''}</div>
       <span class="track-count">${tr.topics.length ? count(tr.topics.length, 'topic') : 'No topics yet'}</span>
-      ${tr.topics.length ? `<a class="revise-link" href="revise/${esc(tr.id)}.html">Revise this track \u203a</a>` : ''}
+      <a class="revise-link" href="revise/${esc(tr.id)}.html">Revise this track \u203a</a>
     </header>${tr.topics.length ? `
     <div class="topic-list">${tr.topics.map(card).join('')}
     </div>` : ''}
@@ -478,9 +478,8 @@ ${trackSections}
     return cut.replace(/^([a-z])/, (m, ch) => ch.toUpperCase());
   }
 
-  const withTopics = tracks.filter(tr => tr.topics.length);
-
-  for (const tr of withTopics) {
+  for (const tr of tracks) {
+    const empty = !tr.topics.length;
     const cards = tr.topics.map((t, n) => {
       const rev = (t.secs.find(x => x.key === 'revision') || {}).html || '';
       const line = oneLiner((t.secs[0] || {}).html || '');
@@ -507,12 +506,17 @@ ${trackSections}
     const points = (allRev.match(/<li>/g) || []).length;
 
     const body = `<div class="readbar" aria-hidden="true"><span id="readbar"></span></div>
-${topbar('../', hubTitle, { listen: true })}
+${topbar('../', hubTitle, { listen: !empty })}
 <main class="wrap rev-wrap" id="revise">
   <a class="back" href="../index.html#t-${esc(tr.id)}">\u2039 ${esc(tr.title)}</a>
-  <p class="eyebrow">Revision \u00b7 ${count(tr.topics.length, 'topic')} \u00b7 ${points} points \u00b7 about ${revMin} min</p>
+  <p class="eyebrow">Revision \u00b7 ${empty ? 'nothing to revise yet' : `${count(tr.topics.length, 'topic')} \u00b7 ${points} points \u00b7 about ${revMin} min`}</p>
   <h1>Revise: ${esc(tr.title)}</h1>
-  <p class="topic-intro">Every topic in this track, cut down to the summary it ends with. Read it top to bottom, or filter for the thing you are shaky on.</p>
+${empty ? `  <p class="topic-intro">${tr.description ? esc(tr.description) + ' ' : ''}This track has no topics yet, so there is nothing to revise. The page is here so the link works the same on every track, and it will fill up by itself as topics are added.</p>
+  <div class="empty">
+    <p><strong>Nothing here yet.</strong></p>
+    <p>Add a topic to <code>content/topics/${esc(tr.id)}/</code> and it will appear on this page, with its revision list, the next time the site is built.</p>
+    <p><a href="../index.html">\u2039 Back to all tracks</a> \u00b7 <a href="index.html">See the tracks you can revise</a></p>
+  </div>` : `  <p class="topic-intro">Every topic in this track, cut down to the summary it ends with. Read it top to bottom, or filter for the thing you are shaky on.</p>
 
   <div class="rev-bar">
     <input class="search" id="revFilter" type="search" placeholder="Find a point, like \u201cindex\u201d" aria-label="Filter the revision points" autocomplete="off">
@@ -527,13 +531,14 @@ ${topbar('../', hubTitle, { listen: true })}
   <p class="no-match" id="revNone" hidden></p>
 
   <div id="article">${cards}
-  </div>
+  </div>`}
   ${footer}
 </main>`;
 
     fs.writeFileSync(path.join(SITE, 'revise', tr.id + '.html'), page({
       root: '../', title: `Revise ${tr.title} \u00b7 ${hubTitle}`,
-      description: `Every topic in ${tr.title}, cut down to its revision summary.`,
+      description: empty ? `${tr.title} has no topics yet.`
+                         : `Every topic in ${tr.title}, cut down to its revision summary.`,
       bodyAttrs: `data-page="revise" data-track="${esc(tr.id)}" data-track-title="${esc(tr.title)}"`,
       body, scripts: ['app.js'], v,
     }));
@@ -541,12 +546,12 @@ ${topbar('../', hubTitle, { listen: true })}
 
   /* an index, so /revise/ is a place you can go */
   {
-    const rows = withTopics.map(tr => {
+    const rows = tracks.map(tr => {
       const allRev = tr.topics.map(t => (t.secs.find(x => x.key === 'revision') || {}).html || '').join(' ');
       const points = (allRev.match(/<li>/g) || []).length;
       const mins = Math.max(1, Math.round(plain(allRev).split(/\s+/).filter(Boolean).length / 200));
       return `
-      <li><a href="${esc(tr.id)}.html"><strong>${esc(tr.title)}</strong><small>${count(tr.topics.length, 'topic')} \u00b7 ${points} points \u00b7 about ${mins} min</small></a></li>`;
+      <li><a class="${tr.topics.length ? '' : 'is-empty'}" href="${esc(tr.id)}.html"><strong>${esc(tr.title)}</strong><small>${tr.topics.length ? `${count(tr.topics.length, 'topic')} \u00b7 ${points} points \u00b7 about ${mins} min` : 'No topics yet'}</small></a></li>`;
     }).join('');
     const body = `${topbar('../', hubTitle)}
 <main class="wrap rev-wrap">

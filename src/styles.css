@@ -412,3 +412,5 @@ tr.speaking td{background:var(--accent-soft)}
   body{background:#fff;color:#000}
   a{color:#000;text-decoration:none}
 }
+.rev-index a.is-empty{border-style:dashed;opacity:.72}
+.rev-index a.is-empty:hover{opacity:1}
