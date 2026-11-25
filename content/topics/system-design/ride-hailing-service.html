@@ -1,0 +1,310 @@
+<!--
+title: Ride Hailing Service
+summary: A rider taps a pin, a nearby car accepts, and both watch each other move. Half a million cars send their position every four seconds, and none of those writes may touch the database that holds the trips.
+category: Matching
+order: 70
+related: property-listing-service, doctor-appointment-booking, realtime-communication, redis-persistence, database-sharding
+-->
+
+<!-- section: problem -->
+<p>You open the app, it shows cars crawling around a map, you set a pickup pin and tap. Fifteen seconds later a name, a number plate and a car are coming towards you. You watch it approach, get in, and at the end a receipt appears.</p>
+<p>Uber, Lyft and Ola are the well-known versions. The product looks like a map with a button. Underneath it there are two completely different write paths wearing one coat, and most of the design is about keeping them apart.</p>
+<p class="note">One-line version: trips are 70 writes a second that must never be lost. Car positions are 125,000 writes a second that are worthless four seconds later. Mixing them is the mistake.</p>
+
+<!-- section: requirements -->
+<h4>Must do</h4>
+<ol>
+<li>A driver goes online and streams their position while they work.</li>
+<li>A rider asks for a ride from A to B and gets a fare estimate first.</li>
+<li>Match that rider with one nearby driver who agrees to come.</li>
+<li>Follow the trip through its states, with each side watching the other move.</li>
+<li>End the trip, charge the rider, and keep the receipt.</li>
+</ol>
+
+<h4>Must be</h4>
+<ul>
+<li><strong>Fast to match:</strong> a driver assigned within 15 seconds at the 95th percentile.</li>
+<li><strong>Exclusive:</strong> one driver, one trip. Never two riders sent to one car.</li>
+<li><strong>Fresh on the map:</strong> a rider sees the car within 5 seconds of it moving.</li>
+<li><strong>Durable where it counts:</strong> a started trip survives anything. Positions do not.</li>
+<li><strong>Uptime:</strong> 99.95% for matching. A frozen map is bad; a lost trip is unacceptable.</li>
+</ul>
+
+<h4>Not doing</h4>
+<ul>
+<li><strong>Taking the money.</strong> We call a payment provider and keep a reference.</li>
+<li><strong>Routing and ETAs.</strong> A map provider gives us road distance and travel time.</li>
+<li><strong>Surge pricing.</strong> That is a pricing model, not a service.</li>
+<li><strong>Shared rides.</strong> Matching two riders to one car on one route is a different problem.</li>
+</ul>
+
+<!-- section: estimates -->
+<p><strong>Assumptions</strong>, made up: 500,000 drivers online at peak, one position every 4 seconds, 2 million trips a day, peak 3&times; average, 1 KB per trip row, 50 bytes per position.</p>
+
+<div class="table-wrap"><table>
+<tr><th>Number</th><th>Working</th><th>Result</th></tr>
+<tr><td>Position writes</td><td>500,000 &divide; 4 s</td><td><strong>125,000/s</strong></td></tr>
+<tr><td>Trip writes</td><td>2,000,000 &divide; 86,400</td><td><strong>23/s</strong>, 70/s at peak</td></tr>
+<tr><td>Positions per trip write</td><td>125,000 &divide; 70</td><td><strong>1,800 : 1</strong></td></tr>
+<tr><td>Trip rows a year</td><td>2m &times; 365 &times; 1 KB</td><td><strong>730 GB</strong></td></tr>
+<tr><td>Positions, if we kept them</td><td>125,000 &times; 86,400 &times; 50 bytes</td><td><strong>540 GB a day</strong>, 197 TB a year</td></tr>
+</table></div>
+
+<p>That last row is the decision. Keeping every position would cost more storage a day than every trip costs in a year, to hold numbers that are stale before anyone reads them. So positions live in memory, are overwritten in place, and are allowed to vanish. Trips are 70 small writes a second, which one PostgreSQL machine barely notices.</p>
+
+<!-- section: api -->
+<div class="table-wrap"><table>
+<tr><th>Method and path</th><th>Takes</th><th>Returns</th></tr>
+<tr><td><code>POST /v1/drivers/location</code></td><td>Position, heading, time</td><td><code>204</code>, nothing else</td></tr>
+<tr><td><code>POST /v1/quotes</code></td><td>Pickup, drop-off</td><td>A fare range and an ETA</td></tr>
+<tr><td><code>POST /v1/trips</code></td><td>Quote id, idempotency key</td><td><code>202</code>, state <code>matching</code></td></tr>
+<tr><td><code>GET /v1/trips/{id}</code></td><td>&mdash;</td><td>State, driver, the car&rsquo;s position</td></tr>
+<tr><td><code>POST /v1/offers/{id}</code></td><td><code>accept</code> or <code>decline</code></td><td><code>200</code>, or <code>409</code> if it expired</td></tr>
+<tr><td><code>POST /v1/trips/{id}/state</code></td><td>New state, client event id</td><td>The trip at its new state</td></tr>
+</table></div>
+
+<pre><code># 125,000 of these a second. Fire and forget.
+POST /v1/drivers/location
+{ "lat": 12.9352, "lng": 77.6245, "heading": 310, "at": 1764051000 }
+
+204 No Content
+
+# The rider side is a state machine, polled or pushed
+POST /v1/trips       -&gt; 202 { "tripId": "t_31a", "state": "matching" }
+GET  /v1/trips/t_31a -&gt; 200 { "state": "accepted", "etaSeconds": 240,
+                              "car": { "lat": 12.9361, "lng": 77.6230 } }</code></pre>
+
+<ul>
+<li><strong>The position call returns nothing.</strong> No body to parse, no read, no confirmation. A dropped ping is replaced four seconds later.</li>
+<li><strong>Asking for a ride returns <code>202</code>, not a driver.</strong> Matching takes seconds, so the rider gets a trip id and watches it change state. See <em>WebSockets vs Polling vs SSE</em>.</li>
+<li><strong>Every state change carries a client event id</strong>, so a phone that retries after a tunnel does not start the trip twice.</li>
+</ul>
+
+<!-- section: data -->
+<p><strong>PostgreSQL</strong> holds trips: 70 writes a second, 730 GB a year, money at the end, and a state machine that has to be exactly right. <strong>Redis</strong> holds live positions, bucketed by map cell. It takes 125,000 writes a second because each one overwrites a single field, and losing the lot on a restart costs four seconds of staleness.</p>
+
+<pre><code>CREATE TABLE trips (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  rider_id     BIGINT NOT NULL,
+  driver_id    BIGINT,                 -- null until someone accepts
+  state        TEXT NOT NULL,          -- matching|accepted|arrived
+                                       -- |started|ended|cancelled
+  pickup_lat   DOUBLE PRECISION NOT NULL,
+  pickup_lng   DOUBLE PRECISION NOT NULL,
+  dropoff_lat  DOUBLE PRECISION NOT NULL,
+  dropoff_lng  DOUBLE PRECISION NOT NULL,
+  requested_at TIMESTAMPTZ NOT NULL,
+  ended_at     TIMESTAMPTZ,
+  fare         INTEGER,                -- in paise, never a float
+  idem_key     TEXT NOT NULL UNIQUE
+);
+
+-- one live trip per driver; the same trick as appointments
+CREATE UNIQUE INDEX trips_one_per_driver ON trips (driver_id)
+  WHERE state IN ('accepted', 'arrived', 'started');
+
+CREATE TABLE trip_events (
+  trip_id   BIGINT NOT NULL REFERENCES trips(id),
+  seq       INTEGER NOT NULL,
+  state     TEXT NOT NULL,
+  at        TIMESTAMPTZ NOT NULL,
+  client_id TEXT,                      -- dedupes a retried phone
+  PRIMARY KEY (trip_id, seq)
+);
+
+CREATE INDEX trips_rider_idx ON trips (rider_id, requested_at DESC);</code></pre>
+
+<p><code>trips_one_per_driver</code> is the same partial unique index that stops two patients booking one slot in <em>Doctor Appointment Booking</em>. It is the last guard, not the plan &mdash; the next section is about the part it cannot do.</p>
+
+<!-- section: highLevel -->
+<div class="diagram">
+<svg viewBox="0 0 640 330" role="img" aria-label="Driver apps send positions through a load balancer to a location service that writes them into a Redis cell index. Rider apps reach a trip service backed by PostgreSQL. A matching service reads candidate drivers from Redis and writes offers, and asks an outside map provider for road distance.">
+<defs><marker id="ah-rh-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+
+<rect x="12" y="20" width="118" height="50" rx="8" class="box"/>
+<text x="71" y="42" text-anchor="middle" class="lbl">Driver apps</text>
+<text x="71" y="59" text-anchor="middle" class="sub">125,000 pings/s</text>
+
+<rect x="12" y="250" width="118" height="50" rx="8" class="box"/>
+<text x="71" y="272" text-anchor="middle" class="lbl">Rider apps</text>
+<text x="71" y="289" text-anchor="middle" class="sub">70 trips/s at peak</text>
+
+<rect x="152" y="134" width="96" height="52" rx="8" class="box"/>
+<text x="200" y="156" text-anchor="middle" class="lbl">Load</text>
+<text x="200" y="173" text-anchor="middle" class="sub">balancer</text>
+
+<rect x="278" y="16" width="146" height="50" rx="8" class="box hi"/>
+<text x="351" y="38" text-anchor="middle" class="lbl">Location service</text>
+<text x="351" y="55" text-anchor="middle" class="sub">writes only, no reads</text>
+
+<rect x="278" y="134" width="146" height="52" rx="8" class="box hi"/>
+<text x="351" y="156" text-anchor="middle" class="lbl">Matching service</text>
+<text x="351" y="173" text-anchor="middle" class="sub">offers, one at a time</text>
+
+<rect x="278" y="252" width="146" height="50" rx="8" class="box"/>
+<text x="351" y="274" text-anchor="middle" class="lbl">Trip service</text>
+<text x="351" y="291" text-anchor="middle" class="sub">the state machine</text>
+
+<rect x="468" y="16" width="158" height="50" rx="8" class="box"/>
+<text x="547" y="38" text-anchor="middle" class="lbl">Redis cell index</text>
+<text x="547" y="55" text-anchor="middle" class="sub">live positions, in memory</text>
+
+<rect x="468" y="134" width="158" height="52" rx="8" class="box"/>
+<text x="547" y="156" text-anchor="middle" class="lbl">Map provider</text>
+<text x="547" y="173" text-anchor="middle" class="sub">outside our system</text>
+
+<rect x="468" y="246" width="158" height="56" rx="8" class="box"/>
+<text x="547" y="267" text-anchor="middle" class="lbl">PostgreSQL</text>
+<text x="547" y="283" text-anchor="middle" class="sub">trips, events, fares</text>
+<text x="547" y="296" text-anchor="middle" class="sub">the truth</text>
+
+<line x1="130" y1="52" x2="148" y2="138" class="arr" marker-end="url(#ah-rh-arch)"/>
+<line x1="130" y1="268" x2="148" y2="182" class="arr" marker-end="url(#ah-rh-arch)"/>
+<line x1="248" y1="146" x2="274" y2="52" class="arr" marker-end="url(#ah-rh-arch)"/>
+<line x1="248" y1="160" x2="274" y2="160" class="arr" marker-end="url(#ah-rh-arch)"/>
+<line x1="248" y1="174" x2="274" y2="268" class="arr" marker-end="url(#ah-rh-arch)"/>
+<line x1="424" y1="41" x2="464" y2="41" class="arr" marker-end="url(#ah-rh-arch)"/>
+<line x1="424" y1="152" x2="464" y2="60" class="arr dim" marker-end="url(#ah-rh-arch)"/>
+<line x1="424" y1="160" x2="464" y2="160" class="arr dim" marker-end="url(#ah-rh-arch)"/>
+<line x1="424" y1="274" x2="464" y2="274" class="arr" marker-end="url(#ah-rh-arch)"/>
+<path d="M351,188 L351,248" class="arr" marker-end="url(#ah-rh-arch)"/>
+</svg>
+</div>
+
+<p><strong>A position ping</strong> goes to the location service, which writes it into one Redis cell and answers <code>204</code>. It never reads, never calls PostgreSQL, and never blocks on anything.</p>
+<p><strong>A ride request</strong> reaches the trip service, which writes a <code>matching</code> trip and hands it to the matching service. That reads candidate drivers out of the cell index, asks the map provider for road distance, and offers the trip to one driver at a time. On an accept, the trip service moves the state and both phones start watching each other. <strong>Ending it</strong> is one more state change: the trip service writes <code>ended_at</code> and the fare, calls the payment provider, and the receipt is a plain read of the same row.</p>
+
+<!-- section: deepDives -->
+<h4>How do you index half a million moving cars?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 230" role="img" aria-label="Two ways to hold moving positions. A tree index must be rebalanced on every one of 125,000 writes a second. A cell index overwrites one field in a hash per car, and a search reads the nine cells around the pickup point.">
+<text x="20" y="20" class="lbl">Tree index, rewritten</text>
+<rect x="20" y="36" width="250" height="110" rx="6" class="box warn"/>
+<text x="145" y="78" text-anchor="middle" class="lbl">125,000 writes/s</text>
+<text x="145" y="98" text-anchor="middle" class="sub">every ping moves a key</text>
+<text x="145" y="115" text-anchor="middle" class="sub">in a sorted structure</text>
+<text x="145" y="172" text-anchor="middle" class="sub">the index never stops rebuilding</text>
+<text x="145" y="188" text-anchor="middle" class="sub">and the writes are the cheap part</text>
+
+<text x="350" y="20" class="lbl">Cell index, overwritten</text>
+<rect x="350" y="36" width="36" height="36" class="box"/><rect x="390" y="36" width="36" height="36" class="box"/><rect x="430" y="36" width="36" height="36" class="box"/>
+<rect x="350" y="76" width="36" height="36" class="box"/><rect x="390" y="76" width="36" height="36" class="box hi"/><rect x="430" y="76" width="36" height="36" class="box"/>
+<rect x="350" y="116" width="36" height="36" class="box"/><rect x="390" y="116" width="36" height="36" class="box"/><rect x="430" y="116" width="36" height="36" class="box"/>
+<circle cx="408" cy="94" r="4" class="box warn"/>
+<text x="484" y="62" class="sub">one hash per cell</text>
+<text x="484" y="80" class="sub">driver id &rarr; position</text>
+<text x="484" y="98" class="sub">a ping is one HSET</text>
+<text x="484" y="116" class="sub">no sorting, no moving</text>
+<text x="408" y="172" text-anchor="middle" class="sub">a search reads the 9 cells</text>
+<text x="408" y="188" text-anchor="middle" class="sub">around the pickup pin</text>
+</svg>
+</div>
+<p><em>Property Listing Service</em> solved a geo problem with a geo index, and it was the right answer there: ten million pins that almost never move, read constantly. Here the pins move every four seconds and are read a few hundred times a second. An index that sorts positions would spend its whole life being rebuilt.</p>
+<ul>
+<li><strong>Geo index in the database.</strong> Exact, and the write rate destroys it.</li>
+<li><strong>Cells</strong>: chop the city into squares of a few hundred metres and keep one hash per square, driver id to position. A ping is a single overwrite; a search reads the nine squares around the pin.</li>
+</ul>
+<p>We take cells. A car crossing a boundary is two writes, one to remove and one to add, which is why the driver id is the field and not the key. Nine cells at city density is a few hundred drivers, small enough to then rank properly by road distance.</p>
+
+<h4>How do two riders not get the same driver?</h4>
+<div class="diagram">
+<svg viewBox="0 0 640 170" role="img" aria-label="Offer timeline. The trip is offered to the first driver who has eight seconds to answer. The driver does not reply, the hold is released, and the offer passes to the second driver, who accepts after four seconds.">
+<defs><marker id="ah-rh-offer" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>
+<line x1="30" y1="86" x2="606" y2="86" class="arr" marker-end="url(#ah-rh-offer)"/>
+<line x1="60" y1="78" x2="60" y2="94" class="arr"/>
+<text x="60" y="68" text-anchor="middle" class="sub">0 s</text>
+<text x="60" y="112" text-anchor="middle" class="sub">offered to</text>
+<text x="60" y="126" text-anchor="middle" class="sub">driver A</text>
+<rect x="60" y="80" width="190" height="12" class="box warn"/>
+<text x="155" y="48" text-anchor="middle" class="sub">A is locked for 8 seconds</text>
+<line x1="250" y1="78" x2="250" y2="94" class="arr"/>
+<text x="250" y="68" text-anchor="middle" class="sub">8 s</text>
+<text x="250" y="112" text-anchor="middle" class="sub">no answer:</text>
+<text x="250" y="126" text-anchor="middle" class="sub">lock released</text>
+<rect x="250" y="80" width="110" height="12" class="box hi"/>
+<text x="360" y="68" text-anchor="middle" class="sub">12 s</text>
+<line x1="360" y1="78" x2="360" y2="94" class="arr"/>
+<text x="370" y="112" class="sub">driver B accepts &mdash; the unique index</text>
+<text x="370" y="126" class="sub">confirms it, and nobody else was offered</text>
+</svg>
+</div>
+<p>Broadcasting to every nearby driver gets a fast answer and five drivers racing for one rider; four of them lose and learn to ignore offers. So we offer to one driver at a time.</p>
+<p>The lock lives in Redis with an 8-second expiry, which matters more than it looks: a driver whose phone has died must not hold a rider hostage, and an expiry is the only kind of lock that cleans up after a process that never comes back. The unique index in PostgreSQL confirms the accept, but it cannot release an offer nobody answered.</p>
+
+<h4>What happens in a tunnel?</h4>
+<p>Both phones lose signal mid-trip, and the trip is the thing we promised never to lose. So the phone records state changes locally with its own event id and sends them when it can, and the server treats a repeat of an event id as the same event rather than a second one. The server&rsquo;s state machine only moves forward: an <code>arrived</code> arriving after <code>started</code> is recorded in <code>trip_events</code> and ignored for the state.</p>
+
+<!-- section: scaling -->
+<div class="table-wrap"><table>
+<tr><th>Growth</th><th>What breaks first</th><th>How you notice</th><th>Fix</th></tr>
+<tr><td>10&times; &mdash; 1.25m pings/s</td><td>One Redis node cannot take the writes</td><td>Redis CPU pinned; ping latency climbing</td><td>Shard the cell index by cell prefix. Cities are independent, so no search crosses shards</td></tr>
+<tr><td>10&times; &mdash; 700 trips/s</td><td>Still not PostgreSQL</td><td>&mdash;</td><td>Watch connection count, not throughput</td></tr>
+<tr><td>10&times; &mdash; 7.3 TB of trips</td><td>The trips table outgrows memory</td><td>Rider history queries start reading disk</td><td>Partition <code>trips</code> by month; archive past months</td></tr>
+<tr><td>100&times; &mdash; 12.5m pings/s</td><td>The ingest tier itself: TLS and HTTP overhead per ping</td><td>Cost per ping dominated by connection work, not the write</td><td>Batch 5 positions per request over a persistent connection. Same freshness, a fifth of the requests</td></tr>
+<tr><td>100&times; &mdash; matching load</td><td>One matching cluster across all cities</td><td>Offer latency rising while traffic is spread out</td><td>Shard matching by city; a rider at a city edge queries two shards and merges</td></tr>
+</table></div>
+
+<p>The shape is the same every time: the durable path stays small and boring, and everything that breaks is on the firehose in front of it.</p>
+
+<!-- section: failures -->
+<div class="table-wrap"><table>
+<tr><th>What fails</th><th>What the user sees</th><th>What the system does</th></tr>
+<tr><td>Redis cell index down</td><td>&ldquo;No cars nearby&rdquo;; trips already running are fine</td><td>Refuse new matches. Trip state is in PostgreSQL and does not depend on it</td></tr>
+<tr><td>PostgreSQL primary down</td><td>No new rides; a running trip keeps going on both phones</td><td>Promote a replica. Phones buffer their events and replay them after</td></tr>
+<tr><td>Location service down</td><td>Cars freeze on the map</td><td>Match on last known position, capped at 30 seconds old, then stop offering that driver</td></tr>
+<tr><td>Matching service down</td><td>&ldquo;Finding a driver&rdquo; then a clear timeout</td><td>Trips stay <code>matching</code> and are retried; no money has moved</td></tr>
+<tr><td>Map provider down</td><td>No ETA shown; matching is slightly worse</td><td>Fall back to straight-line distance for ranking</td></tr>
+<tr><td>A driver&rsquo;s phone dies holding an offer</td><td>The rider waits 8 seconds longer</td><td>The Redis lock expires and the offer passes on. Nothing has to be cleaned up by hand</td></tr>
+<tr><td>Rain at 6 pm</td><td>Longer waits, honest ones</td><td>Widen the search radius, queue requests, and tell riders the wait instead of failing</td></tr>
+</table></div>
+
+<!-- section: tradeoffs -->
+<ul>
+<li><strong>In-memory cells vs a geo index in the database.</strong> We take 125,000 writes a second and give up exact geometry and any history of where cars were.</li>
+<li><strong>One offer at a time vs broadcasting.</strong> No driver ever loses a race, and matching takes a few seconds longer per declined offer.</li>
+<li><strong>Dropping positions vs keeping them.</strong> We save 197 TB a year, and cannot answer &ldquo;where was this car at 4 pm&rdquo; afterwards. If the business needs that, it is a separate pipeline, not this one.</li>
+<li><strong>Server as the truth vs the phone.</strong> The server decides the state, so a phone cannot lie or skip ahead. The cost is that the phone has to queue and retry everything.</li>
+<li><strong>Lock with an expiry vs a held lock.</strong> An expiry cleans up after a dead phone by itself, and it can release an offer the driver was about to accept.</li>
+</ul>
+
+<!-- section: interview -->
+<h4>The order to go in</h4>
+<ol>
+<li><strong>Scope, 3 min.</strong> The five things it does, and that pricing, routing and pooling are out.</li>
+<li><strong>Numbers, 5 min.</strong> 125,000 pings a second against 70 trip writes. Say the 1,800 to 1 out loud.</li>
+<li><strong>Two stores, 4 min.</strong> Why positions and trips cannot share one. This is the answer they want early.</li>
+<li><strong>Diagram, 4 min.</strong> Draw it, then follow a ping and a ride request through it.</li>
+<li><strong>Deep dive, 12 min.</strong> The cell index, then the offer protocol.</li>
+<li><strong>Scaling and failure, 5 min.</strong> 10&times; and 100&times;, then what the rider sees when Redis dies.</li>
+</ol>
+
+<h4>Questions to ask first</h4>
+<ul>
+<li>One city or many? It decides whether anything has to be global.</li>
+<li>Do we need position history for support and disputes, or only live positions?</li>
+<li>Who sets the price &mdash; us, or a pricing service we call?</li>
+<li>How precise does matching have to be: nearest car, or best car?</li>
+</ul>
+
+<h4>Follow-ups to expect</h4>
+<ul>
+<li><strong>How does the rider see the car move?</strong> A push channel over a WebSocket while the app is open, with polling as the fallback.</li>
+<li><strong>Driver cancels after accepting?</strong> Back to <code>matching</code>, offer to the next driver, and count it against the driver.</li>
+<li><strong>Why not match the closest car?</strong> Closest by straight line can be across a river. Rank by road time from the map provider.</li>
+<li><strong>Airport queues?</strong> A cell with an ordered list instead of a hash, so the car that waited longest is offered first.</li>
+</ul>
+
+<!-- section: revision -->
+<ul>
+<li>Ride hailing has two write paths: 125,000 positions a second that can be lost, and 70 trip writes a second that cannot.</li>
+<li>Keeping position history would cost 540 GB a day, more in one day than every trip costs in a year.</li>
+<li>So positions live in Redis, overwritten in place, and the position endpoint returns <code>204</code> with no body.</li>
+<li>Positions are bucketed into map cells of a few hundred metres, one hash per cell, driver id to position.</li>
+<li>A search reads the nine cells around the pickup pin, then ranks those drivers by road distance.</li>
+<li>A sorted geo index is right for listings that never move and wrong for cars that move every four seconds.</li>
+<li>Matching offers the trip to one driver at a time, not to everyone nearby, so no driver loses a race.</li>
+<li>The offer is a Redis lock with an 8-second expiry, so a dead phone releases the rider by itself.</li>
+<li>A partial unique index on <code>driver_id</code> confirms the accept, but it cannot release an unanswered offer.</li>
+<li>Phones queue state changes with their own event ids, and the server&rsquo;s state machine only moves forward.</li>
+<li>At 10&times; the cell index shards by cell prefix; at 100&times; the cost is TLS per ping, so pings are batched.</li>
+</ul>
