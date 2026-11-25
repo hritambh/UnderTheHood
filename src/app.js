@@ -1,6 +1,6 @@
 /* Small script shared by every page. The pages are plain HTML and readable
    without it; this adds progress tracking, search, theme, grid/list view,
-   reading mode and reading helpers. */
+   reading mode, reading helpers and reading a topic out loud. */
 (function () {
   'use strict';
 
@@ -761,6 +761,401 @@
       });
       wrap.appendChild(btn);
     });
+
+    /* ---------- listen: read the topic out loud ----------
+       The browser's own speech engine does the talking, so there are no audio
+       files, no keys and nothing to pay for. The work here is turning a page
+       into something worth listening to:
+         - diagrams are read from their aria-label, because on this site a
+           diagram replaces prose rather than decorating it, so skipping one
+           would drop real content;
+         - tables are read row by row as "heading: value", which is how these
+           topics carry their numbers;
+         - code blocks are announced and skipped. SQL read aloud is noise.
+       Each sentence is its own utterance. That keeps pause and skip responsive,
+       and keeps Chrome from cutting off long ones. */
+    var synth = window.speechSynthesis;
+    var listenBtn = $('listenBtn');
+    if (listenBtn && synth && 'SpeechSynthesisUtterance' in window) (function () {
+      var root = document.documentElement;
+      var toggleBtn = $('playToggle'), prevBtn = $('playPrev'), nextBtn = $('playNext');
+      var stopBtn = $('playStop'), whereEl = $('playWhere');
+      var rateEl = $('playRate'), rateVal = $('playRateVal'), voiceSel = $('playVoice');
+      var LS_LISTEN = 'sd-hub-listen', LS_LISTEN_AT = 'sd-hub-listen-at';
+      var MINR = 0.7, MAXR = 1.8, LONG = 190;
+      var chunks = [], idx = -1, gen = 0;
+      var playing = false, held = false;
+      var rate = 1, voiceId = '', voices = [];
+      var markEl = null, markSec = -1, followUntil = 0, utterAt = 0;
+
+      var cfg = load(LS_LISTEN, {});
+      if (typeof cfg.rate === 'number' && cfg.rate >= MINR && cfg.rate <= MAXR) rate = cfg.rate;
+      if (typeof cfg.voice === 'string') voiceId = cfg.voice;
+
+      /* ---- turning markup into something speakable ---- */
+
+      var UNITS = { KB: 'kilobytes', MB: 'megabytes', GB: 'gigabytes', TB: 'terabytes', PB: 'petabytes' };
+
+      function say(t) {
+        return String(t)
+          .replace(/×/g, ' times ')
+          .replace(/÷/g, ' divided by ')
+          .replace(/→/g, ' to ')
+          .replace(/−/g, ' minus ')
+          .replace(/≈/g, ' about ')
+          .replace(/[—–]/g, ', ')
+          .replace(/…/g, '. ')
+          .replace(/₹/g, ' rupees ')
+          .replace(/[“”‘’]/g, "'")
+          .replace(/[✓✔]/g, ' yes ')
+          .replace(/(\d)\s*\/\s*s\b/g, '$1 per second')
+          .replace(/(\d)\s*(KB|MB|GB|TB|PB)\b/g, function (m, n, u) { return n + ' ' + UNITS[u]; })
+          .replace(/(\d)\s*ms\b/g, '$1 milliseconds')
+          .replace(/(\d)\s+s\b/g, '$1 seconds')
+          .replace(/(\d)m\b/g, '$1 million')
+          .replace(/(\d)bn\b/g, '$1 billion')
+          .replace(/\b(\d[\d,]*)\s*:\s*(\d[\d,]*)\b/g, '$1 to $2')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+      /* An identifier read letter by letter is painful, so loosen it up first. */
+      function codeSay(t) {
+        return ' ' + String(t).replace(/[{}`]/g, '').replace(/_/g, ' ')
+          .replace(/\//g, ' slash ').replace(/-/g, ' ') + ' ';
+      }
+      function textOf(el) {
+        var out = '';
+        Array.prototype.slice.call(el.childNodes).forEach(function (n) {
+          if (n.nodeType === 3) { out += n.nodeValue; return; }
+          if (n.nodeType !== 1) return;
+          var tag = n.tagName.toLowerCase();
+          if (tag === 'svg' || tag === 'button') return;
+          if (tag === 'sup') { out += ' to the power ' + n.textContent + ' '; return; }
+          if (tag === 'code') { out += codeSay(n.textContent); return; }
+          out += textOf(n);
+        });
+        return out;
+      }
+      /* One sentence per utterance, and a very long one broken at a comma. */
+      function cut(t) {
+        var out = [];
+        if (!t) return out;
+        t.replace(/([.!?])\s+/g, '$1\u0001').split('\u0001').forEach(function (p) {
+          p = p.trim();
+          while (p.length > LONG) {
+            var at = p.lastIndexOf(', ', LONG);
+            if (at < 60) at = p.lastIndexOf(' ', LONG);
+            if (at < 40) break;
+            out.push(p.slice(0, at + 1).trim());
+            p = p.slice(at + 1).trim();
+          }
+          if (p) out.push(p);
+        });
+        return out;
+      }
+
+      function push(el, sec, text) { if (text) chunks.push({ el: el, sec: sec, text: text }); }
+
+      /* the blocks of one section, in reading order, without their nested parts */
+      function blocksOf(box) {
+        if (!box) return [];
+        var list = all('p, h4, ul, ol, pre, table, .diagram, div.note', box);
+        return list.filter(function (el) {
+          for (var i = 0; i < list.length; i++) {
+            if (list[i] !== el && list[i].contains(el)) return false;
+          }
+          return true;
+        });
+      }
+      function addTable(tbl, sec) {
+        var rows = all('tr', tbl);
+        if (!rows.length) return;
+        var head = all('th', rows[0]).map(function (th) { return say(textOf(th)); });
+        push(rows[0], sec, 'Table.');
+        rows.forEach(function (tr) {
+          var cells = all('td', tr);
+          if (!cells.length) return;
+          var line = cells.map(function (td, n) {
+            var v = say(textOf(td));
+            return head[n] ? head[n] + ': ' + v : v;
+          }).join('. ');
+          cut(line).forEach(function (s) { push(tr, sec, s); });
+        });
+      }
+      function addBlock(el, sec) {
+        var tag = el.tagName.toLowerCase();
+        if (el.classList.contains('diagram')) {
+          var svg = el.querySelector('svg');
+          var label = svg ? (svg.getAttribute('aria-label') || '') : '';
+          if (!label) return;
+          cut(say('Diagram: ' + label)).forEach(function (s) { push(el, sec, s); });
+          return;
+        }
+        if (tag === 'pre') { push(el.parentNode || el, sec, 'Code block, on the screen.'); return; }
+        if (tag === 'table') { addTable(el, sec); return; }
+        if (tag === 'ul' || tag === 'ol') {
+          all('li', el).forEach(function (li) {
+            if (li.parentNode !== el) return;
+            cut(say(textOf(li))).forEach(function (s) { push(li, sec, s); });
+          });
+          return;
+        }
+        cut(say(textOf(el))).forEach(function (s) { push(el, sec, s); });
+      }
+      function build() {
+        chunks = [];
+        var h1 = article.querySelector('h1');
+        var intro = article.querySelector('.topic-intro');
+        if (h1) push(h1, null, say(h1.textContent));
+        if (intro) cut(say(textOf(intro))).forEach(function (s) { push(intro, null, s); });
+        secs.forEach(function (d, n) {
+          var sum = d.querySelector('summary');
+          var title = d.querySelector('.sec-title');
+          push(sum, d, 'Section ' + (n + 1) + '. ' + say(title ? title.textContent : ''));
+          blocksOf(d.querySelector('.sec-body')).forEach(function (el) { addBlock(el, d); });
+        });
+      }
+
+      /* ---- following along on screen ---- */
+
+      function openSec(d) {
+        if (!d || d.open) return;
+        delete closedByHand[d.id];
+        pauseAuto();                 // don't let the jump drag other sections open
+        d.open = true;
+      }
+      function mark(el) {
+        if (markEl === el) return;
+        if (markEl) markEl.classList.remove('speaking');
+        markEl = el;
+        if (markEl) markEl.classList.add('speaking');
+      }
+      function follow(el) {
+        if (!el || Date.now() < followUntil) return;   // the reader just scrolled; leave them alone
+        var r = el.getBoundingClientRect();
+        if (r.top > 120 && r.bottom < window.innerHeight - 150) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      function paintWhere() {
+        var c = chunks[idx];
+        var n = c && c.sec ? secs.indexOf(c.sec) + 1 : 0;
+        whereEl.textContent = n ? 'Section ' + n + ' of ' + secs.length : 'Intro';
+      }
+      function paintRate() {
+        rateEl.value = rate;
+        rateVal.textContent = rate.toFixed(1) + '×';
+      }
+
+      /* ---- where we got to, per topic ---- */
+
+      function remember() {
+        var c = chunks[idx], n = c && c.sec ? secs.indexOf(c.sec) : -1;
+        if (n === markSec) return;              // only write when the section changes
+        markSec = n;
+        var at = load(LS_LISTEN_AT, {});
+        at[id] = idx;
+        save(LS_LISTEN_AT, at);
+      }
+      function forget() {
+        var at = load(LS_LISTEN_AT, {});
+        delete at[id];
+        save(LS_LISTEN_AT, at);
+        markSec = -1;
+      }
+      function savedIdx() {
+        var at = load(LS_LISTEN_AT, {})[id];
+        return (typeof at === 'number' && at > 0 && at < chunks.length) ? at : 0;
+      }
+
+      /* ---- voices ---- */
+
+      function voiceById(vid) {
+        for (var i = 0; i < voices.length; i++) {
+          if ((voices[i].voiceURI || voices[i].name) === vid) return voices[i];
+        }
+        return null;
+      }
+      function fillVoices() {
+        var allV = synth.getVoices() || [];
+        if (!allV.length) return;
+        var en = allV.filter(function (v) { return /^en/i.test(v.lang); });
+        voices = en.length ? en : allV;
+        voiceSel.textContent = '';
+        voices.forEach(function (v) {
+          var o = document.createElement('option');
+          o.value = v.voiceURI || v.name;
+          o.textContent = v.name.replace(/\s*\(.*\)$/, '') + (v.localService ? '' : ' · online');
+          voiceSel.appendChild(o);
+        });
+        if (!voiceById(voiceId)) {
+          var best = voices.filter(function (v) { return v.localService; })[0] || voices[0];
+          voiceId = best ? (best.voiceURI || best.name) : '';
+        }
+        voiceSel.value = voiceId;
+      }
+      fillVoices();
+      // Chrome fills the list asynchronously, so it is usually empty on the first ask
+      if (typeof synth.addEventListener === 'function') synth.addEventListener('voiceschanged', fillVoices);
+      else synth.onvoiceschanged = fillVoices;
+
+      /* ---- playing ---- */
+
+      function speakAt(i) {
+        if (i < 0) i = 0;
+        if (i >= chunks.length) return finishAll();
+        var mine = ++gen;
+        idx = i;
+        remember();
+        var c = chunks[i];
+        openSec(c.sec);
+        mark(c.el);
+        follow(c.el);
+        paintWhere();
+        var u = new SpeechSynthesisUtterance(c.text);
+        u.rate = rate;
+        var v = voiceById(voiceId);
+        if (v) { u.voice = v; u.lang = v.lang; }
+        u.onend = function () {
+          if (mine !== gen || !playing || held) return;
+          speakAt(idx + 1);
+        };
+        u.onerror = function (e) {
+          if (mine !== gen || !playing || held) return;
+          if (e && (e.error === 'interrupted' || e.error === 'canceled')) return;
+          speakAt(idx + 1);              // one bad sentence should not end the session
+        };
+        utterAt = Date.now();
+        synth.speak(u);
+      }
+      function start(from) {
+        if (!chunks.length) build();
+        if (!chunks.length) return;
+        // listening and auto scroll would both be moving the page
+        var ss = $('scrollStop');
+        if (ss && root.hasAttribute('data-autoscroll')) ss.click();
+        playing = true;
+        held = false;
+        root.setAttribute('data-listen', 'on');
+        listenBtn.setAttribute('aria-pressed', 'true');
+        toggleBtn.setAttribute('aria-label', 'Pause');
+        gen++;
+        synth.cancel();
+        speakAt(typeof from === 'number' ? from : savedIdx());
+      }
+      /* pause() is unreliable on Android and iOS, so holding drops the current
+         sentence and playing starts it again. One sentence repeated is a far
+         smaller annoyance than a pause that never resumes. */
+      function hold() {
+        held = true;
+        gen++;
+        synth.cancel();
+        root.setAttribute('data-listen', 'hold');
+        toggleBtn.setAttribute('aria-label', 'Play');
+      }
+      function unhold() {
+        held = false;
+        root.setAttribute('data-listen', 'on');
+        toggleBtn.setAttribute('aria-label', 'Pause');
+        speakAt(idx < 0 ? 0 : idx);
+      }
+      function stop() {
+        playing = false;
+        held = false;
+        gen++;
+        synth.cancel();
+        root.removeAttribute('data-listen');
+        listenBtn.setAttribute('aria-pressed', 'false');
+        mark(null);
+      }
+      function finishAll() { stop(); forget(); }
+
+      function secStart(sec) {
+        for (var i = 0; i < chunks.length; i++) if (chunks[i].sec === sec) return i;
+        return 0;
+      }
+      /* Back goes to the top of the section you are in, unless you are already
+         there, in which case it goes to the one before. Same as any music player. */
+      function jump(dir) {
+        var c = chunks[idx] || chunks[0];
+        if (!c) return;
+        var cur = c.sec ? secs.indexOf(c.sec) : -1, target;
+        if (dir < 0) {
+          var top = c.sec ? secStart(c.sec) : 0;
+          target = idx > top + 1 ? top : (cur <= 0 ? 0 : secStart(secs[cur - 1]));
+        } else {
+          if (cur + 1 >= secs.length) return finishAll();
+          target = secStart(secs[cur + 1]);
+        }
+        gen++;
+        synth.cancel();
+        held = false;
+        root.setAttribute('data-listen', 'on');
+        toggleBtn.setAttribute('aria-label', 'Pause');
+        speakAt(target);
+      }
+
+      /* ---- wiring ---- */
+
+      paintRate();
+      listenBtn.addEventListener('click', function () { if (playing) stop(); else start(); });
+      toggleBtn.addEventListener('click', function () {
+        if (!playing) return start();
+        if (held) unhold(); else hold();
+      });
+      stopBtn.addEventListener('click', function () { stop(); });
+      prevBtn.addEventListener('click', function () { jump(-1); });
+      nextBtn.addEventListener('click', function () { jump(1); });
+
+      /* A new speed only reaches the engine on the next sentence, so the current
+         one is restarted at the new speed. */
+      rateEl.addEventListener('input', function () {
+        rate = Number(rateEl.value);
+        paintRate();
+        save(LS_LISTEN, { rate: rate, voice: voiceId });
+      });
+      rateEl.addEventListener('change', function () {
+        if (playing && !held) { gen++; synth.cancel(); speakAt(idx); }
+      });
+      voiceSel.addEventListener('change', function () {
+        voiceId = voiceSel.value;
+        save(LS_LISTEN, { rate: rate, voice: voiceId });
+        if (playing && !held) { gen++; synth.cancel(); speakAt(idx); }
+      });
+
+      // turning auto scroll on while listening stops the listening instead
+      var sBtn = $('scrollBtn');
+      if (sBtn) sBtn.addEventListener('click', function () {
+        if (playing && root.hasAttribute('data-autoscroll')) stop();
+      });
+
+      // scrolling by hand means "I want to look at something": stop following for a bit
+      ['wheel', 'touchmove'].forEach(function (type) {
+        window.addEventListener(type, function () {
+          if (playing) followUntil = Date.now() + 6000;
+        }, { passive: true });
+      });
+
+      document.addEventListener('keydown', function (e) {
+        var t = e.target;
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+        if (e.key === 'l' || e.key === 'L') { if (playing) stop(); else start(); }
+        else if (e.key === 'Escape' && playing) stop();
+      });
+
+      /* Chrome stops a single utterance after about 15 seconds. Sentences are
+         short enough that it almost never bites; this catches the long ones. */
+      setInterval(function () {
+        if (!playing || held || !synth.speaking) return;
+        if (Date.now() - utterAt < 10000) return;
+        synth.pause();
+        synth.resume();
+      }, 4000);
+
+      // the engine lives outside the page, so it keeps talking unless we stop it
+      window.addEventListener('pagehide', function () { synth.cancel(); });
+      window.addEventListener('beforeunload', function () { synth.cancel(); });
+    })();
   }
 
   paint();

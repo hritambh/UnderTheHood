@@ -53,6 +53,11 @@ const THEME_ICON =
 const SIDE_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 4.5v15" fill="none" stroke="currentColor" stroke-width="1.8"/><rect class="side-fill" x="5.4" y="6.4" width="2.4" height="11.2" rx=".8" fill="currentColor"/></svg>';
 
 const SCROLL_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3.5v11M7.5 10l4.5 4.5 4.5-4.5M5.5 19.5h13"/></svg>';
+const LISTEN_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.800" stroke-linecap="round" d="M4.5 14.5v-2.5a7.5 7.5 0 0 1 15 0v2.500"/><rect x="2.700" y="13.200" width="4.600" height="7.300" rx="2.300" fill="none" stroke="currentColor" stroke-width="1.800"/><rect x="16.700" y="13.200" width="4.600" height="7.300" rx="2.300" fill="none" stroke="currentColor" stroke-width="1.800"/></svg>';
+const PLAY_ICON = '<svg class="i-play" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M7.5 4.800 19 12 7.5 19.200z" fill="currentColor"/></svg>';
+const PAUSE_ICON = '<svg class="i-pause" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><rect x="6.800" y="5" width="3.800" height="14" rx="1.200" fill="currentColor"/><rect x="13.400" y="5" width="3.800" height="14" rx="1.200" fill="currentColor"/></svg>';
+const PREVSEC_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M18 5.200 8.800 12 18 18.800z" fill="currentColor"/><rect x="5" y="5" width="2.600" height="14" rx="1.100" fill="currentColor"/></svg>';
+const NEXTSEC_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M6 5.200 15.200 12 6 18.800z" fill="currentColor"/><rect x="16.400" y="5" width="2.600" height="14" rx="1.100" fill="currentColor"/></svg>';
 const BOOK_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.800" stroke-linecap="round" stroke-linejoin="round" d="M12 6.500C10.300 5.200 7.800 4.500 4.500 4.500v13c3.300 0 5.800.700 7.500 2 1.700-1.300 4.200-2 7.500-2v-13c-3.300 0-5.800.700-7.500 2zM12 6.500v13"/></svg>';
 
 function page({ root, title, description, bodyAttrs, body, scripts, v }) {
@@ -96,6 +101,7 @@ function topbar(root, hubTitle, withSidebar) {
         <label class="read-row col"><span>Intensity <output id="readVal" for="readRange">50%</output></span><input type="range" id="readRange" min="10" max="100" step="5" value="50"></label>
       </div>
     </div>
+    ${withSidebar ? `<button class="theme-btn" id="listenBtn" type="button" aria-label="Listen to this topic" title="Listen to this topic (L)" aria-pressed="false">${LISTEN_ICON}</button>` : ''}
     <button class="theme-btn" id="scrollBtn" type="button" aria-label="Auto scroll" title="Auto scroll" aria-pressed="false">${SCROLL_ICON}</button>
     <button class="theme-btn" id="themeBtn" type="button" aria-label="Switch between light and dark theme">${THEME_ICON}</button>
   </div>
@@ -105,7 +111,17 @@ function topbar(root, hubTitle, withSidebar) {
   <input class="autobar-range" type="range" id="scrollRange" min="10" max="200" step="5" value="40" aria-label="Auto scroll speed">
   <output class="autobar-val" id="scrollVal" for="scrollRange">40 px/s</output>
   <span class="autobar-hint"><span class="hint-click">double-click anywhere to stop</span><span class="hint-tap">double-tap anywhere to stop</span></span>
-</div>`;
+</div>
+${withSidebar ? `<div class="playbar" id="playBar" role="group" aria-label="Listen to this topic">
+  <button class="playbar-btn" id="playPrev" type="button" aria-label="Previous section" title="Previous section">${PREVSEC_ICON}</button>
+  <button class="playbar-main" id="playToggle" type="button" aria-label="Pause">${PLAY_ICON}${PAUSE_ICON}</button>
+  <button class="playbar-btn" id="playNext" type="button" aria-label="Next section" title="Next section">${NEXTSEC_ICON}</button>
+  <span class="playbar-where" id="playWhere">Intro</span>
+  <select class="playbar-sel" id="playVoice" aria-label="Voice"></select>
+  <input class="playbar-range" type="range" id="playRate" min="0.7" max="1.8" step="0.1" value="1" aria-label="Speech speed">
+  <output class="playbar-val" id="playRateVal" for="playRate">1.0&times;</output>
+  <button class="playbar-stop" id="playStop" type="button">Stop</button>
+</div>` : ''}`;
 }
 
 /* Words a developer would not say out loud to a teammate. TOPIC_STYLE.md part 8 lists the plain swaps. */
@@ -404,6 +420,7 @@ export function build() {
         <li>Mark each topic as Not started, In progress, or Completed. Your progress is saved in this browser.</li>
         <li>Inside a track, switch between grid and list view with the two buttons next to the filters. Your choice is remembered.</li>
         <li>The book button at the top turns on reading mode: a warm tint that is easier on the eyes. Use its slider to make the tint lighter or stronger.</li>
+        <li>The headphones button on a topic page reads it out loud, using your browser&rsquo;s own voice. It follows along on screen, opens each section as it reaches it, reads diagrams from their descriptions, and picks up where you left off. Press <kbd>L</kbd> to start or stop.</li>
         <li>The search box at the top works on every page. It suggests topics as you type, and it looks inside the topics too. Press <kbd>/</kbd> to jump to it, then use the arrow keys and Enter.</li>
         <li>Inside a track, the filter box narrows the list, and shows which sections mention your word.</li>
         <li>Every topic ends with a quick revision: a short summary of what you learnt.</li>
