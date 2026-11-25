@@ -788,9 +788,14 @@
       var rate = 1, voiceId = '', voices = [];
       var markEl = null, markSec = -1, followUntil = 0, utterAt = 0;
 
+      var CFGV = 2;
       var cfg = load(LS_LISTEN, {});
       if (typeof cfg.rate === 'number' && cfg.rate >= MINR && cfg.rate <= MAXR) rate = cfg.rate;
-      if (typeof cfg.voice === 'string') voiceId = cfg.voice;
+      /* Version 1 defaulted to the first local voice, which on a Mac can be a
+         novelty one. Drop a v1 choice so the ranking above gets a say; anything
+         chosen since is kept. */
+      if (cfg.v === CFGV && typeof cfg.voice === 'string') voiceId = cfg.voice;
+      function saveCfg() { save(LS_LISTEN, { v: CFGV, rate: rate, voice: voiceId }); }
 
       /* ---- turning markup into something speakable ---- */
 
@@ -838,7 +843,7 @@
       }
       /* One sentence per utterance, and a very long one broken at a comma. */
       function cut(t) {
-        var out = [];
+        var out = [], parts = [];
         if (!t) return out;
         t.replace(/([.!?])\s+/g, '$1\u0001').split('\u0001').forEach(function (p) {
           p = p.trim();
@@ -846,11 +851,24 @@
             var at = p.lastIndexOf(', ', LONG);
             if (at < 60) at = p.lastIndexOf(' ', LONG);
             if (at < 40) break;
-            out.push(p.slice(0, at + 1).trim());
+            parts.push(p.slice(0, at + 1).trim());
             p = p.slice(at + 1).trim();
           }
-          if (p) out.push(p);
+          if (p) parts.push(p);
         });
+        /* Pack short sentences back together up to the same cap. One utterance
+           per full stop makes the engine stop dead at every one of them; giving
+           it a paragraph's worth lets it carry the phrasing across, which is
+           most of what makes it sound stilted. The highlight is per block, so
+           nothing is lost by grouping. */
+        var buf = '';
+        parts.forEach(function (p) {
+          if (!buf) { buf = p; return; }
+          if (buf.length + 1 + p.length <= LONG) { buf += ' ' + p; return; }
+          out.push(buf);
+          buf = p;
+        });
+        if (buf) out.push(buf);
         return out;
       }
 
@@ -975,20 +993,42 @@
         }
         return null;
       }
+      /* macOS ships a pile of novelty voices (Bubbles, Zarvox, Bad News). They
+         stay in the list, at the bottom, but are never picked for you. */
+      var JOKE = /^(albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|good news|hysterical|jester|junior|organ|pipe organ|princess|superstar|trinoids|whisper|wobble|zarvox|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley|kathy|ralph|fred|bruce|agnes|victoria)\b/i;
+      var PLAIN = /^(samantha|daniel|karen|moira|tessa|rishi|alex|ava|allison|susan|tom|serena|fiona|nicky|aaron|zoe|evan|joelle|nathan|noelle)\b/i;
+      var TIER = ['novelty', '', '', 'online', 'enhanced', 'natural'];
+
+      /* How human a voice is likely to sound. It goes on the name the engine
+         reports, so it is a guess, but a reliable one. */
+      function grade(v) {
+        var n = v.name || '';
+        if (/natural|neural/i.test(n)) return 5;      // Edge's free neural voices
+        if (/premium|enhanced/i.test(n)) return 4;    // the macOS extra downloads
+        if (/^google/i.test(n)) return 3;             // Chrome's online voices
+        if (PLAIN.test(n)) return 2;                  // the decent built-in ones
+        if (JOKE.test(n)) return 0;
+        return 1;
+      }
       function fillVoices() {
         var allV = synth.getVoices() || [];
         if (!allV.length) return;
         var en = allV.filter(function (v) { return /^en/i.test(v.lang); });
-        voices = en.length ? en : allV;
+        voices = (en.length ? en : allV).slice().sort(function (a, b) {
+          return grade(b) - grade(a) || a.name.localeCompare(b.name);
+        });
         voiceSel.textContent = '';
         voices.forEach(function (v) {
           var o = document.createElement('option');
+          var tier = TIER[grade(v)];
           o.value = v.voiceURI || v.name;
-          o.textContent = v.name.replace(/\s*\(.*\)$/, '') + (v.localService ? '' : ' · online');
+          o.textContent = v.name.replace(/\s*\(.*\)$/, '').replace(/^(Microsoft|Google)\s+/, '') +
+            (tier ? ' · ' + tier : '');
           voiceSel.appendChild(o);
         });
         if (!voiceById(voiceId)) {
-          var best = voices.filter(function (v) { return v.localService; })[0] || voices[0];
+          // the best there is, and never a novelty voice unless nothing else exists
+          var best = voices.filter(function (v) { return grade(v) >= 2; })[0] || voices[0];
           voiceId = best ? (best.voiceURI || best.name) : '';
         }
         voiceSel.value = voiceId;
@@ -1111,14 +1151,14 @@
       rateEl.addEventListener('input', function () {
         rate = Number(rateEl.value);
         paintRate();
-        save(LS_LISTEN, { rate: rate, voice: voiceId });
+        saveCfg();
       });
       rateEl.addEventListener('change', function () {
         if (playing && !held) { gen++; synth.cancel(); speakAt(idx); }
       });
       voiceSel.addEventListener('change', function () {
         voiceId = voiceSel.value;
-        save(LS_LISTEN, { rate: rate, voice: voiceId });
+        saveCfg();
         if (playing && !held) { gen++; synth.cancel(); speakAt(idx); }
       });
 
