@@ -111,20 +111,18 @@ function topbar(root, hubTitle, withSidebar) {
 /* Words a developer would not say out loud to a teammate. TOPIC_STYLE.md part 8 lists the plain swaps. */
 /* Length and visual budget. TOPIC_STYLE.md part 7.
    A topic is for learning, so it stays short and leans on diagrams. */
-const MAX_SECTION_WORDS = 250;  // prose only; code and diagram text don't count
+const MAX_SECTION_WORDS = 300;  // prose only; code and diagram text don't count
 const MIN_DIAGRAMS = 2;
 
-/* Most tracks fit 1,400-1,900 words. system-design does not, and that is the
-   format's doing, not the writer's: on top of the prose it must carry an
-   estimates table, an endpoint table, a schema, a failure table, a scaling
-   table and an interview plan. Tables and schemas are scanned, not read line
-   by line, so the same word count is a shorter sitting. It gets its own
-   numbers rather than being cut until the required parts go missing.
-   Its deepDives section also holds 2-4 sub-dives, so it gets more room too. */
+/* Aim for about 2,500 words: a 12 to 13 minute read. That is a target, not a
+   wall. A subject that genuinely needs more room gets it rather than being cut
+   until the required parts go missing. The note below only fires well past the
+   target, as a prompt to check the length was deliberate.
+   system-design's deepDives holds 2-4 sub-dives, so it gets more room again. */
 const BUDGET = {
-  'system-design': { target: '1,800 to 2,300', max: 2500, sections: { deepDives: 400 } },
+  'system-design': { target: 'about 2,500', max: 3000, sections: { deepDives: 500 } },
 };
-const DEFAULT_BUDGET = { target: '1,400 to 1,900', max: 2200, sections: {} };
+const DEFAULT_BUDGET = { target: 'about 2,500', max: 3000, sections: {} };
 const budgetFor = track => BUDGET[track] || DEFAULT_BUDGET;
 
 const FORMAL_WORDS = /\b(utili[sz]e[sd]?|utili[sz]ing|leverag(?:e|es|ed|ing)|facilitat\w+|subsequently|consequently|furthermore|moreover|thus|hence|therefore|whereas|aforementioned|in order to|prior to|with respect to|numerous|commenc\w+|thereby|wherein|plethora|myriad|paradigm|seamless(?:ly)?|delv(?:e|es|ed|ing)|pivotal|paramount|compris\w+|ascertain\w*|elucidat\w+|necessitat\w+|pertaining|albeit|whilst|nonetheless|nevertheless|approximately|sufficient(?:ly)?|obtain(?:s|ed|ing)?|mitigat\w+|additionally|regarding|endeavou?r\w*)\b/gi;
@@ -262,7 +260,7 @@ export function build() {
     const topicWords = plain(noSvg(all)).split(/\s+/).filter(Boolean).length;
     const budget = budgetFor(file.split('/')[0]);
     if (topicWords > budget.max) {
-      notes.push(`${file}: ${topicWords} words, about a ${Math.round(topicWords / 200)} minute read. The budget for this track is ${budget.target} words. Do the cutting pass in TOPIC_STYLE.md part 7`);
+      notes.push(`${file}: ${topicWords} words, about a ${Math.round(topicWords / 200)} minute read. The target is ${budget.target} words. Check the length is deliberate, and do the cutting pass in TOPIC_STYLE.md part 7 if it is not`);
     }
     const long = [];
     const diagrams = (all.match(/class="diagram"/g) || []).length;

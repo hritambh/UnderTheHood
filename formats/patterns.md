@@ -21,8 +21,8 @@ The test: can you say "use the X pattern here" and another developer knows what 
 
 The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
 
-- **1,400 to 1,900 words** for the whole topic: a 7 to 10 minute read. The build prints a `Note:` over 2,200.
-- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **About 2,500 words** for the whole topic: a 12 to 13 minute read. That is a target, not a wall. A subject that genuinely needs more room gets it rather than being cut until the required parts go missing; the build only prints a `Note:` past 3,000.
+- **100 to 200 words** per section, 300 at the very most. All 12 sections are still written. Each one is just short.
 - **At least two diagrams**: one in `problem` showing how it breaks without the pattern, one in `how` showing it working.
 - Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
 - Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
@@ -51,7 +51,7 @@ The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for l
 - Two diagrams: how it breaks in `problem`, and how it works in `how`.
 - Before and after code in `code`.
 - A "Skip it when" part in `whenToUse`.
-- The whole topic under 1,900 words, and no section over 250. See "Length and visuals" above.
+- The whole topic around 2,500 words, and no section over 300. See "Length and visuals" above.
 
 ## Skeleton
 

@@ -30,11 +30,11 @@ The file order is fixed by the guide. This is the order to think in.
 
 The reader wants to understand this well enough to explain it and use it. Everything past that is weight.
 
-- Budget: **1,800 to 2,300 words** for the whole topic, 100 to 150 per section, 250 at the very most (`deepDives` is allowed 400). This track's budget is higher than the rest: six tables and a schema are mandatory here. Full rule: `TOPIC_STYLE.md` part 7.
+- Budget: **about 2,500 words** for the whole topic, 100 to 200 per section, 300 at the very most (`deepDives` is allowed 500). It is a target, not a wall: six tables and a schema are mandatory here, so this track usually lands at the top of the range. Full rule: `TOPIC_STYLE.md` part 7.
 - **Draw first.** Sketch the two diagrams before writing prose: the architecture in `highLevel`, and one more in `deepDives` or `data`. Then write only what the diagrams don't already say.
 - A table beats three paragraphs comparing things. A numbered list beats a paragraph of steps.
 - Say the useful thing in a section, then stop. A short section is not a thin one.
-- **Cutting pass, every time.** Run `npm run build`, take the section it flags as longest, cut what repeats, turn the longest explanation left into a diagram or a table. Build again. Repeat until the topic is under 10 minutes.
+- **Cutting pass, every time.** Run `npm run build`, take the section it flags as longest, cut what repeats, turn the longest explanation left into a diagram or a table. Build again. Repeat until every sentence left is earning its place.
 - First thing to cut here: deep dives, down to two. And the API, down to the four or five endpoints that matter.
 
 ## Traps in this track
@@ -54,6 +54,6 @@ The reader wants to understand this well enough to explain it and use it. Everyt
 - [ ] The database choice in `data` is stated with its reason.
 - [ ] Concepts with their own topic are linked in `related`, not explained again.
 - [ ] Every "Must have" item in the guide is there.
-- [ ] The build shows the topic at 10 minutes or less, with no length or diagram `Note:`.
+- [ ] The build prints no length or diagram `Note:` for the topic.
 - [ ] Two diagrams at least, where the guide says they go.
 - [ ] The cutting pass was actually done, not just planned.

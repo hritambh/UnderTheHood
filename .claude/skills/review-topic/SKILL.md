@@ -13,7 +13,7 @@ Checks one or more files under `content/topics/` against:
 
 These three files are the source of truth.
 
-The first thing to check is always the same: **is this easy to learn from?** Moderate depth, short, and visual. A topic over 9 minutes, or with fewer than two diagrams, has a real problem even if everything in it is correct.
+The first thing to check is always the same: **is this easy to learn from?** Moderate depth and visual. A padded topic, or one with fewer than two diagrams, has a real problem even if everything in it is correct.
 
 ## Steps
 
@@ -23,7 +23,7 @@ The first thing to check is always the same: **is this easy to learn from?** Mod
 
 3. **Run `npm run build`.**
    - Errors: the file breaks the format. These must be fixed.
-   - Lines starting with `Note:`: problems the build can detect. Length and visuals (topic over its track's limit, sections over 250, fewer than two diagrams, four paragraphs in a row with nothing between them), and style (missing sections, wrong heading level, unwrapped table, hard-coded colour, repeated id, repeated order number, formal words, a revision that is more than a list).
+   - Lines starting with `Note:`: problems the build can detect. Length and visuals (topic over its track's limit, sections over 300, fewer than two diagrams, four paragraphs in a row with nothing between them), and style (missing sections, wrong heading level, unwrapped table, hard-coded colour, repeated id, repeated order number, formal words, a revision that is more than a list).
 
 4. **Read the whole topic file** and check what the build cannot:
 
@@ -38,8 +38,8 @@ The first thing to check is always the same: **is this easy to learn from?** Mod
    - `revision` is only a summary list of 6 to 10 points. It has no questions, key terms or scenario, and nothing that the topic did not teach earlier.
 
    **Depth, length and visuals** (`TOPIC_STYLE.md` part 7)
-   - The whole topic is 1,400 to 1,900 words, a 7 to 10 minute read (1,800 to 2,300 in `system-design`). The build prints the notes; the page header shows the time.
-   - No section runs past about 250 words, and no paragraph past 5 sentences.
+   - The whole topic is near 2,500 words, a 12 to 13 minute read. That is a target, not a wall: flag padding, not length that the subject earns. The build prints the notes; the page header shows the time.
+   - No section runs past about 300 words, and no paragraph past 5 sentences.
    - At least two diagrams, in the places the format file names.
    - The depth is moderate: what it is, why, how it works at whiteboard level, when to use it, what it costs, the usual mistakes. Flag every list of options and flags, long edge-case chain, history lesson, and second example that makes the same point as the first.
    - Nothing is explained twice. Flag a paragraph that says what a diagram, table or list next to it already says.
@@ -84,5 +84,5 @@ The first thing to check is always the same: **is this easy to learn from?** Mod
 
 - Do not push or deploy as part of a review. A push to `main` goes live automatically.
 - Do not rewrite sections that have no problem.
-- Do not pass a topic that is over budget because the subject is big. Say what to cut, or say it should be split into two topics.
+- Do not pass a padded topic. Say what to cut. Length the subject genuinely earns is fine.
 - Do not move a topic to another track yourself. Flag it.

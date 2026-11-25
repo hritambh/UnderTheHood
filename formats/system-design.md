@@ -23,8 +23,8 @@ When a design uses an idea that has its own topic, explain it in one or two sent
 
 The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for learning, not for reference.
 
-- **1,800 to 2,300 words** for the whole topic: a 9 to 12 minute read. The build prints a `Note:` over 2,500. This track gets more room than the others because its 12 sections carry six tables and a schema; `TOPIC_STYLE.md` part 7 says why.
-- **100 to 150 words** per section, 250 at the very most &mdash; except `deepDives`, which holds 2 to 4 sub-dives and is allowed 400. All 12 sections are still written. Each one is just short.
+- **About 2,500 words** for the whole topic: a 12 to 13 minute read. That is a target, not a wall. A subject that genuinely needs more room gets it rather than being cut until the required parts go missing; the build only prints a `Note:` past 3,000. This track carries six tables and a schema on top of the prose, so it usually lands at the top of that range.
+- **100 to 200 words** per section, 300 at the very most &mdash; except `deepDives`, which holds 2 to 4 sub-dives and is allowed 500. All 12 sections are still written. Each one is just short.
 - **At least two diagrams**: one architecture diagram in `highLevel`, one more in `deepDives` or `data`.
 - Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
 - Moderate depth: enough to understand it, explain it to someone, and use it. Then stop.
@@ -54,7 +54,7 @@ The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for l
 - An endpoint table in `api`, and a failure table in `failures`.
 - A stated database choice with the reason, in `data`.
 - A "Not doing" list in `requirements`. A design with no limits is not a design.
-- The whole topic under 2,300 words, no section over 250, and `deepDives` under 400. See "Length and visuals" above.
+- The whole topic around 2,500 words, no section over 300, and `deepDives` under 500. See "Length and visuals" above.
 
 ## Skeleton
 

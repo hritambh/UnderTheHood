@@ -84,5 +84,5 @@ is. Replace what has to go with a plain stand-in, and say in the text that it is
 - [ ] `tradeoffs` names a real cost and a real thing to do differently.
 - [ ] `interview` has a two-minute version that reads like speech, not like a document.
 - [ ] Nothing on the private-safe list above is in the file.
-- [ ] The build shows the topic at 10 minutes or less, with no length or diagram `Note:`.
+- [ ] The build prints no length or diagram `Note:` for the topic.
 - [ ] The cutting pass was actually done, not just planned.

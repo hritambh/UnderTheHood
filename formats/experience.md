@@ -66,8 +66,8 @@ managers or other teams. An interviewer reads a complaint as a risk.
 The same budget as every other track (`TOPIC_STYLE.md` part 7). A topic is for
 revision, not for a full design document.
 
-- **1,400 to 1,900 words** for the whole topic: a 7 to 10 minute read. The build prints a `Note:` over 2,200.
-- **100 to 150 words** per section, 250 at the very most. All 12 sections are still written. Each one is just short.
+- **About 2,500 words** for the whole topic: a 12 to 13 minute read. That is a target, not a wall. A subject that genuinely needs more room gets it rather than being cut until the required parts go missing; the build only prints a `Note:` past 3,000.
+- **100 to 200 words** per section, 300 at the very most. All 12 sections are still written. Each one is just short.
 - **At least two diagrams**: one in `architecture` showing how the pieces fitted together, and one more showing what changed &mdash; a before and after in `problem` or `results`, or the flow of the hardest part in `hardParts`.
 - Reach for a diagram, a table or a numbered list before a paragraph. A diagram replaces prose; it is not added next to it.
 - First thing to cut in this track: background about the company and the team that doesn't change how the work is understood.
@@ -98,7 +98,7 @@ revision, not for a full design document.
 - At least one honest cost in `tradeoffs`, and at least one thing you'd do differently.
 - A two-minute spoken version in `interview`.
 - No private details, as described above.
-- The whole topic under 1,900 words, and no section over 250. See "Length and visuals" above.
+- The whole topic around 2,500 words, and no section over 300. See "Length and visuals" above.
 
 ## Skeleton
 
