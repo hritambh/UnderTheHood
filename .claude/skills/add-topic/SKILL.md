@@ -83,7 +83,7 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
      - if a sentence sounds like a textbook or a docs page when read out loud, rewrite it
    - Give every diagram marker a unique id, like `ah-<topic id>`.
    - Be accurate. Don't invent benchmarks, limits, version details, incident facts or quotes. Label made-up example numbers as assumptions. If you are not sure a fact is right, check it or leave it out.
-   - `revision` is only a summary list of what the topic taught. No questions, key terms or scenario.
+   - `revision` is only a summary list of what the topic taught. No questions, key terms or scenario. Write it carefully: the build also collects it into `/revise/<track>.html`, the whole-track revision page, where it is read without the topic around it. A new topic lands there by itself, in `order`, so there is nothing to add by hand &mdash; but a weak revision list shows up there as a weak entry.
    - Don't re-teach what another topic covers. Give it one or two sentences and add that topic to `related`.
 
 9. **Cut it down.** The first draft is always too long. Run `npm run build` and read the reading time and the length notes.
@@ -108,6 +108,7 @@ Never invent your own structure, skip the track's files, or copy the Core Concep
     - the track you chose and why
     - the file you created and where it sits in the track's order
     - its reading time and how many diagrams it has
+    - that it now appears on `/revise/<track>.html`, which the build regenerates
     - anything you flagged in step 5
     - anything you left out, could not verify, or were unsure about
     - any back-links you suggest for older topics

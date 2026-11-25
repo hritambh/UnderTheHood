@@ -132,6 +132,8 @@ The section keys and titles also live in `content/hub.json`, which is what the s
 
 Every track ends with `revision`, and the rules are the same everywhere. It is only a summary of what the topic taught.
 
+This list has a second job. The build collects every topic's `revision` into `/revise/<track>.html`, the page for revising a whole track before an interview, so these points are read on their own, away from the topic that explains them. That is why each one has to stand up by itself.
+
 - It is one `<ul>` list of 6 to 10 points. No headings, no paragraphs around it.
 - Each point is one idea, in one or two short sentences.
 - Follow the order the topic taught things.

@@ -36,6 +36,7 @@ The first thing to check is always the same: **is this easy to learn from?** Mod
    - The extra rules in the format file are followed (for example: version named in `internals`, source named and no private details in `incidents`, runnable SQL in `databases`, hand-traced code in `dsa`, defence only in `security`, fair to both sides in `decisions`).
    - The first section ends with a one-line version in a note box.
    - `revision` is only a summary list of 6 to 10 points. It has no questions, key terms or scenario, and nothing that the topic did not teach earlier.
+   - Read the `revision` list on its own, as it appears on `/revise/<track>.html`, with the topic hidden. Every point still has to make sense there. Flag any that only works next to the paragraph above it.
 
    **Depth, length and visuals** (`TOPIC_STYLE.md` part 7)
    - The whole topic is near 2,500 words, a 12 to 13 minute read. That is a target, not a wall: flag padding, not length that the subject earns. The build prints the notes; the page header shows the time.
