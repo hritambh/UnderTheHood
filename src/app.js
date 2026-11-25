@@ -843,6 +843,206 @@
     })();
   }
 
+
+  /* ---------- interactive diagrams ----------
+     The diagrams are hand-written SVG inside the topic files and they stay
+     that way: nothing here changes the markup. It works out which arrow
+     touches which box from the coordinates already in the file, then lets the
+     reader hover a box to see only what it connects to, or walk the flow one
+     connection at a time. A diagram too small to be confusing is left alone,
+     and with no JavaScript it is exactly the picture it always was. */
+  function setupDiagrams(root) {
+    var TOUCH = 34;        // how close an arrow end has to be to count as touching a box
+    var INBOX = 8;         // a label this close to a box belongs to it
+    var NEARLINE = 46;     // a loose label this close to an arrow belongs to that arrow
+
+    function num(el, a) { return parseFloat(el.getAttribute(a)) || 0; }
+    function geomOf(el) {
+      if (el.tagName.toLowerCase() === 'circle') {
+        var r = num(el, 'r');
+        return { x: num(el, 'cx') - r, y: num(el, 'cy') - r, w: 2 * r, h: 2 * r };
+      }
+      return { x: num(el, 'x'), y: num(el, 'y'), w: num(el, 'width'), h: num(el, 'height') };
+    }
+    /* Both ends of a connector, straight from the attributes. For a path the
+       first and last pair of numbers in "d" are its start and finish, which
+       holds for the M/L/C/Q shapes these diagrams use. */
+    function endsOf(el) {
+      if (el.tagName.toLowerCase() === 'line') {
+        return [[num(el, 'x1'), num(el, 'y1')], [num(el, 'x2'), num(el, 'y2')]];
+      }
+      var n = (el.getAttribute('d') || '').match(/-?\d*\.?\d+/g);
+      if (!n || n.length < 4) return null;
+      return [[+n[0], +n[1]], [+n[n.length - 2], +n[n.length - 1]]];
+    }
+    function gap(p, g) {
+      var dx = Math.max(g.x - p[0], 0, p[0] - (g.x + g.w));
+      var dy = Math.max(g.y - p[1], 0, p[1] - (g.y + g.h));
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+    function nearestBox(p, boxes, limit) {
+      var best = -1, bd = limit;
+      boxes.forEach(function (b, i) {
+        var d = gap(p, b.geo);
+        if (d <= bd) { bd = d; best = i; }
+      });
+      return best;
+    }
+
+    all('.diagram', root || document).forEach(function (wrap) {
+      if (wrap.hasAttribute('data-dia')) return;
+      var svg = wrap.querySelector('svg');
+      if (!svg) return;
+
+      var boxes = all('rect.box, circle.box', svg).map(function (el) {
+        return { el: el, geo: geomOf(el), conns: [] };
+      });
+      var rawConns = all('line.arr, path.arr', svg).filter(function (el) {
+        return !(el.parentNode && el.parentNode.tagName &&
+                 el.parentNode.tagName.toLowerCase() === 'defs');
+      });
+      if (boxes.length < 3 || rawConns.length < 2) return;
+
+      // keep only the arrows that actually land on a box
+      var conns = [];
+      rawConns.forEach(function (el) {
+        var e = endsOf(el);
+        if (!e) return;
+        var a = nearestBox(e[0], boxes, TOUCH), b = nearestBox(e[1], boxes, TOUCH);
+        if (a < 0 && b < 0) return;
+        conns.push({ el: el, a: a, b: b, mid: [(e[0][0] + e[1][0]) / 2, (e[0][1] + e[1][1]) / 2] });
+      });
+      if (conns.length < 2) return;
+      conns.forEach(function (c, i) {
+        if (c.a >= 0) boxes[c.a].conns.push(i);
+        if (c.b >= 0 && c.b !== c.a) boxes[c.b].conns.push(i);
+      });
+      // if the geometry did not resolve into a real little network, leave it alone
+      if (boxes.filter(function (b) { return b.conns.length; }).length < 3) return;
+
+      /* Every label belongs to the box it sits in, or failing that to the
+         arrow it sits beside. A caption that belongs to neither is part of the
+         diagram as a whole and never dims, so the picture still reads. */
+      var texts = all('text', svg).map(function (el) {
+        var p = [num(el, 'x'), num(el, 'y')];
+        var box = nearestBox(p, boxes, INBOX);
+        var conn = -1;
+        if (box < 0) {
+          var bd = NEARLINE;
+          conns.forEach(function (c, i) {
+            var d = Math.sqrt(Math.pow(c.mid[0] - p[0], 2) + Math.pow(c.mid[1] - p[1], 2));
+            if (d <= bd) { bd = d; conn = i; }
+          });
+        }
+        return { el: el, box: box, conn: conn };
+      });
+
+      var stepAt = -1, pinned = -1;
+
+      function flag(el, on) {
+        if (on) el.classList.remove('dia-dim'); else el.classList.add('dia-dim');
+      }
+      function lit(el, on) {
+        if (on) el.classList.add('dia-lit'); else el.classList.remove('dia-lit');
+      }
+      function show(keepBoxes, keepConns) {
+        var kb = {}, kc = {};
+        keepBoxes.forEach(function (i) { if (i >= 0) kb[i] = 1; });
+        keepConns.forEach(function (i) { if (i >= 0) kc[i] = 1; });
+        boxes.forEach(function (b, i) { flag(b.el, kb[i]); });
+        conns.forEach(function (c, i) { flag(c.el, kc[i]); });
+        texts.forEach(function (t) {
+          flag(t.el, t.box >= 0 ? kb[t.box] : (t.conn >= 0 ? kc[t.conn] : 1));
+        });
+        wrap.setAttribute('data-dia-on', '');
+      }
+      function clear() {
+        boxes.forEach(function (b) { flag(b.el, 1); lit(b.el, 0); });
+        conns.forEach(function (c) { flag(c.el, 1); lit(c.el, 0); });
+        texts.forEach(function (t) { flag(t.el, 1); });
+        wrap.removeAttribute('data-dia-on');
+      }
+      function focusBox(i) {
+        var kb = [i], kc = [];
+        boxes[i].conns.forEach(function (ci) {
+          kc.push(ci);
+          kb.push(conns[ci].a, conns[ci].b);
+        });
+        clear();
+        show(kb, kc);
+        lit(boxes[i].el, 1);
+      }
+      function showStep(n) {
+        var c = conns[n];
+        clear();
+        show([c.a, c.b], [n]);
+        lit(c.el, 1);
+      }
+
+      // controls
+      var bar = document.createElement('div');
+      bar.className = 'dia-bar';
+      var prev = document.createElement('button');
+      var where = document.createElement('span');
+      var next = document.createElement('button');
+      var reset = document.createElement('button');
+      var tip = document.createElement('span');
+      prev.type = next.type = reset.type = 'button';
+      prev.className = next.className = 'dia-btn';
+      reset.className = 'dia-btn dia-reset';
+      where.className = 'dia-where';
+      tip.className = 'dia-tip';
+      prev.textContent = '‹'; next.textContent = '›';
+      prev.setAttribute('aria-label', 'Previous connection');
+      next.setAttribute('aria-label', 'Next connection');
+      reset.textContent = 'Show all';
+      tip.textContent = 'hover a box to see what it touches';
+      bar.appendChild(prev); bar.appendChild(where); bar.appendChild(next);
+      bar.appendChild(reset); bar.appendChild(tip);
+      wrap.appendChild(bar);
+
+      function paintBar() {
+        where.textContent = stepAt < 0 ? 'Step the flow'
+          : 'Step ' + (stepAt + 1) + ' of ' + conns.length;
+        reset.disabled = stepAt < 0 && pinned < 0;
+      }
+      function goStep(d) {
+        pinned = -1;
+        stepAt = stepAt < 0 ? (d > 0 ? 0 : conns.length - 1)
+                            : (stepAt + d + conns.length) % conns.length;
+        showStep(stepAt);
+        paintBar();
+      }
+      prev.addEventListener('click', function () { goStep(-1); });
+      next.addEventListener('click', function () { goStep(1); });
+      reset.addEventListener('click', function () {
+        stepAt = -1; pinned = -1; clear(); paintBar();
+      });
+
+      boxes.forEach(function (b, i) {
+        b.el.addEventListener('mouseenter', function () {
+          if (stepAt < 0 && pinned < 0) focusBox(i);
+        });
+        b.el.addEventListener('mouseleave', function () {
+          if (stepAt < 0 && pinned < 0) clear();
+        });
+        // a tap has no hover, so it pins instead
+        b.el.addEventListener('click', function (e) {
+          e.stopPropagation();
+          stepAt = -1;
+          if (pinned === i) { pinned = -1; clear(); } else { pinned = i; focusBox(i); }
+          paintBar();
+        });
+      });
+      svg.addEventListener('click', function () {
+        if (pinned >= 0) { pinned = -1; clear(); paintBar(); }
+      });
+
+      wrap.setAttribute('data-dia', '');
+      paintBar();
+    });
+  }
+
   var page = document.body.getAttribute('data-page');
 
   /* =================== HOME =================== */
@@ -1340,6 +1540,8 @@
       rPaint();
     }
   }
+
+  setupDiagrams(document);
 
   paint();
 })();

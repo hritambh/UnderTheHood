@@ -426,6 +426,7 @@ export function build() {
         <li>The search box at the top works on every page. It suggests topics as you type, and it looks inside the topics too. Press <kbd>/</kbd> to jump to it, then use the arrow keys and Enter.</li>
         <li>Inside a track, the filter box narrows the list, and shows which sections mention your word.</li>
         <li>Every topic ends with a quick revision: a short summary of what you learnt.</li>
+        <li>On the bigger diagrams, hover a box and everything it does not touch fades out, so you can see what talks to what. The little bar underneath walks the flow one arrow at a time. On a phone, tap a box instead.</li>
         <li>Got an interview tomorrow? Open a track and click <strong>Revise this track</strong>. Every topic in it, cut down to its summary, on one page you can filter, copy, print or listen to.</li>
       </ul>
     </details>

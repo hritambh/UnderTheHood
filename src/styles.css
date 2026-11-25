@@ -414,3 +414,23 @@ tr.speaking td{background:var(--accent-soft)}
 }
 .rev-index a.is-empty{border-style:dashed;opacity:.72}
 .rev-index a.is-empty:hover{opacity:1}
+
+/* ---- interactive diagrams: hover a box to see what it touches ---- */
+.diagram svg text{pointer-events:none}
+.diagram[data-dia] svg .box{cursor:pointer}
+.diagram svg .dia-dim{opacity:.12}
+.diagram svg rect.dia-lit,.diagram svg circle.dia-lit{stroke-width:2.6}
+.diagram svg line.dia-lit,.diagram svg path.dia-lit{stroke-width:2.8}
+@media (prefers-reduced-motion:no-preference){
+  .diagram[data-dia] svg rect,.diagram[data-dia] svg circle,
+  .diagram[data-dia] svg line,.diagram[data-dia] svg path,
+  .diagram[data-dia] svg text{transition:opacity .18s ease,stroke-width .18s ease}
+}
+.dia-bar{position:sticky;left:0;display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:10px 2px 0;padding-top:10px;border-top:1px solid var(--line)}
+.dia-btn{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 10px;border-radius:99px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;font-size:.84rem;line-height:1;cursor:pointer}
+.dia-btn:hover:not(:disabled){border-color:var(--muted)}
+.dia-btn:disabled{opacity:.45;cursor:default}
+.dia-where{min-width:92px;color:var(--muted);font-size:.84rem;font-variant-numeric:tabular-nums}
+.dia-tip{margin-left:auto;color:var(--muted);font-size:.8rem}
+@media (max-width:680px){.dia-tip{display:none}}
+@media print{.dia-bar{display:none}.diagram svg .dia-dim{opacity:1 !important}}
